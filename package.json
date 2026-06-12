@@ -32,12 +32,12 @@
     "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.77.0",
-    "@earendil-works/pi-coding-agent": "0.77.0",
+    "@earendil-works/pi-ai": "0.79.1",
+    "@earendil-works/pi-coding-agent": "0.79.1",
     "croner": "^10.0.1",
     "discord.js": "^14.19.3",
-    "dotenv": "^16.5.0",
-    "tsx": "^4.19.4",
+    "dotenv": "^17.4.2",
+    "tsx": "^4.22.4",
     "zod": "^4.3.6"
   },
   "devDependencies": {

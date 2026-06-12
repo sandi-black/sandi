@@ -124,7 +124,7 @@ export class ReminderManager {
 
       if (interaction.isStringSelectMenu()) {
         const parsed = parseReminderCustomId(interaction.customId);
-        if (!parsed || parsed.action !== "snooze-select") return false;
+        if (parsed?.action !== "snooze-select") return false;
         const selected = interaction.values[0];
         if (!selected) {
           await interaction.update({

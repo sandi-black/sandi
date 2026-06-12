@@ -367,7 +367,7 @@ async function completedRecurringItem(
 ): Promise<TodoItem | undefined> {
   if (!item.reminderId) return undefined;
   const reminder = await readReminderSafely(item.reminderId);
-  if (!reminder || reminder.status !== "active") return undefined;
+  if (reminder?.status !== "active") return undefined;
   const completed = completedReminder(reminder, doneBy);
   await writeReminder(remindersRoot(), item.reminderId, completed);
   if (completed.status !== "active") return undefined;

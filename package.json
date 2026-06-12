@@ -1,0 +1,50 @@
+{
+  "name": "sandi",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "description": "A customizable, self-extending household agent backed by a Pi gateway.",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "node node_modules/@biomejs/biome/bin/biome check --formatter-enabled=false --assist-enabled=false .",
+    "lint:fix": "node node_modules/@biomejs/biome/bin/biome check --write --formatter-enabled=false .",
+    "format": "node node_modules/@biomejs/biome/bin/biome check --write --linter-enabled=false . && oxfmt --write '**/*.{md,mdx}' --no-error-on-unmatched-pattern",
+    "format:check": "node node_modules/@biomejs/biome/bin/biome check --linter-enabled=false . && oxfmt --check '**/*.{md,mdx}' --no-error-on-unmatched-pattern",
+    "setup:pi": "tsx src/lib/provider/setup-pi.ts",
+    "verify:config-overlays": "tsx src/lib/config/verify-config-overlays.ts",
+    "verify:identity-memory": "tsx src/lib/identity/verify-identity-memory.ts",
+    "verify:pi-harness": "tsx src/lib/provider/verify-pi-harness.ts",
+    "verify:pi-account-routing": "tsx src/lib/provider/verify-pi-account-routing.ts",
+    "verify:pi-runtime-setup": "tsx src/lib/provider/verify-pi-runtime-setup.ts",
+    "verify:source-grounding": "tsx src/lib/context/verify-source-grounding.ts",
+    "verify:discord-delivery": "tsx src/surfaces/discord/discord/verify-delivery-instructions.ts",
+    "verify:event-creator-routing": "tsx src/surfaces/discord/events/verify-event-creator-routing.ts",
+    "verify:token-usage": "tsx src/lib/provider/verify-token-usage.ts",
+    "verify:migration": "tsx src/lib/migrations/verify-data-dir-migration.ts",
+    "verify:surface-boundary": "tsx src/lib/verification/verify-surface-boundary.ts",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run verify:config-overlays && npm run verify:identity-memory && npm run verify:pi-harness && npm run verify:pi-account-routing && npm run verify:pi-runtime-setup && npm run verify:source-grounding && npm run verify:discord-delivery && npm run verify:event-creator-routing && npm run verify:token-usage && npm run verify:migration && npm run verify:surface-boundary",
+    "dev": "tsx src/surfaces/discord/index.ts",
+    "start": "tsx src/surfaces/discord/index.ts",
+    "commands:sync": "tsx src/surfaces/discord/register-commands.ts",
+    "hooks:install": "git config core.hooksPath .githooks",
+    "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.77.0",
+    "@earendil-works/pi-coding-agent": "0.77.0",
+    "croner": "^10.0.1",
+    "discord.js": "^14.19.3",
+    "dotenv": "^16.5.0",
+    "tsx": "^4.19.4",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.6",
+    "@types/node": "^22.15.3",
+    "biome-plugin-no-type-assertion": "^1.0.2",
+    "oxfmt": "^0.36.0",
+    "typescript": "^5.9.3"
+  }
+}

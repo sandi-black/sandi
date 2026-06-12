@@ -1,0 +1,26 @@
+{
+  "$schema": "./pi-accounts.schema.json",
+  "version": 1,
+  "accounts": [
+    {
+      "id": "primary",
+      "displayName": "Primary Human",
+      "agentDir": "${HOME}/.pi/agent"
+    },
+    {
+      "id": "secondary",
+      "displayName": "Secondary Human",
+      "agentDir": "${SANDI_DATA_DIR}/pi-accounts/secondary"
+    }
+  ],
+  "routes": [
+    {
+      "identityId": "primary-human",
+      "accountId": "primary"
+    },
+    {
+      "identityId": "secondary-human",
+      "accountId": "secondary"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+set -eu
+
+echo "Running Sandi pre-commit verification: npm run check"
+npm run check

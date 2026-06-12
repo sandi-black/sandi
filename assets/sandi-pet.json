@@ -1,0 +1,6 @@
+{
+  "id": "sandi",
+  "displayName": "Sandi",
+  "description": "A compact digital-pet version of Sandi based on the provided character art.",
+  "spritesheetPath": "spritesheet.webp"
+}

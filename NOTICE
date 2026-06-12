@@ -1,0 +1,23 @@
+Sandi
+
+Copyright (c) 2026 Jessica Black
+
+This repository contains Sandi, a customizable, self-extending household agent.
+
+Unless a file or directory says otherwise:
+
+- Software, runtime configuration, prompts, scripts, migrations, executable
+  checked-in skills, package metadata, and other runtime material are licensed
+  under the GNU Affero General Public License version 3 or later
+  (AGPL-3.0-or-later). See LICENSE.
+- Documentation, images, sprites, visual assets, and other written or creative
+  content are licensed under the Creative Commons Attribution-ShareAlike 4.0
+  International Public License (CC-BY-SA-4.0). See
+  LICENSES/CC-BY-SA-4.0.txt.
+
+Generated images and assets in this repository are offered under CC-BY-SA-4.0
+where Jessica Black has the rights needed to grant that license.
+
+Third-party dependencies and externally sourced material remain under their own
+licenses. Vendored or generated content with a different license should identify
+that license in or near the affected file or directory.

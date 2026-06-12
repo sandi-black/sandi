@@ -1,0 +1,25 @@
+services:
+  sandi:
+    image: ghcr.io/sandi-black/sandi:latest
+    build:
+      context: .
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      SANDI_BUNDLED_SKILLS_ROOT: /app/bundled-data/skills
+      SANDI_DATA_DIR: /app/data
+      SANDI_CONFIG_DIR: /app/config
+      SANDI_PI_COMMAND: /app/node_modules/.bin/pi
+      SANDI_PI_AGENT_DIR: /app/data/pi-agent
+      SANDI_PI_PACKAGE_DIR: /app/data/pi-packages
+      SANDI_PI_SESSION_DIR: /app/data/pi-sessions
+      SANDI_TOKEN_USAGE_PATH: /app/data/provider-usage/tokens.jsonl
+    volumes:
+      - sandi-data:/app/data
+
+volumes:
+  sandi-data:
+    name: sandi-data

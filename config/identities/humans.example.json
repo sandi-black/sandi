@@ -1,0 +1,30 @@
+{
+  "$schema": "./humans.schema.json",
+  "version": 1,
+  "humans": [
+    {
+      "id": "primary-human",
+      "displayName": "Primary Human",
+      "platforms": {
+        "discord": {
+          "id": "discord-user-primary",
+          "username": "primary-user"
+        },
+        "github": {
+          "id": "22222222",
+          "login": "primary-user"
+        }
+      }
+    },
+    {
+      "id": "secondary-human",
+      "displayName": "Secondary Human",
+      "platforms": {
+        "discord": {
+          "id": "discord-user-secondary",
+          "username": "secondary-user"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sandi.local/config/identities/humans.schema.json",
+  "title": "Sandi human identity mappings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "humans"],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "humans": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/human"
+      }
+    }
+  },
+  "$defs": {
+    "human": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "displayName", "platforms"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "platforms": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "discord": {
+              "$ref": "#/$defs/discordAccount"
+            },
+            "github": {
+              "$ref": "#/$defs/githubAccount"
+            }
+          }
+        }
+      }
+    },
+    "discordAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["username"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "githubAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["login"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "login": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

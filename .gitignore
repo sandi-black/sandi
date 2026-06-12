@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.DS_Store
+
+# Runtime state. Keep directory placeholders and checked-in builtin skills.
+data/**
+!data/
+!data/**/
+!data/**/.gitkeep
+!data/skills/
+!data/skills/core/
+!data/skills/core/**
+!data/skills/surfaces/
+!data/skills/surfaces/**

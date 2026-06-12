@@ -41,10 +41,10 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.6",
-    "@types/node": "^22.15.3",
-    "biome-plugin-no-type-assertion": "^1.0.2",
-    "oxfmt": "^0.36.0",
-    "typescript": "^5.9.3"
+    "@biomejs/biome": "^2.4.16",
+    "@types/node": "^25.9.3",
+    "biome-plugin-no-type-assertion": "^1.1.1",
+    "oxfmt": "^0.54.0",
+    "typescript": "^6.0.3"
   }
 }

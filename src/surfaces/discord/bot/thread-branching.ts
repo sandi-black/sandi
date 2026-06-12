@@ -72,7 +72,7 @@ function starterFromSuffix(suffix: string): string | undefined {
 
 function stripPrefix(value: string, prefix: RegExp): string | undefined {
   const match = prefix.exec(value);
-  if (!match || match.index !== 0) return undefined;
+  if (match?.index !== 0) return undefined;
   return value.slice(match[0].length).trim();
 }
 

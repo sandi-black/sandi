@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -10,7 +11,20 @@ import { spawnCommandIgnoringStdin } from "@/lib/provider/spawn-command";
 
 const log = createLogger("pi-setup");
 
-export const SUPPORTED_PI_VERSION = "0.77.0";
+const require = createRequire(import.meta.url);
+
+const PackageJsonSchema = z.object({
+  dependencies: z.object({
+    "@earendil-works/pi-coding-agent": z
+      .string()
+      .regex(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u),
+  }),
+});
+
+const packageJson = PackageJsonSchema.parse(require("../../../package.json"));
+
+export const SUPPORTED_PI_VERSION =
+  packageJson.dependencies["@earendil-works/pi-coding-agent"];
 
 const PiPackageManifestSchema = z.object({
   packages: z.array(z.string().regex(/^(npm|git):/)).default([]),

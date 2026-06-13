@@ -20,6 +20,8 @@ import {
 } from "@/surfaces/discord/reminders/store";
 import { readDiscordPlatformContext } from "@/surfaces/discord/runtime/context";
 
+const MIN_FOLLOWUP_INTERVAL_MINUTES = 60;
+
 export type CreateReminderInput = {
   id?: string;
   text: string;
@@ -219,13 +221,18 @@ function buildReminder(input: {
   if (!Number.isFinite(targetTime)) {
     throw new Error(`Invalid reminder timestamp: ${nextFireAt}`);
   }
-  const followupIntervalMinutes = input.followupIntervalMinutes ?? 60;
+  const followupIntervalMinutes =
+    input.followupIntervalMinutes ?? MIN_FOLLOWUP_INTERVAL_MINUTES;
   if (
     !Number.isSafeInteger(followupIntervalMinutes) ||
     followupIntervalMinutes <= 0
   ) {
     throw new Error("followupIntervalMinutes must be a positive integer.");
   }
+  const normalizedFollowupIntervalMinutes = Math.max(
+    followupIntervalMinutes,
+    MIN_FOLLOWUP_INTERVAL_MINUTES,
+  );
 
   return {
     target: input.target,
@@ -236,7 +243,7 @@ function buildReminder(input: {
     status: "active",
     nextFireAt,
     ...(input.recurrence ? { recurrence: input.recurrence } : {}),
-    followupIntervalMinutes,
+    followupIntervalMinutes: normalizedFollowupIntervalMinutes,
     fireCount: 0,
     messageRefs: [],
   };

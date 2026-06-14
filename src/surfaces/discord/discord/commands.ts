@@ -15,24 +15,6 @@ export function serializedCommands(): unknown[] {
       )
       .addSubcommand((command) =>
         command
-          .setName("thread")
-          .setDescription("Branch this channel into a Sandi-managed thread")
-          .addStringOption((option) =>
-            option
-              .setName("message")
-              .setDescription("Message for the new thread")
-              .setRequired(true)
-              .setMaxLength(1800),
-          )
-          .addStringOption((option) =>
-            option
-              .setName("name")
-              .setDescription("Optional thread name")
-              .setMaxLength(100),
-          ),
-      )
-      .addSubcommand((command) =>
-        command
           .setName("todo")
           .setDescription("Create and pin an interactive todo list here"),
       )

@@ -7,7 +7,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 
 import {
   createEmbeddingEngineFromEnv,
@@ -362,7 +362,9 @@ async function collectSourceFiles(
       await collectSourceFiles(root, absolutePath, includeFile, files);
       continue;
     }
-    if (!entry.isFile() || !includeFile(absolutePath)) continue;
+    if (!entry.isFile() || !includeFile(normalizedPath(absolutePath))) {
+      continue;
+    }
     const sourcePath = relativeSourcePath(root, absolutePath);
     files.push({
       sourcePath,
@@ -458,7 +460,11 @@ function generationName(): string {
 }
 
 function relativeSourcePath(root: string, filePath: string): string {
-  return filePath.slice(root.length).replace(/^\/+/, "").replaceAll("\\", "/");
+  return normalizedPath(relative(root, filePath));
+}
+
+function normalizedPath(path: string): string {
+  return path.replaceAll("\\", "/");
 }
 
 function isFileMissing(error: unknown): boolean {

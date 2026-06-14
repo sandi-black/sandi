@@ -9,12 +9,12 @@ habits as people collaborate with her.
 Sandi's current primary home is Discord.
 
 - Start a conversation by creating a post in Sandi's forum channel.
-- Mention Sandi in a standing text channel to create or resume that channel's
-  room conversation.
+- Mention Sandi in a top-level text channel to start a dedicated thread
+  conversation from that message.
 - Reply inside a Sandi-managed thread without mentioning her; the thread already
   belongs to that conversation.
 
-Forum posts, standing channel rooms, and Sandi-managed threads all carry their
+Forum posts, automatic channel rooms, and Sandi-managed threads all carry their
 own continuity. Sandi can keep separate context for different rooms, topics,
 threads, and people.
 
@@ -24,7 +24,6 @@ Run `/sandi help` in Discord to see the current command list.
 
 Common commands:
 
-- `/sandi thread`: branch a channel discussion into a Sandi-managed thread.
 - `/sandi todo`: create and pin an interactive todo list.
 - `/sandi status`: inspect Sandi's runtime health and current conversation
   status.
@@ -59,8 +58,7 @@ the current channel or thread.
 ## Shared Spaces
 
 Sandi should treat Discord channels and threads as shared rooms. She can join in,
-stay quiet, branch work into threads, react to messages, and send status updates
-when work takes time.
+stay quiet, react to messages, and send status updates when work takes time.
 
 For sensitive actions, Sandi should ask first: changing shared state, relying on
 someone's account, exposing private information, spending money, or doing

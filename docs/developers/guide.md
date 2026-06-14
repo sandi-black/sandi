@@ -79,15 +79,15 @@ Sandi has three persistent Discord conversation modes:
 - Sandi forum posts: every non-bot message inside a Sandi forum thread becomes a
   persistent Pi turn for that forum conversation. The first response to a
   message replies to the triggering message.
-- Standing channel rooms: mentioning Sandi in a supported text channel creates
-  or resumes a persistent room conversation for that channel. The first response
-  to a mention replies to the triggering message.
-- Sandi-managed channel threads: `/sandi thread` in a standard text channel
-  creates a normal Discord thread, writes a short visible starter marker, and
-  starts a new scoped Pi session seeded with the user starter, a compact bridge
-  summary, and a parent-channel pointer instead of a raw parent-channel
-  transcript. Later non-bot replies in that managed thread trigger Sandi without
-  requiring a mention.
+- Sandi message threads: mentioning Sandi in a top-level text channel that is
+  not an automatic Sandi-handled channel creates a Discord thread from that user
+  message. The origin message is the first user prompt for a new persistent Pi
+  session scoped to that thread. Later non-bot replies inside the thread trigger
+  Sandi without requiring a mention. Other top-level parent-channel messages get
+  their own Sandi thread sessions.
+- Automatic channel rooms: channels with dedicated automatic handling, such as
+  `todo-` and `tasks-` channels, continue to use persistent channel
+  conversations instead of creating per-message threads.
 
 When available, Discord message and scheduled-event metadata includes the active
 channel topic and thread parent-channel topic so Sandi can see room norms or
@@ -100,9 +100,9 @@ of those reactions into the next non-event turn in that conversation. Reactions
 are treated as sideband context, not as standalone prompts that trigger agent
 turns.
 
-Forum threads, Sandi-managed channel threads, and standing channel rooms use
-persistent Pi sessions. One-off mention handling remains as a fallback for
-Discord contexts that are not persistent conversation channels.
+Forum threads, Sandi message threads, and automatic channel rooms use persistent
+Pi sessions. One-off mention handling remains as a fallback for Discord contexts
+that are not persistent conversation channels.
 
 The wrapper posts Pi's final stdout back to Discord as Sandi's ordinary reply
 when the turn has not already used an explicit Discord send helper/tool.
@@ -321,9 +321,9 @@ The compiled prompt includes a merged policy index; Sandi can read full policy
 text through `policy_read` without needing arbitrary filesystem access.
 
 Scheduled events live under `data/events/`. Sandi can create immediate,
-one-shot, or periodic scheduled turns for Discord forum threads or standing
-channel rooms through the code-mode `events` helper, and the bot process watches
-the event directory so due events re-enter the normal queued conversation path.
+one-shot, or periodic scheduled turns for Discord threads or standing channel
+rooms through the code-mode `events` helper, and the bot process watches the
+event directory so due events re-enter the normal queued conversation path.
 
 ## Config And Data
 
@@ -355,10 +355,10 @@ public repo includes `config/identities/humans.example.json` for schema-shaped
 examples.
 
 Every conversation manifest is stored under
-`data/conversations/<target-id>/manifest.json`, where the target is either a
-forum thread id or a standing channel id. Forum thread conversations use
-canonical ids shaped like
-`discord:<guild-id>:<parent-channel-id>:<thread-id>`; standing channel rooms use
+`data/conversations/<target-id>/manifest.json`, where the target is usually a
+Discord thread id and can also be an automatic channel id. Thread conversations
+use canonical ids shaped like
+`discord:<guild-id>:<parent-channel-id>:<thread-id>`; channel rooms use
 `discord:<guild-id>:<channel-id>:room`.
 
 Runtime memory lives under `data/memory/`:

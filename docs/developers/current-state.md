@@ -174,18 +174,23 @@ evidence so external text cannot masquerade as instructions.
 5. Runtime environment metadata: surface, working directory, data/config roots,
    code-mode runtime import, and optional `SANDI_ENVIRONMENT_HINT`
 6. Conversation metadata and active participants
-7. Memory overview and visible scratchpads
-8. Guidance for skill tools
+7. Memory overview, visible scratchpads, and dynamically suggested memory refs
+   when hybrid retrieval finds prompt-relevant matches
+8. Guidance for skill tools and dynamically suggested skill names when hybrid
+   retrieval finds prompt-relevant matches
 9. Each active participant's `profile.md` and `instructions.md`, when present
 
-The compiler includes the effective skill index and short skill guidance from
-`data/skills/`. When BM25-style ranking over the current turn text and skill
-metadata/aliases finds a clear match, it also adds a small "Possible relevant
-skills for this turn" hint that lists only names/descriptions and tells Sandi to
-read a skill only if it actually applies. Detailed workflow guidance still lives
-in individual skill files; Sandi reads those with `skill_read` when a task
-matches. The compiler does not read legacy `config/skills/`, `skills.yaml`, or
-`tools.yaml` files.
+The compiler does not inject the full skill index. Instead, it tells Sandi how to
+use `skill_search`, `skill_list`, and `skill_read`, then adds compact
+"Potentially relevant skills to the prompt" hints only when the same hybrid
+retrieval used by `skill_search` finds matches. It also adds "Potentially
+relevant memories to the prompt" hints when memory retrieval finds matching refs.
+Skill hints include the skill name, source, description, retrieval signals, and a
+short matched passage reason. Memory hints include the memory ref, summary when
+available, retrieval signals, and the matched passage label without injecting the
+memory body. Full skill or memory content is loaded through tools. The compiler
+does not read legacy
+`config/skills/`, `skills.yaml`, or `tools.yaml` files.
 
 ## Conversations
 
@@ -239,7 +244,9 @@ The compiled prompt includes `MEMORY.md` scratchpads for:
 - the current thread archive or standing channel room, when present
 - active participants
 
-Other Markdown memory files are reached through memory tools.
+Other Markdown memory files are reached through memory tools. Prompt-time memory
+suggestions list only potentially relevant refs and summaries, not full memory
+files.
 
 Main-turn memory tools:
 
@@ -249,12 +256,10 @@ Main-turn memory tools:
 - `memory_write`
 - `memory_forget`
 
-`memory_search` launches a no-session Pi subagent with only read-only memory
-tools:
-
-- `memory_find_files`
-- `memory_read_file`
-- `memory_grep`
+`memory_search` runs direct hybrid retrieval over allowed memory refs. It indexes
+metadata plus Markdown passages, ranks passages with BM25 keyword scoring and
+local embedding similarity, then aggregates passage matches back to logical
+memory refs. Full memory content is still loaded through `memory_read`.
 
 Allowed memory refs are validated against the current turn context. Shared
 scopes are `system`, `self`, `household`, and `topics`; surface conversation
@@ -284,12 +289,10 @@ Main-turn skill tools:
 - `skill_write`
 - `skill_delete`
 
-`skill_search` launches a no-session Pi subagent with only read-only skill
-tools:
-
-- `skill_find_files`
-- `skill_read_file`
-- `skill_grep`
+`skill_search` runs direct hybrid retrieval over the effective skill set. It
+indexes skill metadata plus Markdown passages, ranks passages with BM25 keyword
+scoring and local embedding similarity, then aggregates passage matches back to
+skill names. Full skill text is still loaded through `skill_read`.
 
 Reads and searches use the effective skill set for the current surface. For
 Discord, precedence is Discord custom, Discord builtin, core custom, core
@@ -299,6 +302,30 @@ present; pass `scope: "core"` only for truly global instructions.
 Custom skills are the default way for a live Sandi to preserve new durable
 behavior. Checked-in builtin skills are starter/product defaults; changing them
 is source maintenance rather than ordinary household customization.
+
+## Semantic Retrieval
+
+Memory and skill search use hybrid retrieval: BM25 for exact terms plus a local
+CPU embedding model for semantic similarity. The default embedding configuration
+is `SANDI_EMBEDDING_PROVIDER=local`,
+`SANDI_EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2`, `SANDI_EMBEDDING_DTYPE=q8`,
+`SANDI_EMBEDDING_CACHE_DIR=./data/embedding-models`, and
+`SANDI_EMBEDDING_BATCH_SIZE=24`. Set `SANDI_EMBEDDING_LOCAL_FILES_ONLY=true`
+after the model is cached when runtime network access should be disabled. The
+retrieval engine supports only the local embedding provider or disabled mode; if
+the local model cannot load, search falls back to BM25-only results rather than
+failing the turn.
+
+Document embeddings are cached under `data/cache/embeddings/{skills,memory}`.
+Each index has timestamped generation directories containing `manifest.json`
+with the index version, source content hash, embedding engine, and counts, plus
+`index.json` with passage embeddings. `current.json` points to the promoted
+generation. On startup Sandi validates the skill and memory indexes separately;
+missing, stale, wrong-version, or wrong-engine indexes rebuild in the background.
+Long-running file watchers debounce source changes and promote a rebuilt
+generation only after it is complete, so searches keep using the previous
+generation until replacement. If no cache is available yet, search falls back to
+on-demand passage scoring.
 
 Core builtin workflow skills currently include:
 

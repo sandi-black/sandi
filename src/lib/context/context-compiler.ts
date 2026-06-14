@@ -61,6 +61,7 @@ export class ContextCompiler {
           conversation,
           participants: conversation.participants,
         }),
+        input.skillHintQuery,
       ),
     );
     sections.push(await this.#compileSkillsSection(input.skillHintQuery));
@@ -96,6 +97,7 @@ export class ContextCompiler {
           dataDir: this.#dataDir,
           participants: [input.author],
         }),
+        input.skillHintQuery,
       ),
     );
     sections.push(await this.#compileSkillsSection(input.skillHintQuery));
@@ -201,16 +203,19 @@ export class ContextCompiler {
     return lines.join("\n");
   }
 
-  async #compileMemorySection(context: ReturnType<typeof buildMemoryContext>) {
+  async #compileMemorySection(
+    context: ReturnType<typeof buildMemoryContext>,
+    hintQuery?: string,
+  ) {
     return [
       "# Memory",
       "",
-      "Current memory areas and short scratchpads are shown below. Use `memory_search` for prior context, `memory_list` to inspect an area, `memory_read` for details, and memory write tools when you learn something clear and useful enough to carry forward.",
+      "Current memory areas, short scratchpads, and possible prompt matches are shown below. Use `memory_search` for prior context, `memory_list` to inspect an area, `memory_read` for details, and memory write tools when you learn something clear and useful enough to carry forward.",
       "Memory refs are logical references, not filesystem paths. Do not claim a memory shaped your answer unless it came from this section or a memory tool result.",
       "Make memory writes visible in your response on the current surface with a short, correctable summary.",
       "",
       "<memory>",
-      await loadMemory(context),
+      await loadMemory(context, hintQuery),
       "</memory>",
     ].join("\n");
   }

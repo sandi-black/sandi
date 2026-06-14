@@ -1,6 +1,4 @@
-import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -18,6 +16,11 @@ import {
   resolveSkill,
   writeCustomSkill,
 } from "./skill-common";
+import {
+  formatSkillHybridResult,
+  type SkillHybridSearchResponse,
+  searchSkillsHybrid,
+} from "./skill-hybrid-search";
 
 const SkillNameParam = Type.String({
   description: "Skill name, such as skill-creator.",
@@ -80,15 +83,34 @@ export default function skillToolsExtension(pi: ExtensionAPI): void {
         query: Type.String({
           description: "Natural-language or keyword query.",
         }),
+        maxResults: Type.Optional(
+          Type.Number({
+            description:
+              "Optional positive limit. Omit to return every result above the relevance threshold.",
+            minimum: 1,
+          }),
+        ),
+        maxSnippets: Type.Optional(
+          Type.Number({
+            description:
+              "Maximum keyword snippets per result. Defaults to 3. Embedding-only matches may have no snippets.",
+            minimum: 0,
+          }),
+        ),
       }),
       async execute(_toolCallId, params) {
         const context = readSkillsContext();
-        const result = await runSkillSearchAgent(
-          context.root,
-          context.surface,
-          params.query,
-        );
-        return textResult(result, { delegated: true });
+        const result = await searchSkillsHybrid({
+          root: context.root,
+          surface: context.surface,
+          query: params.query,
+          maxResults: params.maxResults,
+          maxSnippets: params.maxSnippets,
+        });
+        return textResult(formatSkillSearchResponse(result), {
+          count: result.results.length,
+          embedding: result.embedding,
+        });
       },
     }),
   );
@@ -184,116 +206,20 @@ export default function skillToolsExtension(pi: ExtensionAPI): void {
   );
 }
 
-function runSkillSearchAgent(
-  skillsRoot: string,
-  skillsSurface: string | null,
-  query: string,
-): Promise<string> {
-  const command = process.env["SANDI_PI_COMMAND"]?.trim() || "pi";
-  const extensionPath = resolve(
-    process.env["SANDI_PI_SKILL_SEARCH_EXTENSION"]?.trim() ||
-      "src/lib/pi-extension/skill-search-read-tools.ts",
-  );
-  const timeoutMs = readPositiveIntEnv(
-    "SANDI_PI_SKILL_SEARCH_TIMEOUT_MS",
-    120_000,
-  );
-  const args = [
-    "--print",
-    "--no-builtin-tools",
-    "--no-extensions",
-    "--extension",
-    extensionPath,
-    "--system-prompt",
-    buildSkillSearchSystemPrompt(),
-    "--no-session",
+function formatSkillSearchResponse(result: SkillHybridSearchResponse): string {
+  const lines = [
+    result.embedding.available
+      ? `Embedding search: ${result.embedding.engine}`
+      : `Embedding search unavailable; BM25-only results: ${result.embedding.reason}`,
+    "",
+    "Potentially relevant skills:",
   ];
-
-  const provider = process.env["SANDI_PI_PROVIDER"]?.trim();
-  const model = process.env["SANDI_PI_MODEL"]?.trim();
-  const thinking =
-    process.env["SANDI_PI_SKILL_SEARCH_THINKING"]?.trim() || "medium";
-  if (provider) args.push("--provider", provider);
-  if (model) args.push("--model", model);
-  if (thinking) args.push("--thinking", thinking);
-  args.push(buildSkillSearchUserPrompt(query));
-
-  return new Promise((resolveSearch, reject) => {
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      SANDI_SKILLS_ROOT: skillsRoot,
-    };
-    delete env["SANDI_SKILLS_SURFACE"];
-    if (skillsSurface) env["SANDI_SKILLS_SURFACE"] = skillsSurface;
-
-    const child = spawn(command, args, {
-      cwd: process.cwd(),
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-    }, timeoutMs);
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout.push(chunk.toString("utf8"));
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr.push(chunk.toString("utf8"));
-    });
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.on("close", (exitCode) => {
-      clearTimeout(timeout);
-      const output = stdout.join("").trim();
-      if (exitCode === 0 && output) {
-        resolveSearch(output);
-        return;
-      }
-      reject(
-        new Error(
-          stderr.join("").trim() ||
-            output ||
-            `skill search agent exited with code ${exitCode}`,
-        ),
-      );
-    });
-  });
-}
-
-function buildSkillSearchSystemPrompt(): string {
-  return [
-    "You are Sandi's read-only skill search subagent.",
-    "",
-    "Your job is to answer a query using only Sandi skills exposed through your tools.",
-    "You cannot write, delete, edit, use surface runtime helpers, or access arbitrary files. Use the skill tools available to you.",
-    "",
-    "Skill organization:",
-    "- core builtin/custom: globally reusable skills",
-    "- surface builtin/custom: skills for the current surface",
-    "- effective precedence is surface custom, surface builtin, core custom, core builtin",
-    "",
-    "Search strategy:",
-    "1. Use BM25 search first for broad ranked recall.",
-    "2. List available skills and inspect names/descriptions when useful for orientation.",
-    "3. Use grep for exact identifiers, obvious terms, and related synonyms.",
-    "4. Read promising skills fully before answering.",
-    "5. Synthesize a concise answer and cite skill names.",
-    "",
-    "Rules:",
-    "- Base your answer only on skill tool results.",
-    "- If nothing relevant is found, say that clearly.",
-    "- Do not mention filesystem paths.",
-    "- Keep the answer compact enough to return as a tool result.",
-  ].join("\n");
-}
-
-function buildSkillSearchUserPrompt(query: string): string {
-  return ["Skill search query:", query].join("\n");
+  if (result.results.length === 0) {
+    lines.push("- none");
+    return lines.join("\n");
+  }
+  lines.push(...result.results.map(formatSkillHybridResult));
+  return lines.join("\n");
 }
 
 function formatSkillList(
@@ -347,11 +273,4 @@ function textResult(
     content: [{ type: "text", text }],
     details,
   };
-}
-
-function readPositiveIntEnv(name: string, fallback: number): number {
-  const value = process.env[name]?.trim();
-  if (!value) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isNaN(parsed) || parsed <= 0 ? fallback : parsed;
 }

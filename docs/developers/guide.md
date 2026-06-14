@@ -169,12 +169,6 @@ disable discovery and builtin tools explicitly.
 - `SANDI_PI_POLICY_EXTENSION=./src/lib/pi-extension/policy-tools.ts`
 - `SANDI_PI_IMAGEGEN_EXTENSION=./src/lib/pi-extension/imagegen-tools.ts`
 - `SANDI_PI_STOP_EXTENSION=./src/lib/pi-extension/stop-sentinel.ts`
-- `SANDI_PI_MEMORY_SEARCH_EXTENSION=./src/lib/pi-extension/memory-search-read-tools.ts`
-- `SANDI_PI_MEMORY_SEARCH_THINKING=medium`
-- `SANDI_PI_MEMORY_SEARCH_TIMEOUT_MS=120000`
-- `SANDI_PI_SKILL_SEARCH_EXTENSION=./src/lib/pi-extension/skill-search-read-tools.ts`
-- `SANDI_PI_SKILL_SEARCH_THINKING=medium`
-- `SANDI_PI_SKILL_SEARCH_TIMEOUT_MS=120000`
 - `SANDI_PI_EXTENSIONS` optionally overrides the default main-turn extension
   list with a comma-separated list.
 - `SANDI_GOOGLE_MAPS_API_KEY` or `GOOGLE_MAPS_API_KEY` configures Google Maps
@@ -187,6 +181,13 @@ disable discovery and builtin tools explicitly.
   `./config/policies`.
 - `SANDI_EVENTS_ROOT=./data/events`
 - `SANDI_SKILLS_ROOT=./data/skills`
+- `SANDI_EMBEDDING_PROVIDER=local`
+- `SANDI_EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2`
+- `SANDI_EMBEDDING_DTYPE=q8`
+- `SANDI_EMBEDDING_CACHE_DIR=./data/embedding-models`
+- `SANDI_EMBEDDING_BATCH_SIZE=24`
+- `SANDI_EMBEDDING_LOCAL_FILES_ONLY=false` optionally prevents model downloads
+  after the local embedding model is cached.
 - `SANDI_GENERATED_IMAGES_ROOT=./data/generated-images`
 - `SANDI_SURFACE_ATTACHMENTS_ROOT=./data/surface-attachments` optionally allows
   core image generation to read uploaded-image references made available by the
@@ -270,10 +271,13 @@ Memory tool refs are logical refs such as `system/MEMORY.md`,
 every ref against the allowed memory scopes before reading, writing, or deleting
 anything.
 
-`memory_search` and `skill_search` delegate to separate ephemeral Pi search
-sessions using read-only search extensions. The search subagents can list, grep,
-and read allowed memory refs or effective skills, but cannot write memory, edit
-skills, or use Discord helpers.
+`memory_search` and `skill_search` run direct hybrid retrieval inside the main Pi
+turn. They combine lexical BM25 with local CPU embeddings from
+`SANDI_EMBEDDING_MODEL`, index metadata plus Markdown passages, aggregate
+passage matches back to logical refs or skill names, and leave full content
+loading to `memory_read` or `skill_read`. Prompt-time hints use the same
+retrieval path and include descriptions or summaries plus compact match evidence
+so the model can decide whether to read more.
 
 Skills live under `data/skills/core/{builtin,custom}/<skill-name>/SKILL.md` and
 `data/skills/surfaces/<surface>/{builtin,custom}/<skill-name>/SKILL.md`. Reads

@@ -1,6 +1,5 @@
-import { spawn } from "node:child_process";
 import { mkdir, readFile, rm } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -17,6 +16,11 @@ import {
   readMemoryRoot,
   resolveAllowedRef,
 } from "./memory-common";
+import {
+  formatMemoryHybridResult,
+  type MemoryHybridSearchResponse,
+  searchMemoryHybrid,
+} from "./memory-hybrid-search";
 
 const RefParam = Type.String({
   description:
@@ -90,17 +94,36 @@ export default function memoryToolsExtension(pi: ExtensionAPI): void {
           description: "Natural-language or keyword query.",
         }),
         area: AreaParam,
+        maxResults: Type.Optional(
+          Type.Number({
+            description:
+              "Optional positive limit. Omit to return every result above the relevance threshold.",
+            minimum: 1,
+          }),
+        ),
+        maxSnippets: Type.Optional(
+          Type.Number({
+            description:
+              "Maximum keyword snippets per result. Defaults to 3. Embedding-only matches may have no snippets.",
+            minimum: 0,
+          }),
+        ),
       }),
       async execute(_toolCallId, params) {
         const root = readMemoryRoot();
         const context = readMemoryContext();
-        const result = await runMemorySearchAgent(
+        const result = await searchMemoryHybrid({
           root,
-          JSON.stringify(context),
-          params.query,
-          params.area,
-        );
-        return textResult(result, { delegated: true });
+          context,
+          query: params.query,
+          area: params.area,
+          maxResults: params.maxResults,
+          maxSnippets: params.maxSnippets,
+        });
+        return textResult(formatMemorySearchResponse(result), {
+          count: result.results.length,
+          embedding: result.embedding,
+        });
       },
     }),
   );
@@ -193,133 +216,22 @@ export default function memoryToolsExtension(pi: ExtensionAPI): void {
   );
 }
 
-function runMemorySearchAgent(
-  memoryRoot: string,
-  memoryContextJson: string,
-  query: string,
-  area: string | undefined,
-): Promise<string> {
-  const command = process.env["SANDI_PI_COMMAND"]?.trim() || "pi";
-  const extensionPath = resolve(
-    process.env["SANDI_PI_MEMORY_SEARCH_EXTENSION"]?.trim() ||
-      "src/lib/pi-extension/memory-search-read-tools.ts",
-  );
-  const timeoutMs = readPositiveIntEnv(
-    "SANDI_PI_MEMORY_SEARCH_TIMEOUT_MS",
-    120_000,
-  );
-  const args = [
-    "--print",
-    "--no-builtin-tools",
-    "--no-extensions",
-    "--extension",
-    extensionPath,
-    "--system-prompt",
-    buildSearchSystemPrompt(area),
-    "--no-session",
-  ];
-
-  const provider = process.env["SANDI_PI_PROVIDER"]?.trim();
-  const model = process.env["SANDI_PI_MODEL"]?.trim();
-  const thinking =
-    process.env["SANDI_PI_MEMORY_SEARCH_THINKING"]?.trim() || "medium";
-  if (provider) args.push("--provider", provider);
-  if (model) args.push("--model", model);
-  if (thinking) args.push("--thinking", thinking);
-  args.push(buildSearchUserPrompt(query, area));
-
-  return new Promise((resolveSearch, reject) => {
-    const child = spawn(command, args, {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        SANDI_MEMORY_ROOT: memoryRoot,
-        SANDI_MEMORY_CONTEXT: memoryContextJson,
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-    }, timeoutMs);
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout.push(chunk.toString("utf8"));
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr.push(chunk.toString("utf8"));
-    });
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.on("close", (exitCode) => {
-      clearTimeout(timeout);
-      const output = stdout.join("").trim();
-      if (exitCode === 0 && output) {
-        resolveSearch(output);
-        return;
-      }
-      reject(
-        new Error(
-          stderr.join("").trim() ||
-            output ||
-            `memory search agent exited with code ${exitCode}`,
-        ),
-      );
-    });
-  });
-}
-
-function buildSearchSystemPrompt(area: string | undefined): string {
-  return [
-    "You are Sandi's read-only memory search subagent.",
-    "",
-    "Your job is to answer a recall query using only Sandi memory files exposed through your tools.",
-    "You cannot write, delete, edit, use surface runtime helpers, or access arbitrary files. Use the memory tools available to you.",
-    "",
-    "Memory organization:",
-    "- system: machine, sandbox, tooling, paths, and runtime environment details",
-    "- self: Sandi's own durable self-continuity",
-    "- household: shared context for Sandi and the active group",
-    "- participant platform arenas: active participant memory only",
-    "- topics: recurring household topics and projects",
-    "- surfaces/<surface>/threads: archived notes and recaps from surface threads",
-    "- surfaces/<surface>/channels: room or channel continuity for surface conversation spaces",
-    "",
-    area
-      ? `The caller requested area/prefix: ${area}`
-      : "No area was specified; search broadly.",
-    "",
-    "Search strategy:",
-    "1. Use BM25 search first for broad ranked recall, scoped to the requested area when provided.",
-    "2. List candidate memory refs when useful for orientation.",
-    "3. Use grep for exact identifiers, obvious terms, and related synonyms.",
-    "4. Read promising files fully before answering.",
-    "5. Synthesize a concise answer and cite memory refs by logical ref.",
-    "",
-    "Rules:",
-    "- Base your answer only on memory tool results.",
-    "- If nothing relevant is found, say that clearly.",
-    "- Cite memory by logical ref, not by implementation file path.",
-    "- Stored machine paths may be mentioned when they are the relevant remembered fact.",
-    "- Keep the answer compact enough to return as a tool result.",
-  ].join("\n");
-}
-
-function buildSearchUserPrompt(
-  query: string,
-  area: string | undefined,
+function formatMemorySearchResponse(
+  result: MemoryHybridSearchResponse,
 ): string {
-  return [
-    "Recall query:",
-    query,
+  const lines = [
+    result.embedding.available
+      ? `Embedding search: ${result.embedding.engine}`
+      : `Embedding search unavailable; BM25-only results: ${result.embedding.reason}`,
     "",
-    area
-      ? `Requested area/prefix: ${area}`
-      : "Requested area/prefix: all allowed memory",
-  ].join("\n");
+    "Potentially relevant memories:",
+  ];
+  if (result.results.length === 0) {
+    lines.push("- none");
+    return lines.join("\n");
+  }
+  lines.push(...result.results.map(formatMemoryHybridResult));
+  return lines.join("\n");
 }
 
 async function formatMemoryWrite(input: {
@@ -376,13 +288,6 @@ async function readOptional(filePath: string): Promise<string | null> {
 
 function cleanSummary(summary: string): string {
   return summary.replace(/\s+/g, " ").trim();
-}
-
-function readPositiveIntEnv(name: string, fallback: number): number {
-  const value = process.env[name]?.trim();
-  if (!value) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isNaN(parsed) || parsed <= 0 ? fallback : parsed;
 }
 
 function textResult(

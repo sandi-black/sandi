@@ -38,14 +38,12 @@ Sandi has three persistent Discord conversation modes:
 - Standing channel rooms: mentioning Sandi in a supported text channel creates or
   resumes a persistent room conversation for that channel. The first response to
   a mention replies to the triggering message.
-- Sandi-managed channel threads: `/sandi thread` in a standard text channel
-  creates a normal Discord thread, writes a short visible starter marker, and
-  starts a new scoped Pi session seeded with the user starter, a compact bridge
-  summary, and a parent-channel pointer instead of a raw parent-channel
-  transcript. A conservative natural-language path also handles clear mentioned
-  requests like "create a thread about ..." or "branch this into a thread" when
-  replying to a message. Later non-bot replies in that managed thread trigger
-  Sandi without requiring a mention.
+- Existing Sandi-managed channel threads: any Discord thread with a stored
+  Sandi-managed thread conversation manifest continues to receive non-bot
+  replies as persistent Pi turns without requiring a mention. There is no
+  user-facing thread creation command, and mentioned channel messages containing
+  "thread" are handled as ordinary standing-channel conversation instead of
+  auto-branching.
 
 When available, Discord message and scheduled-event metadata includes the active
 channel topic and thread parent-channel topic so Sandi can see room norms or
@@ -63,8 +61,6 @@ Sandi has Discord application commands registered by `npm run commands:sync`:
 
 - `/sandi help`: shows the available Sandi commands from Discord.
 - `/sandi stop`: asks the current Sandi turn in this conversation to stop.
-- `/sandi thread`: branches a standard text channel into a Sandi-managed Discord
-  thread with a scoped conversation session.
 - `/sandi todo`: creates and pins an interactive todo list in the current channel
   or thread.
 - `/sandi status`: reports runtime status, uptime/memory health, queue state,

@@ -16,7 +16,7 @@ becomes yours.
 The current primary surface is Discord. In a Discord server, Sandi can:
 
 - keep persistent conversations in forum posts, standing channel rooms, and
-  Sandi-managed threads;
+  existing Sandi-managed threads;
 - remember useful context about the household, people, topics, and
   conversations;
 - work from reusable skills for recurring workflows;
@@ -40,8 +40,6 @@ In Discord:
 - mention Sandi in a standing text channel to create or resume that channel's
   room conversation;
 - run `/sandi help` to see the available commands;
-- run `/sandi thread` to branch a channel discussion into a Sandi-managed
-  thread;
 - run `/sandi todo` to create a pinned interactive todo list;
 - run `/sandi status` to inspect runtime health;
 - run `/sandi events list` and `/sandi reminders list` to inspect scheduled

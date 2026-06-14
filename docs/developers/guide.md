@@ -279,6 +279,13 @@ loading to `memory_read` or `skill_read`. Prompt-time hints use the same
 retrieval path and include descriptions or summaries plus compact match evidence
 so the model can decide whether to read more.
 
+Persistent passage embeddings live under `data/cache/embeddings/skills` and
+`data/cache/embeddings/memory`. Each promoted generation has a `manifest.json`
+with the index version and source content hash plus an `index.json` of embedded
+passages; `current.json` points at the active generation. Startup validation and
+file watchers rebuild stale indexes in the background and keep using the
+previous generation until the new one is promoted.
+
 Skills live under `data/skills/core/{builtin,custom}/<skill-name>/SKILL.md` and
 `data/skills/surfaces/<surface>/{builtin,custom}/<skill-name>/SKILL.md`. Reads
 and searches use the effective skill set for the current surface. For Discord,

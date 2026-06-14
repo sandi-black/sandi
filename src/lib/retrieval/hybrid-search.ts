@@ -20,6 +20,7 @@ export type HybridSearchOptions = {
   lexicalMode?: "boost" | "fallback" | "disabled" | undefined;
   embeddingEngine?: EmbeddingEngine | null | undefined;
   queryExpansion?: string | undefined;
+  documentEmbeddings?: ReadonlyMap<string, readonly number[]> | undefined;
 };
 
 export type HybridSearchResult = {
@@ -70,6 +71,7 @@ export async function hybridSearch(
     documents,
     retrievalQuery,
     options.embeddingEngine,
+    options.documentEmbeddings,
   );
   const minScore = options.minScore ?? DEFAULT_MIN_SCORE;
   const minEmbeddingScore =
@@ -172,6 +174,7 @@ async function scoreEmbeddings(
   documents: RetrievalDocument[],
   retrievalQuery: string,
   configuredEngine: EmbeddingEngine | null | undefined,
+  documentEmbeddings: ReadonlyMap<string, readonly number[]> | undefined,
 ): Promise<{
   status: EmbeddingEngineStatus;
   scores: Map<string, number>;
@@ -188,6 +191,26 @@ async function scoreEmbeddings(
   }
 
   try {
+    if (documentEmbeddings) {
+      const queryEmbedding = (await engine.embed([retrievalQuery]))[0];
+      if (!queryEmbedding) {
+        return {
+          status: { available: false, reason: "query embedding missing" },
+          scores: new Map(),
+        };
+      }
+      const scores = new Map<string, number>();
+      for (const document of documents) {
+        const embedding = documentEmbeddings.get(document.id);
+        if (!embedding) continue;
+        scores.set(document.id, cosineSimilarity(queryEmbedding, embedding));
+      }
+      return {
+        status: { available: true, engine: engine.name },
+        scores,
+      };
+    }
+
     const embeddings = await engine.embed([
       retrievalQuery,
       ...documents.map((document) => document.content),

@@ -1,6 +1,20 @@
 import { readFile } from "node:fs/promises";
+import { relative } from "node:path";
 
-import type { EmbeddingEngine } from "../retrieval/embeddings";
+import {
+  contentHashForSourceFiles,
+  type EmbeddingIndexSourceFile,
+  embeddingIndexCacheRootForSourceRoot,
+  type IndexedSearchPassage,
+  loadCurrentEmbeddingIndex,
+  type RebuildEmbeddingIndexResult,
+  readSourceFiles,
+  rebuildCachedEmbeddingIndex,
+} from "../retrieval/embedding-index";
+import {
+  createEmbeddingEngineFromEnv,
+  type EmbeddingEngine,
+} from "../retrieval/embeddings";
 import type {
   HybridSearchResponse,
   HybridSearchResult,
@@ -9,10 +23,12 @@ import {
   buildMarkdownPassages,
   type ParentSearchResult,
   parentHybridSearch,
+  type SearchPassage,
 } from "../retrieval/parent-search";
 import {
   formatSkillSource,
   listResolvedSkills,
+  parseSkillMetadata,
   type ResolvedSkill,
   type SkillSource,
 } from "./skill-common";
@@ -52,10 +68,13 @@ export async function searchSkillsHybrid(input: {
     surface: input.surface ?? null,
   });
   const metadataByName = new Map(skills.map((skill) => [skill.name, skill]));
+  const cachedResponse = await searchCachedSkillIndex(input, skills);
+  if (cachedResponse) return cachedResponse;
+
   const documentGroups = await Promise.all(
     skills.map(async (skill) => {
       const fullContent = await readFile(skill.filePath, "utf8");
-      return skillSearchPassages(skill, fullContent, input.contentMode);
+      return buildSkillSearchPassages(skill, fullContent, input.contentMode);
     }),
   );
   const response = await parentHybridSearch(
@@ -73,6 +92,87 @@ export async function searchSkillsHybrid(input: {
       supportingScoreWeight: input.supportingScoreWeight,
     },
   );
+  return {
+    embedding: response.embedding,
+    results: response.results.map((result) =>
+      skillSearchResult(result, metadataByName),
+    ),
+  };
+}
+
+export async function skillEmbeddingIndexSnapshot(root: string): Promise<{
+  contentHash: string;
+  files: EmbeddingIndexSourceFile[];
+}> {
+  const files = await readSourceFiles({
+    root,
+    includeFile: (filePath) => filePath.endsWith("/SKILL.md"),
+  });
+  return {
+    contentHash: contentHashForSourceFiles(files),
+    files,
+  };
+}
+
+export async function rebuildSkillEmbeddingIndex(input: {
+  root: string;
+  cacheRoot?: string | undefined;
+  embeddingEngine?: EmbeddingEngine | null | undefined;
+}): Promise<RebuildEmbeddingIndexResult> {
+  const snapshot = await skillEmbeddingIndexSnapshot(input.root);
+  return await rebuildCachedEmbeddingIndex({
+    kind: "skills",
+    cacheRoot:
+      input.cacheRoot ??
+      embeddingIndexCacheRootForSourceRoot(input.root, "skills"),
+    contentHash: snapshot.contentHash,
+    sourceFileCount: snapshot.files.length,
+    passages: skillIndexPassages(snapshot.files),
+    embeddingEngine: input.embeddingEngine,
+  });
+}
+
+async function searchCachedSkillIndex(
+  input: Parameters<typeof searchSkillsHybrid>[0],
+  skills: ResolvedSkill[],
+): Promise<SkillHybridSearchResponse | null> {
+  const cached = await loadCurrentEmbeddingIndex({
+    kind: "skills",
+    cacheRoot: embeddingIndexCacheRootForSourceRoot(input.root, "skills"),
+  });
+  if (!cached) return null;
+  const embeddingEngine =
+    input.embeddingEngine === undefined
+      ? createEmbeddingEngineFromEnv()
+      : input.embeddingEngine;
+  if (
+    embeddingEngine &&
+    cached.manifest.embeddingEngine !== embeddingEngine.name
+  )
+    return null;
+
+  const effectiveSourcePaths = new Set(
+    skills.map((skill) => sourcePathForFile(input.root, skill.filePath)),
+  );
+  const passages = filterIndexedPassagesForSearch(
+    cached.passages,
+    effectiveSourcePaths,
+    input.contentMode,
+  );
+  if (passages.length === 0) return null;
+
+  const metadataByName = new Map(skills.map((skill) => [skill.name, skill]));
+  const response = await parentHybridSearch(passages, input.query, {
+    maxResults: input.maxResults,
+    maxSnippets: input.maxSnippets,
+    minScore: input.minScore,
+    minEmbeddingScore: input.minEmbeddingScore,
+    minBm25NormalizedScore: input.minBm25NormalizedScore,
+    lexicalMode: input.lexicalMode,
+    embeddingEngine,
+    queryExpansion: skillQueryExpansion(input.query),
+    supportingScoreWeight: input.supportingScoreWeight,
+  });
   return {
     embedding: response.embedding,
     results: response.results.map((result) =>
@@ -158,7 +258,7 @@ function skillMetadataContent(skill: {
   ].join("\n");
 }
 
-function skillSearchPassages(
+export function buildSkillSearchPassages(
   skill: ResolvedSkill,
   fullContent: string,
   mode: "passages" | "metadata" | undefined,
@@ -184,6 +284,81 @@ function skillSearchPassages(
     metadata: [metadata],
     markdown: fullContent,
   });
+}
+
+function skillIndexPassages(
+  files: readonly EmbeddingIndexSourceFile[],
+): (SearchPassage & { sourcePath: string })[] {
+  return files.flatMap((file) => {
+    const skill = resolvedSkillFromSourceFile(file);
+    if (!skill) return [];
+    return buildSkillSearchPassages(skill, file.content, undefined).map(
+      (passage) => ({
+        ...passage,
+        sourcePath: file.sourcePath,
+      }),
+    );
+  });
+}
+
+function resolvedSkillFromSourceFile(
+  file: EmbeddingIndexSourceFile,
+): ResolvedSkill | null {
+  const source = skillSourceFromPath(file.sourcePath);
+  if (!source) return null;
+  const metadata = parseSkillMetadata(file.content);
+  const fallbackName = skillNameFromSourcePath(file.sourcePath);
+  if (!fallbackName) return null;
+  return {
+    name: metadata.name ?? fallbackName,
+    description: metadata.description,
+    source,
+    filePath: file.absolutePath,
+  };
+}
+
+function skillSourceFromPath(sourcePath: string): SkillSource | null {
+  const parts = sourcePath.split("/");
+  if (
+    parts.length === 4 &&
+    parts[0] === "core" &&
+    (parts[1] === "builtin" || parts[1] === "custom") &&
+    parts[3] === "SKILL.md"
+  ) {
+    return { scope: "core", kind: parts[1], surface: null };
+  }
+  if (
+    parts.length === 5 &&
+    parts[0] === "surfaces" &&
+    (parts[2] === "builtin" || parts[2] === "custom") &&
+    parts[4] === "SKILL.md"
+  ) {
+    return { scope: "surface", kind: parts[2], surface: parts[1] ?? null };
+  }
+  return null;
+}
+
+function skillNameFromSourcePath(sourcePath: string): string | null {
+  const parts = sourcePath.split("/");
+  if (parts.length === 4 && parts[0] === "core") return parts[2] ?? null;
+  if (parts.length === 5 && parts[0] === "surfaces") return parts[3] ?? null;
+  return null;
+}
+
+function filterIndexedPassagesForSearch(
+  passages: readonly IndexedSearchPassage[],
+  sourcePaths: ReadonlySet<string>,
+  mode: "passages" | "metadata" | undefined,
+): IndexedSearchPassage[] {
+  return passages.filter(
+    (passage) =>
+      sourcePaths.has(passage.sourcePath) &&
+      (mode !== "metadata" || passage.passageId.startsWith("metadata-")),
+  );
+}
+
+function sourcePathForFile(root: string, filePath: string): string {
+  return relative(root, filePath).replaceAll("\\", "/");
 }
 
 export function formatSkillHybridResult(

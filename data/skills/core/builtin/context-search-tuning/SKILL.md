@@ -26,23 +26,27 @@ recall and make ranking explainable rather than hiding plausible matches.
 2. Inspect the compiled prompt section if the issue is about automatic hints.
    Check whether the hint shows the candidate, description or summary, match
    score, match type, and why it matched.
-3. Run the closest search tool manually:
+3. Check whether the persistent embedding cache is current. Inspect
+   `data/cache/embeddings/{skills,memory}/current.json` and the pointed
+   generation's `manifest.json` for version, content hash, embedding engine, and
+   source file counts.
+4. Run the closest search tool manually:
    - use `skill_search` for reusable workflow/instruction misses;
    - use `memory_search` for prior context, preferences, decisions, or project
      state misses;
    - pass a focused query and then a paraphrase of the original prompt.
-4. Read the full candidate only after its metadata or match reason looks
+5. Read the full candidate only after its metadata or match reason looks
    plausible. Use `skill_read` or `memory_read`.
-5. Compare automatic hints, explicit tool search, and the expected result. Note
+6. Compare automatic hints, explicit tool search, and the expected result. Note
    whether the problem is retrieval, ranking, filtering, stale content, bad
    descriptions/summaries, or missing durable context.
-6. Build a tiny eval set before changing code or skill text. Include:
+7. Build a tiny eval set before changing code or skill text. Include:
    - the failing prompt;
    - one or two nearby prompts that should still match;
    - at least one prompt that should not trigger the same hint.
-7. Tune the smallest stable surface: descriptions or summaries first, thresholds
+8. Tune the smallest stable surface: descriptions or summaries first, thresholds
    or query expansion next, retrieval code last.
-8. Re-run the eval set and the closest repository verification command before
+9. Re-run the eval set and the closest repository verification command before
    reporting success.
 
 ## Interpreting Results
@@ -78,6 +82,8 @@ recall and make ranking explainable rather than hiding plausible matches.
   search. Prompt-time memory hints should stay more compact.
 - When embeddings are disabled or unavailable, confirm whether fallback lexical
   behavior is expected before changing thresholds.
+- When cached indexes are stale, prefer fixing startup validation, file watching,
+  or manifest hash calculation over forcing search to rebuild synchronously.
 
 ## Common Fixes
 
@@ -99,6 +105,10 @@ When editing Sandi's retrieval implementation, inspect these areas:
 
 - `src/lib/retrieval/embeddings.ts` for local embedding engine config, batching,
   and cache behavior.
+- `src/lib/retrieval/embedding-index.ts` for persistent index layout,
+  manifests, source hashes, generation promotion, and cleanup.
+- `src/lib/retrieval/embedding-index-maintenance.ts` for startup validation,
+  debounced file watching, and background rebuild behavior.
 - `src/lib/retrieval/bm25.ts` for lexical scoring and stopwords.
 - `src/lib/retrieval/hybrid-search.ts` for score combination, thresholds, and
   lexical modes.
@@ -118,6 +128,7 @@ Useful checks:
 npm run typecheck
 npm run lint
 npm run format:check
+npm run verify:embedding-index
 npm run verify:source-grounding
 npm run check
 ```

@@ -11,6 +11,7 @@ export type SearchPassage = {
   content: string;
   label?: string | undefined;
   weight?: number | undefined;
+  embedding?: readonly number[] | undefined;
 };
 
 export type ParentSearchPassageMatch = {
@@ -65,12 +66,14 @@ export async function parentHybridSearch(
   options: ParentSearchOptions = {},
 ): Promise<ParentSearchResponse> {
   const passageByDocumentId = new Map<string, SearchPassage>();
+  const documentEmbeddings = new Map<string, readonly number[]>();
   const documents: RetrievalDocument[] = [];
   for (const passage of passages) {
     const content = passage.content.trim();
     if (content.length === 0) continue;
     const id = documentId(passage);
     passageByDocumentId.set(id, passage);
+    if (passage.embedding) documentEmbeddings.set(id, passage.embedding);
     documents.push({ id, content });
   }
 
@@ -82,6 +85,8 @@ export async function parentHybridSearch(
     lexicalMode: options.lexicalMode,
     embeddingEngine: options.embeddingEngine,
     queryExpansion: options.queryExpansion,
+    documentEmbeddings:
+      documentEmbeddings.size > 0 ? documentEmbeddings : undefined,
   });
 
   return {

@@ -310,6 +310,17 @@ retrieval engine supports only the local embedding provider or disabled mode; if
 the local model cannot load, search falls back to BM25-only results rather than
 failing the turn.
 
+Document embeddings are cached under `data/cache/embeddings/{skills,memory}`.
+Each index has timestamped generation directories containing `manifest.json`
+with the index version, source content hash, embedding engine, and counts, plus
+`index.json` with passage embeddings. `current.json` points to the promoted
+generation. On startup Sandi validates the skill and memory indexes separately;
+missing, stale, wrong-version, or wrong-engine indexes rebuild in the background.
+Long-running file watchers debounce source changes and promote a rebuilt
+generation only after it is complete, so searches keep using the previous
+generation until replacement. If no cache is available yet, search falls back to
+on-demand passage scoring.
+
 Core builtin workflow skills currently include:
 
 - `development-scripting`: development and scripting workflow for Sandi's

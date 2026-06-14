@@ -19,6 +19,14 @@ export type DiscordThreadConversationSource =
       starterMessage: string;
       bridgeSummary: string;
       createdByUserId: string;
+    }
+  | {
+      kind: "message_thread";
+      originChannelId: string;
+      originMessageId: string;
+      originMessageUrl: string;
+      starterMessage: string;
+      createdByUserId: string;
     };
 
 export function canonicalDiscordThreadId(
@@ -169,14 +177,25 @@ function discordChannelMemoryRef(channelId: string): string {
 function discordThreadSurfacePrompt(
   source: DiscordThreadConversationSource | undefined,
 ): string | undefined {
-  if (source?.kind !== "channel_branch") return undefined;
-  return [
-    "This is a Sandi-managed Discord thread branched from a standard channel.",
-    `Parent channel conversation ID: ${source.parentConversationId}`,
-    `Thread origin message: ${source.originMessageUrl}`,
-    `Branch context: ${source.bridgeSummary}`,
-    "Parent channel context is available by pointer; do not assume unrelated parent-channel chatter is part of this scoped thread.",
-  ].join("\n");
+  if (source?.kind === "message_thread") {
+    return [
+      "This is a Sandi-managed Discord thread created from a top-level channel mention.",
+      `Thread origin message: ${source.originMessageUrl}`,
+      "Treat the origin message as the first user prompt in this thread conversation.",
+      "This thread is the whole Pi session. Do not assume unrelated parent-channel chatter is part of this conversation.",
+      "Other top-level parent-channel messages become separate Sandi thread conversations unless explicitly brought in.",
+    ].join("\n");
+  }
+  if (source?.kind === "channel_branch") {
+    return [
+      "This is a Sandi-managed Discord thread branched from a standard channel.",
+      `Parent channel conversation ID: ${source.parentConversationId}`,
+      `Thread origin message: ${source.originMessageUrl}`,
+      `Branch context: ${source.bridgeSummary}`,
+      "Parent channel context is available by pointer; do not assume unrelated parent-channel chatter is part of this scoped thread.",
+    ].join("\n");
+  }
+  return undefined;
 }
 
 function discordThreadSourceFromManifest(
@@ -188,6 +207,30 @@ function discordThreadSourceFromManifest(
   const source = conversation.surfaceContext?.["source"];
   if (!isRecord(source)) return undefined;
   if (source["kind"] === "forum") return { kind: "forum" };
+  if (source["kind"] === "message_thread") {
+    const originChannelId = stringField(source, "originChannelId");
+    const originMessageId = stringField(source, "originMessageId");
+    const originMessageUrl = stringField(source, "originMessageUrl");
+    const starterMessage = stringField(source, "starterMessage");
+    const createdByUserId = stringField(source, "createdByUserId");
+    if (
+      !originChannelId ||
+      !originMessageId ||
+      !originMessageUrl ||
+      !starterMessage ||
+      !createdByUserId
+    ) {
+      return undefined;
+    }
+    return {
+      kind: "message_thread",
+      originChannelId,
+      originMessageId,
+      originMessageUrl,
+      starterMessage,
+      createdByUserId,
+    };
+  }
   if (source["kind"] !== "channel_branch") return undefined;
   const parentConversationId = stringField(source, "parentConversationId");
   const originChannelId = stringField(source, "originChannelId");

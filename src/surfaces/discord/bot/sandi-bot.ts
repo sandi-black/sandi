@@ -14,6 +14,7 @@ import {
   type PartialMessageReaction,
   Partials,
   type PartialUser,
+  ThreadAutoArchiveDuration,
   type User,
 } from "discord.js";
 
@@ -82,7 +83,7 @@ const HELP_MESSAGE = [
   "`/sandi reminders list` — list interactive human reminders for this conversation.",
   "`/sandi reminders list scope: All reminders` — list every interactive reminder Sandi can see.",
   "",
-  "For ordinary conversation, make a post in the Sandi forum, mention Sandi in a standing channel, or reply in a Sandi-managed thread.",
+  "For ordinary conversation, make a post in the Sandi forum, mention Sandi in a top-level channel to start a thread, or reply in a Sandi-managed thread.",
 ].join("\n");
 const MAX_EVENTS_DISPLAYED = 10;
 const MAX_INTERACTION_RESPONSE_CHARS = 2_000;
@@ -90,6 +91,8 @@ const TYPING_TIMEOUT_MS = 3_000;
 const TYPING_INTERVAL_MS = 9_000;
 const TYPING_FALLBACK_COOLDOWN_MS = 15_000;
 const ACTIVITY_FALLBACK_EMOJI = "👀";
+const DEFAULT_MENTION_THREAD_AUTO_ARCHIVE = ThreadAutoArchiveDuration.OneDay;
+const MENTION_THREAD_NAME_MAX_LENGTH = 100;
 const TODO_CHANNEL_PREFIXES = ["todo-", "tasks-"];
 const RECENT_THREAD_CONTEXT_FETCH_LIMIT = 20;
 const RECENT_THREAD_CONTEXT_DISPLAY_LIMIT = 8;
@@ -139,6 +142,21 @@ type ConversationDiscordChannel = FailureNoticeChannel & {
   parentId: string | null;
   sendTyping(): Promise<void>;
   isThread?: () => boolean;
+};
+
+type RunTurnInput = {
+  channel: ConversationDiscordChannel;
+  conversation: ConversationManifest;
+  author: ConversationParticipant;
+  messageId: string;
+  input: string;
+  metadata: string;
+  toolContext: DiscordToolContext;
+  replyToMessageId?: string;
+  signal?: AbortSignal;
+  suppressFinalResponse?: boolean;
+  reactOnTypingFailure?: boolean;
+  failureReplyToMessageId?: string | false;
 };
 
 export class SandiBot {
@@ -345,23 +363,14 @@ export class SandiBot {
         this.#client.user?.id,
       );
 
-      log.info("enqueueing mentioned channel turn", {
+      log.info("starting thread for mentioned top-level channel message", {
         messageId: message.id,
         channelId: channel.id,
       });
-      const author = await this.#participantFromMessage(message);
-      await this.#enqueueChannelTurn({
+      await this.#startThreadForMentionedChannelMessage({
+        message,
         channel,
-        author,
-        messageId: message.id,
-        input:
-          strippedContent ||
-          message.content.trim() ||
-          "Sandi was mentioned without additional text.",
-        metadata: await messageMetadata(message),
-        toolContext: toolContextFromMessage(message, author),
-        title: channel.name,
-        replyToMessageId: message.id,
+        strippedContent,
       });
       return;
     }
@@ -472,6 +481,72 @@ export class SandiBot {
     });
   }
 
+  async #startThreadForMentionedChannelMessage(input: {
+    message: Message;
+    channel: ConversationDiscordChannel;
+    strippedContent: string;
+  }): Promise<void> {
+    if (!input.message.inGuild()) {
+      log.warn("cannot create Sandi message thread outside a guild", {
+        messageId: input.message.id,
+        channelId: input.message.channelId,
+      });
+      return;
+    }
+
+    const prompt =
+      input.strippedContent || "Sandi was mentioned without additional text.";
+    const author = await this.#participantFromMessage(input.message);
+    let thread = asThread(input.message.thread);
+
+    if (!thread) {
+      try {
+        thread = await input.message.startThread({
+          name: messageThreadNameFromPrompt(prompt),
+          autoArchiveDuration: DEFAULT_MENTION_THREAD_AUTO_ARCHIVE,
+          reason: `Sandi conversation requested by ${input.message.author.tag}`,
+        });
+      } catch (error) {
+        log.error("failed to create Sandi message thread", {
+          messageId: input.message.id,
+          channelId: input.channel.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        await sendThreadCreationFailureNotice(input.message, error);
+        return;
+      }
+    }
+
+    const source: DiscordThreadConversationSource = {
+      kind: "message_thread",
+      originChannelId: input.channel.id,
+      originMessageId: input.message.id,
+      originMessageUrl: input.message.url,
+      starterMessage: prompt,
+      createdByUserId: author.platformUserId,
+    };
+
+    await this.#enqueueThreadTurn({
+      thread,
+      author,
+      messageId: input.message.id,
+      input: prompt,
+      metadata: await messageThreadStarterMetadata({
+        originMessage: input.message,
+        thread,
+      }),
+      toolContext: toolContextFromThreadStarter({
+        originMessage: input.message,
+        thread,
+        author,
+      }),
+      title: thread.name,
+      source,
+      reactOnTypingFailure: false,
+      failureReplyToMessageId: false,
+    });
+  }
+
   async #replyToTodoInteraction(
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
@@ -568,6 +643,8 @@ export class SandiBot {
     title: string;
     replyToMessageId?: string;
     source?: DiscordThreadConversationSource;
+    reactOnTypingFailure?: boolean;
+    failureReplyToMessageId?: string | false;
   }): Promise<void> {
     const manifest = await this.#loadThreadManifest(
       input.thread,
@@ -594,11 +671,22 @@ export class SandiBot {
           toolContext: input.toolContext,
           signal,
         };
-        await this.#runTurn(
-          input.replyToMessageId
-            ? { ...turnInput, replyToMessageId: input.replyToMessageId }
-            : turnInput,
-        );
+        let nextTurnInput: RunTurnInput = input.replyToMessageId
+          ? { ...turnInput, replyToMessageId: input.replyToMessageId }
+          : turnInput;
+        if (input.reactOnTypingFailure !== undefined) {
+          nextTurnInput = {
+            ...nextTurnInput,
+            reactOnTypingFailure: input.reactOnTypingFailure,
+          };
+        }
+        if (input.failureReplyToMessageId !== undefined) {
+          nextTurnInput = {
+            ...nextTurnInput,
+            failureReplyToMessageId: input.failureReplyToMessageId,
+          };
+        }
+        await this.#runTurn(nextTurnInput);
       },
     );
   }
@@ -650,18 +738,7 @@ export class SandiBot {
     );
   }
 
-  async #runTurn(input: {
-    channel: ConversationDiscordChannel;
-    conversation: ConversationManifest;
-    author: ConversationParticipant;
-    messageId: string;
-    input: string;
-    metadata: string;
-    toolContext: DiscordToolContext;
-    replyToMessageId?: string;
-    signal?: AbortSignal;
-    suppressFinalResponse?: boolean;
-  }): Promise<void> {
+  async #runTurn(input: RunTurnInput): Promise<void> {
     log.info("starting conversation turn", {
       conversationId: input.conversation.canonicalId,
       messageId: input.messageId,
@@ -671,7 +748,7 @@ export class SandiBot {
       channelId: input.channel.id,
       messageId: input.messageId,
       token: this.#config.discord.token,
-      reactOnTypingFailure: true,
+      reactOnTypingFailure: input.reactOnTypingFailure ?? true,
     });
     const typingTimer = setInterval(() => {
       void sendActivitySignal({
@@ -743,12 +820,21 @@ export class SandiBot {
         messageId: input.messageId,
         error: error instanceof Error ? error.message : String(error),
       });
-      await this.#sendProviderFailureNotice({
+      const failureReplyToMessageId =
+        input.failureReplyToMessageId === false
+          ? undefined
+          : (input.failureReplyToMessageId ?? input.messageId);
+      const failureNoticeInput = {
         channel: input.channel,
         messageId: input.messageId,
         cooldownKey: input.conversation.canonicalId,
         error,
-      });
+      };
+      await this.#sendProviderFailureNotice(
+        failureReplyToMessageId
+          ? { ...failureNoticeInput, replyToMessageId: failureReplyToMessageId }
+          : failureNoticeInput,
+      );
     } finally {
       clearInterval(typingTimer);
     }
@@ -916,6 +1002,7 @@ export class SandiBot {
         channel,
         messageId: message.id,
         cooldownKey: `oneoff:${message.guildId ?? "dm"}:${message.channelId}`,
+        replyToMessageId: message.id,
         error,
       });
     } finally {
@@ -1005,6 +1092,7 @@ export class SandiBot {
     channel: FailureNoticeChannel;
     messageId: string;
     cooldownKey: string;
+    replyToMessageId?: string;
     error: unknown;
   }): Promise<void> {
     if (!(input.error instanceof ProviderTurnError)) return;
@@ -1025,11 +1113,13 @@ export class SandiBot {
     const options: MessageCreateOptions = {
       content: providerFailureMessage(input.error),
       allowedMentions: { parse: [], repliedUser: false },
-      reply: {
-        messageReference: input.messageId,
-        failIfNotExists: false,
-      },
     };
+    if (input.replyToMessageId) {
+      options.reply = {
+        messageReference: input.replyToMessageId,
+        failIfNotExists: false,
+      };
+    }
 
     try {
       await input.channel.send(options);
@@ -1404,6 +1494,10 @@ function providerFailureMessage(error: ProviderTurnError): string {
   return `${prefix} The error was: ${inlineCode(error.message)}`;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function inlineCode(value: string): string {
   const compact = value.replaceAll("`", "'").replace(/\s+/g, " ").trim();
   return `\`${limitText(compact || "unknown provider error", 300)}\``;
@@ -1412,6 +1506,17 @@ function inlineCode(value: string): string {
 function limitText(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength - 3)}...`;
+}
+
+function messageThreadNameFromPrompt(prompt: string): string {
+  const firstLine = prompt
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .find((line) => line.length > 0);
+  return limitText(
+    firstLine ?? "Sandi conversation",
+    MENTION_THREAD_NAME_MAX_LENGTH,
+  );
 }
 
 function setBoundedMapEntry<K, V>(
@@ -1634,6 +1739,24 @@ async function discordOwnReactionRequest(input: {
   return result;
 }
 
+async function sendThreadCreationFailureNotice(
+  message: Message,
+  error: unknown,
+): Promise<void> {
+  if (!message.channel.isSendable()) return;
+  try {
+    await message.reply({
+      content: `I couldn't start a thread for that Sandi turn, so I didn't run it. ${inlineCode(errorMessage(error))}`,
+      allowedMentions: { parse: [], repliedUser: false },
+    });
+  } catch (noticeError) {
+    log.error("failed to send Sandi thread creation failure notice", {
+      messageId: message.id,
+      error: errorMessage(noticeError),
+    });
+  }
+}
+
 function participantFromMessage(message: Message): ConversationParticipant {
   const displayName = usernameFor(message.member, message.author.username);
   return {
@@ -1816,6 +1939,23 @@ async function messageMetadata(message: Message): Promise<string> {
   return lines.join("\n");
 }
 
+async function messageThreadStarterMetadata(input: {
+  originMessage: Message;
+  thread: AnyThreadChannel;
+}): Promise<string> {
+  return [
+    await messageMetadata(input.originMessage),
+    "",
+    "sandi_message_thread:",
+    "  note: This top-level Discord message created the current Sandi-managed thread conversation.",
+    `  thread_id: ${input.thread.id}`,
+    `  thread_name: ${input.thread.name}`,
+    `  parent_channel_id: ${input.thread.parentId ?? input.originMessage.channelId}`,
+    `  origin_message_id: ${input.originMessage.id}`,
+    `  origin_message_url: ${input.originMessage.url}`,
+  ].join("\n");
+}
+
 async function recentThreadContextMetadata(
   trigger: Message,
 ): Promise<string | undefined> {
@@ -1966,6 +2106,26 @@ function toolContextFromMessage(
     context.threadId = thread.id;
     if (thread.parentId) context.parentChannelId = thread.parentId;
   }
+  return context;
+}
+
+function toolContextFromThreadStarter(input: {
+  originMessage: Message;
+  thread: AnyThreadChannel;
+  author?: ConversationParticipant;
+}): DiscordToolContext {
+  const context: DiscordToolContext = {
+    platform: "discord",
+    channelId: input.thread.id,
+    messageId: input.originMessage.id,
+    threadId: input.thread.id,
+  };
+  const guildId = input.originMessage.guildId ?? input.thread.guildId;
+  if (guildId) context.guildId = guildId;
+  const parentChannelId =
+    input.thread.parentId ?? input.originMessage.channelId;
+  if (parentChannelId) context.parentChannelId = parentChannelId;
+  if (input.author) context.author = toolContextAuthor(input.author);
   return context;
 }
 

@@ -9,14 +9,14 @@ habits as people collaborate with her.
 Sandi's current primary home is Discord.
 
 - Start a conversation by creating a post in Sandi's forum channel.
-- Mention Sandi in a standing text channel to create or resume that channel's
-  room conversation.
+- Mention Sandi in a top-level text channel to start a dedicated thread
+  conversation from that message.
 - Reply inside a Sandi-managed thread without mentioning her; the thread already
   belongs to that conversation.
 
-Forum posts, standing channel rooms, and existing Sandi-managed threads all
-carry their own continuity. Sandi can keep separate context for different rooms,
-topics, threads, and people.
+Forum posts, automatic channel rooms, and Sandi-managed threads all carry their
+own continuity. Sandi can keep separate context for different rooms, topics,
+threads, and people.
 
 ## Commands
 

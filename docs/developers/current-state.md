@@ -35,15 +35,15 @@ Sandi has three persistent Discord conversation modes:
 - Sandi forum posts: every non-bot message inside a Sandi forum thread becomes a
   persistent Pi turn for that forum conversation. The first response to a message
   replies to the triggering message.
-- Standing channel rooms: mentioning Sandi in a supported text channel creates or
-  resumes a persistent room conversation for that channel. The first response to
-  a mention replies to the triggering message.
-- Existing Sandi-managed channel threads: any Discord thread with a stored
-  Sandi-managed thread conversation manifest continues to receive non-bot
-  replies as persistent Pi turns without requiring a mention. There is no
-  user-facing thread creation command, and mentioned channel messages containing
-  "thread" are handled as ordinary standing-channel conversation instead of
-  auto-branching.
+- Sandi message threads: mentioning Sandi in a top-level text channel that is
+  not an automatic Sandi-handled channel creates a Discord thread from that user
+  message. The origin message is the first user prompt for a new persistent Pi
+  session scoped to that thread. Later non-bot replies inside the thread trigger
+  Sandi without requiring a mention. Other top-level parent-channel messages get
+  their own Sandi thread sessions.
+- Automatic channel rooms: channels with dedicated automatic handling, such as
+  `todo-` and `tasks-` channels, continue to use persistent channel
+  conversations instead of creating per-message threads.
 
 When available, Discord message and scheduled-event metadata includes the active
 channel topic and thread parent-channel topic so Sandi can see room norms or
@@ -209,7 +209,8 @@ discord:<guild-id>:<channel-id>:room
 ```
 
 Sandi keeps an in-memory FIFO queue per conversation target so only one Pi turn
-runs for that forum thread or standing channel room at a time.
+runs for that forum thread, Sandi message thread, or automatic channel room at a
+time.
 
 ## Memory
 
@@ -232,7 +233,7 @@ The compiled prompt includes `MEMORY.md` scratchpads for:
 - system
 - self
 - household
-- the current thread archive or standing channel room, when present
+- the current thread archive or automatic channel room, when present
 - active participants
 
 Other Markdown memory files are reached through memory tools.
@@ -387,7 +388,7 @@ Supported event types:
 - `periodic`: uses cron syntax plus an IANA timezone and persists until
   cancelled.
 
-Events target Discord forum threads or standing channel rooms. When an event
+Events target Discord threads or standing channel rooms. When an event
 fires, Sandi receives a synthetic scheduled-event turn in that target
 conversation.
 

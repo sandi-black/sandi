@@ -35,6 +35,9 @@ import {
 const log = createLogger("reminders");
 const MAX_REMINDER_MESSAGES_TRACKED = 20;
 const MAX_REMINDERS_DISPLAYED = 10;
+const MIN_FOLLOWUP_INTERVAL_MINUTES = 60;
+const MAX_REMINDER_FIRES_PER_24_HOURS = 3;
+const REMINDER_FIRE_LIMIT_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const CLEAN_HANDLED_CHANNEL_NAMES = new Set(readCleanHandledChannelNames());
 const CLEAN_HANDLED_CHANNEL_PREFIXES = ["todo-", "tasks-"] as const;
 const MAX_INTERACTION_RESPONSE_CHARS = 2_000;
@@ -191,6 +194,21 @@ export class ReminderManager {
     }
     if (reminder.status !== "active") return;
 
+    const now = new Date();
+    const recentFireAts = recentReminderFireAts(reminder, now);
+    const nextAllowedFireAt = nextAllowedReminderFireAt(recentFireAts);
+    if (nextAllowedFireAt && nextAllowedFireAt.getTime() > now.getTime()) {
+      await writeReminder(this.#remindersRoot, trigger.id, {
+        ...reminder,
+        nextFireAt: nextAllowedFireAt.toISOString(),
+        recentFireAts,
+        followupIntervalMinutes: normalizeFollowupIntervalMinutes(
+          reminder.followupIntervalMinutes,
+        ),
+      });
+      return;
+    }
+
     const channel = await this.#fetchReminderTarget(trigger.id, reminder);
     if (!channel) return;
 
@@ -205,7 +223,6 @@ export class ReminderManager {
       return;
     }
 
-    const now = new Date();
     let current: Reminder;
     try {
       current = await readReminder(this.#remindersRoot, trigger.id);
@@ -218,14 +235,16 @@ export class ReminderManager {
       return;
     }
 
-    const nextFireAt = addMinutes(
-      now,
+    const followupIntervalMinutes = normalizeFollowupIntervalMinutes(
       current.followupIntervalMinutes,
-    ).toISOString();
+    );
+    const nextFireAt = addMinutes(now, followupIntervalMinutes).toISOString();
     await writeReminder(this.#remindersRoot, trigger.id, {
       ...current,
       nextFireAt,
       lastFiredAt: now.toISOString(),
+      recentFireAts: appendRecentReminderFireAt(current.recentFireAts, now),
+      followupIntervalMinutes,
       fireCount: current.fireCount + 1,
       messageRefs: appendMessageRef(current.messageRefs, {
         channelId: message.channelId,
@@ -720,6 +739,48 @@ function parsePositiveInteger(value: string): number | undefined {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) return undefined;
   return parsed;
+}
+
+function normalizeFollowupIntervalMinutes(value: number): number {
+  if (!Number.isSafeInteger(value) || value < MIN_FOLLOWUP_INTERVAL_MINUTES) {
+    return MIN_FOLLOWUP_INTERVAL_MINUTES;
+  }
+  return value;
+}
+
+function recentReminderFireAts(reminder: Reminder, now: Date): string[] {
+  return (reminder.recentFireAts ?? [])
+    .filter((iso) => isRecentFireAt(iso, now))
+    .sort();
+}
+
+function appendRecentReminderFireAt(
+  fireAts: readonly string[] | undefined,
+  now: Date,
+): string[] {
+  return [...(fireAts ?? []), now.toISOString()]
+    .filter((iso) => isRecentFireAt(iso, now))
+    .sort()
+    .slice(-MAX_REMINDER_FIRES_PER_24_HOURS);
+}
+
+function isRecentFireAt(iso: string, now: Date): boolean {
+  const timestamp = new Date(iso).getTime();
+  if (!Number.isFinite(timestamp)) return false;
+  return now.getTime() - timestamp < REMINDER_FIRE_LIMIT_WINDOW_MS;
+}
+
+function nextAllowedReminderFireAt(
+  recentFireAts: readonly string[],
+): Date | undefined {
+  if (recentFireAts.length < MAX_REMINDER_FIRES_PER_24_HOURS) {
+    return undefined;
+  }
+  const oldestFireAt = recentFireAts[0];
+  if (!oldestFireAt) return undefined;
+  const oldestTimestamp = new Date(oldestFireAt).getTime();
+  if (!Number.isFinite(oldestTimestamp)) return undefined;
+  return new Date(oldestTimestamp + REMINDER_FIRE_LIMIT_WINDOW_MS);
 }
 
 function addMinutes(date: Date, minutes: number): Date {

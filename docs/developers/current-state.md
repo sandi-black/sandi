@@ -100,6 +100,12 @@ model as that creator for account routing while appending to the target
 conversation's shared Pi session. Event JSON without `createdBy.identityId` is
 invalid. Interactive reminders only send Discord reminder messages when they
 fire, but reminder and todo reminder records still store creator identity.
+Reminder follow-up messages are globally rate-limited to avoid noisy reminder
+storms: repeated follow-ups are normalized to at least 60 minutes apart, and a
+reminder that has already fired 3 times in a rolling 24-hour window is
+rescheduled to the next allowed fire time instead of sending another ping. This
+does not change the initial requested reminder time or explicit Done, Snooze,
+and Delete controls.
 
 Every Pi model turn logs a local account-routing audit record before execution
 and a completion or failure record afterward. The audit fields include the

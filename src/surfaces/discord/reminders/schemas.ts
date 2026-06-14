@@ -44,6 +44,7 @@ export const ReminderSchema = z.object({
   followupIntervalMinutes: z.number().int().positive(),
   fireCount: z.number().int().nonnegative(),
   lastFiredAt: z.string().optional(),
+  recentFireAts: z.array(z.string()).optional(),
   snoozedUntil: z.string().optional(),
   doneAt: z.string().optional(),
   doneBy: ReminderUserSchema.optional(),

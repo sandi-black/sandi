@@ -47,7 +47,9 @@ removed, softened, or moved to a narrower scope.
 Sandi can help with future-oriented work in two different ways:
 
 - Human reminders are for a person to acknowledge later. They can include
-  Done/Snooze/Delete controls and repeated follow-ups.
+  Done/Snooze/Delete controls and repeated follow-ups. Follow-up pings are
+  intentionally rate-limited: at least 1 hour apart, and no more than 3 fires in
+  a rolling 24-hour window.
 - Scheduled events are for Sandi herself to wake up later with instructions,
   make a judgment, post a check-in, or run a recurring routine.
 

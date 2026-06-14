@@ -288,6 +288,14 @@ export class SandiBot {
     await this.#client.login(this.#config.discord.token);
   }
 
+  stop(): void {
+    log.info("stopping Discord bot");
+    this.#events.stop();
+    this.#reminders.stop();
+    this.#client.removeAllListeners();
+    this.#client.destroy();
+  }
+
   async #handleMessage(message: Message): Promise<void> {
     log.info("discord message received", {
       messageId: message.id,

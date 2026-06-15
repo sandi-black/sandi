@@ -7,9 +7,9 @@ start with the project [README](../../README.md).
 ## Project Shape
 
 Sandi is a multi-surface AI bot written in TypeScript. The current production
-surface is Discord, but the runtime is shaped so future surfaces can have their
-own harnesses while sharing memory, skills, policies, identity context, provider
-integration, and turn queueing.
+chat surface is Discord, and the GitHub surface polls notifications through an
+already-authenticated `gh` CLI user. Surfaces share memory, skills, policies,
+identity context, provider integration, runtime shims, and turn queueing.
 
 The current shape is:
 
@@ -19,6 +19,8 @@ The current shape is:
 - Sandi-owned Discord identity, participant tracking, compiled instructions,
   scoped memory, operational policies, Discord tools, scheduled events,
   interactive human reminders, and interactive todo lists.
+- Sandi-owned GitHub identity, notification routing for direct mentions and PR
+  review requests, GitHub runtime helpers, and PR/issue delivery.
 - Shared runtime code under `src/lib/`.
 - Discord-specific lifecycle, event intake, delivery, commands, and runtime
   helpers under `src/surfaces/discord/`.
@@ -61,6 +63,13 @@ Start Sandi:
 
 ```sh
 npm run dev
+```
+
+Start the GitHub surface:
+
+```sh
+gh auth status
+npm run dev:github
 ```
 
 ## Deployment
@@ -109,6 +118,25 @@ when the turn has not already used an explicit Discord send helper/tool.
 Successful Discord send helpers mark the turn as having a Discord side effect,
 so the wrapper suppresses the automatic final-text post and avoids duplicate
 messages.
+
+## GitHub Runtime
+
+The GitHub surface starts with `npm run dev:github` and uses `gh api` for all
+GitHub auth and API calls. It does not require Sandi to be a GitHub App or to
+own webhook settings.
+
+The poller watches participating notifications for direct mentions and review
+requests. Mention notifications are verified against the latest comment body
+before Sandi runs, because GitHub notification reasons can remain stale after
+later activity. Review requests are routed when the PR issue events show Sandi's
+GitHub user as the requested reviewer. A fresh state file ignores notifications
+updated at or before startup unless
+`SANDI_GITHUB_PROCESS_EXISTING_NOTIFICATIONS=true` is configured.
+
+Each issue or pull request is one persistent conversation. GitHub turns use the
+same `./sandi/runtime.ts` code-mode import, re-exporting `github` helpers for PR
+metadata, changed files, diffs, issue comments, review comments, issue/PR
+comments, review-comment replies, and pull request reviews.
 
 ## Pi CLI
 
@@ -177,6 +205,16 @@ disable discovery and builtin tools explicitly.
 - `SANDI_PI_MODEL=gpt-5.5` maps to `--model gpt-5.5`
 - `SANDI_PI_PROVIDER=openai-codex` maps to `--provider openai-codex`
 - `SANDI_PI_THINKING=high` maps to `--thinking high`
+- `SANDI_GH_COMMAND=gh` selects the GitHub CLI used by the GitHub surface.
+- `SANDI_GH_TIMEOUT_MS=120000` bounds individual GitHub CLI API calls.
+- `SANDI_GITHUB_LOGIN` optionally overrides the GitHub login Sandi should treat
+  as herself; otherwise `gh api /user` is used.
+- `SANDI_GITHUB_POLL_INTERVAL_MS=60000` controls GitHub notification polling.
+- `SANDI_GITHUB_MAX_NOTIFICATIONS=50` controls notifications read per poll.
+- `SANDI_GITHUB_NOTIFICATION_REASONS=mention,review_requested` controls the
+  notification reasons the GitHub surface will route.
+- `SANDI_GITHUB_PROCESS_EXISTING_NOTIFICATIONS=false` keeps first startup from
+  acting on already-unread eligible notifications unless you opt in.
 - Policies are loaded by convention from `./data/config/policies`, followed by
   `./config/policies`.
 - `SANDI_EVENTS_ROOT=./data/events`
@@ -250,9 +288,9 @@ The model-visible turn metadata also includes account-routing provenance:
 
 For concrete local composition, Sandi composes code mode through
 `sandi_js_run`: a small TypeScript/JavaScript program that imports helpers from
-the runtime import path owned by the current surface. Discord turns use the stable
-`./sandi/runtime.ts` import, which is generated per run and re-exports the
-active Discord runtime helpers plus shared maps helpers.
+the runtime import path owned by the current surface. Surface turns use the
+stable `./sandi/runtime.ts` import, which is generated per run and re-exports
+the active surface runtime helpers plus shared maps helpers.
 
 Memory, skills, policies, and image generation remain direct Pi tools:
 
@@ -296,7 +334,10 @@ pass `scope: "core"` only for truly global instructions.
 The Discord entrypoint passes `SANDI_SKILLS_SURFACE=discord`,
 `SANDI_RUNTIME_IMPORT=./sandi/runtime.ts`, and
 `SANDI_RUNTIME_ENTRY=./src/surfaces/discord/runtime/index.ts` to Pi child
-processes. These are runtime context values, not user configuration choices.
+processes. The GitHub entrypoint passes the same runtime import with
+`SANDI_SKILLS_SURFACE=github` and
+`SANDI_RUNTIME_ENTRY=./src/surfaces/github/runtime/index.ts`. These are runtime
+context values, not user configuration choices.
 
 Core builtin workflow skills include:
 

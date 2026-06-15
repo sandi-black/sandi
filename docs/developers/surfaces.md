@@ -1,8 +1,8 @@
 # Surface Contract
 
 Sandi can appear through more than one interaction surface. A surface is a
-platform-specific harness and delivery loop, such as Discord today or GitHub in a
-future PR. Surfaces should be distinct harnesses that share Sandi's core runtime
+platform-specific harness and delivery loop, such as Discord or GitHub. Surfaces
+should be distinct harnesses that share Sandi's core runtime
 instead of adapting one surface's harness to impersonate another.
 
 ## Terminology
@@ -17,8 +17,8 @@ instead of adapting one surface's harness to impersonate another.
   surfaces.
 
 A surface and a platform often have the same name, but they are not the same
-concept. `src/surfaces/github/...` would be a GitHub surface; `github/<user-id>`
-is a platform memory namespace.
+concept. `src/surfaces/github/...` is the GitHub surface; `github/<user-id>` is a
+platform memory namespace.
 
 ## Shared Core Owns
 
@@ -60,9 +60,10 @@ A surface owns:
 - commands, reminders, reactions, issue comments, review comments, or other
   integration-native interactions.
 
-Discord-specific behavior should stay under `src/surfaces/discord/...`. A future
-GitHub surface should live under `src/surfaces/github/...` with its own entrypoint
-and delivery loop, while reusing `src/lib/...` for Sandi continuity.
+Discord-specific behavior should stay under `src/surfaces/discord/...`.
+GitHub-specific behavior should stay under `src/surfaces/github/...` with its
+own entrypoint and delivery loop, while reusing `src/lib/...` for Sandi
+continuity.
 
 ## Identity And Memory Boundaries
 
@@ -83,6 +84,7 @@ data/memory/discord/<discord-user-id>/
 data/memory/github/<github-user-id>/
 data/memory/surfaces/discord/threads/<thread-id>/
 data/memory/surfaces/discord/channels/<channel-id>/
+data/memory/surfaces/github/repos/<owner>/<repo>/
 ```
 
 This lets Sandi recognize that the same human can appear through Discord and

@@ -41,8 +41,8 @@
     "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.79.1",
-    "@earendil-works/pi-coding-agent": "0.79.1",
+    "@earendil-works/pi-ai": "0.79.4",
+    "@earendil-works/pi-coding-agent": "0.79.4",
     "@huggingface/transformers": "^4.2.0",
     "croner": "^10.0.1",
     "discord.js": "^14.19.3",
@@ -51,7 +51,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.16",
+    "@biomejs/biome": "^2.5.0",
     "@types/node": "^25.9.3",
     "biome-plugin-no-type-assertion": "^1.1.1",
     "oxfmt": "^0.54.0",

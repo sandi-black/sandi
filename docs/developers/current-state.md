@@ -10,8 +10,10 @@ Sandi is a TypeScript multi-surface household agent with file-backed state and
 the local `pi` command. The runtime is intentionally self-extending: a deployment
 can replace the soul, policies, user config, memory, custom skills, runtime
 helpers, and local state through the data directory while keeping the shared
-source harness stable. The current production surface is Discord, implemented
-with `discord.js`. The surface/core boundary is documented in
+source harness stable. The current production chat surface is Discord,
+implemented with `discord.js`; a GitHub polling surface also runs Sandi from a
+normal GitHub user through the local `gh` CLI. The surface/core boundary is
+documented in
 [`surfaces.md`](surfaces.md): surfaces own platform-specific event intake
 and delivery, while `src/lib/...` owns shared Sandi continuity such as memory,
 skills, policies, identity context, provider behavior, and reusable runtime
@@ -27,6 +29,11 @@ helpers.
 The bot listens with the Discord `Guilds`, `GuildMessages`, and privileged
 `MessageContent` intents. It finds the configured Sandi forum channel by
 `SANDI_FORUM_CHANNEL_ID`, or by `SANDI_FORUM_CHANNEL_NAME` when no ID is set.
+
+`src/surfaces/github/index.ts` wires the same shared `ConversationStore`,
+`ContextCompiler`, and `PiCliClient` to a GitHub notification poller backed by
+`gh api`. It discovers Sandi's login from `gh api /user` unless
+`SANDI_GITHUB_LOGIN` is configured.
 
 ## Discord Behavior
 
@@ -75,6 +82,34 @@ The wrapper posts Pi stdout to Discord as Sandi's ordinary reply unless the turn
 already used an explicit Discord send helper/tool. Explicit Discord sends record
 a per-turn side-effect marker, and the wrapper suppresses the final-text post to
 avoid duplicate messages. Long final replies are chunked for Discord delivery.
+
+## GitHub Behavior
+
+The GitHub surface starts with `npm run dev:github` or `npm run start:github`.
+It assumes `gh` is already authenticated as Sandi's GitHub user. Sandi is not a
+GitHub App and does not require webhook settings.
+
+The poller reads participating notifications and handles direct mention and
+review-request notifications. For `mention`, the router fetches the latest issue
+comment, PR comment, or review comment and verifies the body still contains
+Sandi's `@login` before triggering a turn; this avoids acting on stale GitHub
+notification reasons after unrelated later activity. For `review_requested`, it
+checks issue events for a pull request review request addressed to Sandi. On a
+fresh state file, startup ignores notifications updated at or before startup
+unless `SANDI_GITHUB_PROCESS_EXISTING_NOTIFICATIONS=true` is set.
+
+Each GitHub issue or pull request is a persistent Sandi conversation:
+
+```text
+github:<owner>/<repo>:issue:<number>
+github:<owner>/<repo>:pull:<number>
+```
+
+The model-visible GitHub runtime import is still `./sandi/runtime.ts`, but for
+GitHub turns it re-exports `github` helpers for reading PRs, issue comments,
+review comments, changed files, diffs, posting comments, replying to review
+comments, and creating PR reviews. Final assistant text is posted back to GitHub
+when no explicit GitHub helper already delivered a response.
 
 ## Pi Contract
 
@@ -164,7 +199,7 @@ evidence so external text cannot masquerade as instructions.
 
 1. `data/config/soul.md`, falling back to `config/soul.md`
 2. Policy index from `data/config/policies/` merged with `config/policies/`
-3. Discord-delivery hard contract
+3. active surface delivery hard contract
 4. Source-grounding guidance that tells Sandi to prefer searching for factual or
    current public claims and to cite external sources with Markdown links
 5. Runtime environment metadata: surface, working directory, data/config roots,
@@ -198,24 +233,32 @@ data/conversations/<target-id>/manifest.json
 
 Each manifest stores:
 
-- canonical Discord conversation ID
+- canonical surface conversation ID
 - conversation kind (`thread` or `channel`)
-- guild and target channel/thread IDs
+- surface-specific target IDs, such as Discord guild/channel/thread IDs or
+  GitHub owner/repo/issue numbers
 - title
 - created and updated timestamps
 - starter user ID
 - active participants
 
-The canonical ID format is:
+The Discord canonical ID format is:
 
 ```text
 discord:<guild-id>:<parent-channel-id>:<thread-id>
 discord:<guild-id>:<channel-id>:room
 ```
 
+The GitHub canonical ID format is:
+
+```text
+github:<owner>/<repo>:issue:<number>
+github:<owner>/<repo>:pull:<number>
+```
+
 Sandi keeps an in-memory FIFO queue per conversation target so only one Pi turn
-runs for that forum thread, Sandi message thread, or automatic channel room at a
-time.
+runs for that forum thread, Sandi message thread, automatic channel room, GitHub
+issue, or GitHub pull request at a time.
 
 ## Memory
 

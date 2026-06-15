@@ -12,17 +12,19 @@ import {
 import type { HumanIdentityConfig } from "@/lib/identity/types";
 import { createLogger } from "@/lib/logging";
 import type { PiAccountRoutingRequest } from "@/lib/provider/pi-account-routing";
-import type {
-  ModelProviderClient,
-  ProviderTurnRequest,
-  ProviderTurnResponse,
+import {
+  type ModelProviderClient,
+  ProviderTurnError,
+  type ProviderTurnRequest,
+  type ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
 import { ThreadQueue } from "@/lib/turns/turn-queue";
 import type { GitHubAppConfig } from "@/surfaces/github/config";
 import type {
-  GitHubApi,
   GitHubNotification,
   GitHubUser,
+  IssueComment,
+  ReviewComment,
 } from "@/surfaces/github/github/api";
 import {
   buildGitHubThreadManifest,
@@ -32,6 +34,7 @@ import { GITHUB_DELIVERY_INSTRUCTIONS } from "@/surfaces/github/github/delivery-
 import {
   collectNotificationTriggers,
   formatGitHubTurn,
+  type GitHubNotificationApi,
   type GitHubNotificationTrigger,
   githubPlatformContext,
 } from "@/surfaces/github/github/notifications";
@@ -43,16 +46,38 @@ const MAX_GITHUB_COMMENT_CHARS = 60_000;
 
 export type GitHubBotInput = {
   config: GitHubAppConfig;
-  api: GitHubApi;
+  api: GitHubBotApi;
   conversations: ConversationStore;
   contextCompiler: ContextCompiler;
   provider: ModelProviderClient;
   state?: GitHubNotificationState;
 };
 
+export type GitHubBotApi = GitHubNotificationApi & {
+  currentUser(): Promise<GitHubUser>;
+  listNotifications(input: {
+    participating: boolean;
+    limit: number;
+    all?: boolean;
+  }): Promise<GitHubNotification[]>;
+  createIssueComment(input: {
+    owner: string;
+    repo: string;
+    number: number;
+    body: string;
+  }): Promise<IssueComment>;
+  replyToReviewComment(input: {
+    owner: string;
+    repo: string;
+    number: number;
+    commentId: number;
+    body: string;
+  }): Promise<ReviewComment>;
+};
+
 export class GitHubBot {
   readonly #config: GitHubAppConfig;
-  readonly #api: GitHubApi;
+  readonly #api: GitHubBotApi;
   readonly #conversations: ConversationStore;
   readonly #contextCompiler: ContextCompiler;
   readonly #provider: ModelProviderClient;
@@ -273,7 +298,21 @@ export class GitHubBot {
       }),
       signal: input.signal,
     };
-    const response = await this.#provider.generateTurn(request);
+    let response: ProviderTurnResponse;
+    try {
+      response = await this.#provider.generateTurn(request);
+    } catch (error) {
+      if (error instanceof ProviderTurnError && error.deliverySideEffects) {
+        log.warn("GitHub provider turn failed after delivery side effect", {
+          conversationId: input.conversation.canonicalId,
+          triggerKey: input.trigger.key,
+          reason: error.reason,
+          providerError: error.message,
+        });
+        return;
+      }
+      throw error;
+    }
     log.info("GitHub provider turn finished", {
       conversationId: input.conversation.canonicalId,
       triggerKey: input.trigger.key,
@@ -295,23 +334,37 @@ export class GitHubBot {
     if (!content) return;
 
     const chunks = chunkGitHubComment(content);
+    let deliveredChunks = 0;
     for (const [index, chunk] of chunks.entries()) {
-      if (index === 0 && input.trigger.source.kind === "review_comment") {
-        await this.#api.replyToReviewComment({
+      try {
+        if (index === 0 && input.trigger.source.kind === "review_comment") {
+          await this.#api.replyToReviewComment({
+            owner: input.trigger.thread.owner,
+            repo: input.trigger.thread.repo,
+            number: input.trigger.thread.number,
+            commentId: input.trigger.source.id,
+            body: chunk,
+          });
+          deliveredChunks += 1;
+          continue;
+        }
+        await this.#api.createIssueComment({
           owner: input.trigger.thread.owner,
           repo: input.trigger.thread.repo,
           number: input.trigger.thread.number,
-          commentId: input.trigger.source.id,
           body: chunk,
         });
-        continue;
+        deliveredChunks += 1;
+      } catch (error) {
+        if (deliveredChunks === 0) throw error;
+        log.error("GitHub response partially delivered; suppressing retry", {
+          triggerKey: input.trigger.key,
+          deliveredChunks,
+          totalChunks: chunks.length,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
       }
-      await this.#api.createIssueComment({
-        owner: input.trigger.thread.owner,
-        repo: input.trigger.thread.repo,
-        number: input.trigger.thread.number,
-        body: chunk,
-      });
     }
   }
 

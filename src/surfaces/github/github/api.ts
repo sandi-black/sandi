@@ -51,6 +51,7 @@ export const PullRequestSchema = z.object({
   patch_url: z.string().optional(),
   draft: z.boolean().optional(),
   user: GitHubUserSchema,
+  requested_reviewers: z.array(GitHubUserSchema).optional(),
   base: z.object({
     ref: z.string(),
     sha: z.string(),

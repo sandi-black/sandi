@@ -206,6 +206,7 @@ disable discovery and builtin tools explicitly.
 - `SANDI_PI_PROVIDER=openai-codex` maps to `--provider openai-codex`
 - `SANDI_PI_THINKING=high` maps to `--thinking high`
 - `SANDI_GH_COMMAND=gh` selects the GitHub CLI used by the GitHub surface.
+- `SANDI_GH_TIMEOUT_MS=120000` bounds individual GitHub CLI API calls.
 - `SANDI_GITHUB_LOGIN` optionally overrides the GitHub login Sandi should treat
   as herself; otherwise `gh api /user` is used.
 - `SANDI_GITHUB_POLL_INTERVAL_MS=60000` controls GitHub notification polling.

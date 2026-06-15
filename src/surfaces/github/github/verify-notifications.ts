@@ -70,7 +70,17 @@ const selfMentionTriggers = await collectNotificationTriggers({
 assertEqual(selfMentionTriggers.length, 0, "self mention should not trigger");
 
 const reviewRequestApi = fakeNotificationApi({
+  pullRequest: pullRequest({
+    requestedReviewers: [githubUser("sandi-witch", 282067348)],
+  }),
   issueEvents: [
+    {
+      id: 7006,
+      event: "review_requested",
+      created_at: "2026-06-14T00:01:00Z",
+      actor: githubUser("jess", 42),
+      requested_reviewer: githubUser("sandi-witch", 282067348),
+    },
     {
       id: 7007,
       event: "review_requested",
@@ -93,11 +103,65 @@ assertEqual(
   "review request trigger key",
 );
 
+const staleReviewRequestApi = fakeNotificationApi({
+  pullRequest: pullRequest({ requestedReviewers: [] }),
+  issueEvents: [
+    {
+      id: 7008,
+      event: "review_requested",
+      created_at: "2026-06-14T00:03:00Z",
+      actor: githubUser("jess", 42),
+      requested_reviewer: githubUser("sandi-witch", 282067348),
+    },
+  ],
+});
+const staleReviewRequestTriggers = await collectNotificationTriggers({
+  api: staleReviewRequestApi,
+  notification: reviewRequestNotification(),
+  botLogin,
+  enabledReasons,
+});
+assertEqual(
+  staleReviewRequestTriggers.length,
+  0,
+  "removed review request should not trigger",
+);
+
+const alreadyReadReviewRequestApi = fakeNotificationApi({
+  pullRequest: pullRequest({
+    requestedReviewers: [githubUser("sandi-witch", 282067348)],
+  }),
+  issueEvents: [
+    {
+      id: 7009,
+      event: "review_requested",
+      created_at: "2026-06-14T00:03:00Z",
+      actor: githubUser("jess", 42),
+      requested_reviewer: githubUser("sandi-witch", 282067348),
+    },
+  ],
+});
+const alreadyReadReviewRequestTriggers = await collectNotificationTriggers({
+  api: alreadyReadReviewRequestApi,
+  notification: {
+    ...reviewRequestNotification(),
+    last_read_at: "2026-06-14T00:04:00Z",
+  },
+  botLogin,
+  enabledReasons,
+});
+assertEqual(
+  alreadyReadReviewRequestTriggers.length,
+  0,
+  "already-read review request should not trigger",
+);
+
 console.log("GitHub notification routing verification passed");
 
 function fakeNotificationApi(input: {
   issueComment?: IssueComment;
   reviewComment?: ReviewComment;
+  pullRequest?: PullRequest;
   issueEvents?: IssueEvent[];
 }): GitHubNotificationApi {
   return {
@@ -112,7 +176,7 @@ function fakeNotificationApi(input: {
       return input.reviewComment;
     },
     async getPullRequest(): Promise<PullRequest> {
-      return pullRequest();
+      return input.pullRequest ?? pullRequest();
     },
     async getIssue(): Promise<Issue> {
       return issue();
@@ -186,7 +250,9 @@ function issue(): Issue {
   };
 }
 
-function pullRequest(): PullRequest {
+function pullRequest(
+  input: { requestedReviewers?: GitHubUser[] } = {},
+): PullRequest {
   return {
     number: 99,
     state: "open",
@@ -197,6 +263,9 @@ function pullRequest(): PullRequest {
     patch_url: "https://github.com/earendil-works/sandi/pull/99.patch",
     draft: false,
     user: githubUser("jess", 42),
+    requested_reviewers: input.requestedReviewers ?? [
+      githubUser("sandi-witch", 282067348),
+    ],
     base: {
       ref: "main",
       sha: "base",

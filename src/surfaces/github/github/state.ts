@@ -24,6 +24,7 @@ export type GitHubSurfaceState = z.infer<typeof GitHubSurfaceStateSchema>;
 
 export class GitHubNotificationState {
   readonly #store: JsonFileStore<GitHubSurfaceState>;
+  #lastMutation: Promise<void> = Promise.resolve();
 
   constructor(dataDir: string) {
     this.#store = new JsonFileStore(
@@ -33,6 +34,7 @@ export class GitHubNotificationState {
   }
 
   async hasProcessed(key: string): Promise<boolean> {
+    await this.#lastMutation;
     const state = await this.#read();
     return state.processedTriggers[key] !== undefined;
   }
@@ -40,7 +42,8 @@ export class GitHubNotificationState {
   async markProcessed(
     input: Omit<ProcessedTrigger, "processedAt">,
   ): Promise<void> {
-    await this.#store.update((state) => {
+    const mutation = this.#lastMutation.then(async () => {
+      const state = await this.#read();
       const processedTriggers = {
         ...state.processedTriggers,
         [input.key]: {
@@ -48,11 +51,13 @@ export class GitHubNotificationState {
           processedAt: new Date().toISOString(),
         },
       };
-      return {
+      await this.#store.write({
         version: 1,
         processedTriggers: pruneProcessedTriggers(processedTriggers),
-      };
-    }, defaultState());
+      });
+    });
+    this.#lastMutation = mutation.catch(() => {});
+    await mutation;
   }
 
   #read(): Promise<GitHubSurfaceState> {

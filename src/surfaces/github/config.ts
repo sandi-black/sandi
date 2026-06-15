@@ -3,11 +3,13 @@ import { type CoreConfig, loadCoreConfig, readEnv } from "@/lib/config/env";
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 const DEFAULT_MAX_NOTIFICATIONS = 50;
 const DEFAULT_NOTIFICATION_REASONS = ["mention", "review_requested"];
+const DEFAULT_GH_TIMEOUT_MS = 120_000;
 
 export type GitHubConfig = {
   ghCommand: string;
   login?: string;
   pollIntervalMs: number;
+  ghTimeoutMs: number;
   maxNotificationsPerPoll: number;
   notificationReasons: string[];
   processExistingNotifications: boolean;
@@ -24,6 +26,10 @@ export function loadGitHubConfig(): GitHubConfig {
     pollIntervalMs: readPositiveIntegerEnv(
       ["SANDI_GITHUB_POLL_INTERVAL_MS"],
       DEFAULT_POLL_INTERVAL_MS,
+    ),
+    ghTimeoutMs: readPositiveIntegerEnv(
+      ["SANDI_GH_TIMEOUT_MS"],
+      DEFAULT_GH_TIMEOUT_MS,
     ),
     maxNotificationsPerPoll: readPositiveIntegerEnv(
       ["SANDI_GITHUB_MAX_NOTIFICATIONS"],

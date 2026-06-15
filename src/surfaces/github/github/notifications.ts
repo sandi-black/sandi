@@ -398,10 +398,22 @@ async function collectReviewRequestTriggers(input: {
   thread: GitHubThreadRef;
 }): Promise<GitHubNotificationTrigger[]> {
   if (input.thread.kind !== "pull") return [];
+  const pullRequest = await input.api.getPullRequest(input.thread);
+  if (
+    !pullRequest.requested_reviewers?.some((user) =>
+      isBotActor(user, input.botLogin),
+    )
+  ) {
+    return [];
+  }
   const events = await input.api.listIssueEvents(input.thread);
-  return events
+  const latestEvent = events
     .filter((event) => isReviewRequestForBot(event, input.botLogin))
-    .map((event) => reviewRequestTrigger({ ...input, event }));
+    .sort(compareIssueEventsDescending)[0];
+  if (!latestEvent) return [];
+  if (eventIsBeforeOrAt(latestEvent, input.notification.last_read_at))
+    return [];
+  return [reviewRequestTrigger({ ...input, event: latestEvent })];
 }
 
 function reviewRequestTrigger(input: {
@@ -432,6 +444,26 @@ function isReviewRequestForBot(event: IssueEvent, botLogin: string): boolean {
     event.event === "review_requested" &&
     normalizeLogin(event.requested_reviewer?.login) === normalizeLogin(botLogin)
   );
+}
+
+function compareIssueEventsDescending(
+  left: IssueEvent,
+  right: IssueEvent,
+): number {
+  const byTime = Date.parse(right.created_at) - Date.parse(left.created_at);
+  if (Number.isFinite(byTime) && byTime !== 0) return byTime;
+  return right.id - left.id;
+}
+
+function eventIsBeforeOrAt(
+  event: IssueEvent,
+  timestamp: string | null | undefined,
+): boolean {
+  if (!timestamp) return false;
+  const eventMs = Date.parse(event.created_at);
+  const timestampMs = Date.parse(timestamp);
+  if (!Number.isFinite(eventMs) || !Number.isFinite(timestampMs)) return false;
+  return eventMs <= timestampMs;
 }
 
 function threadFromNotification(

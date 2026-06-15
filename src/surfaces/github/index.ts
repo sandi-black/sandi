@@ -29,7 +29,12 @@ startEmbeddingIndexMaintenance({
 
 const bot = new GitHubBot({
   config,
-  api: new GitHubApi(new GhCli({ command: config.github.ghCommand })),
+  api: new GitHubApi(
+    new GhCli({
+      command: config.github.ghCommand,
+      timeoutMs: config.github.ghTimeoutMs,
+    }),
+  ),
   conversations: new ConversationStore(config.paths.dataDir),
   contextCompiler: new ContextCompiler(
     config.paths.configDirs,

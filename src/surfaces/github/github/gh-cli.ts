@@ -6,6 +6,8 @@ import {
 
 const DEFAULT_ACCEPT = "application/vnd.github+json";
 const DEFAULT_API_VERSION = "2022-11-28";
+const DEFAULT_TIMEOUT_MS = 120_000;
+const FORCE_KILL_TIMEOUT_MS = 5_000;
 
 export type GitHubApiMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 
@@ -13,6 +15,7 @@ export type GhCliOptions = {
   command: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
 };
 
 export type GhApiJsonInput<T> = {
@@ -61,11 +64,13 @@ export class GhCli {
   readonly #command: string;
   readonly #cwd: string | undefined;
   readonly #env: NodeJS.ProcessEnv;
+  readonly #timeoutMs: number;
 
   constructor(options: GhCliOptions) {
     this.#command = options.command;
     this.#cwd = options.cwd;
     this.#env = options.env ?? process.env;
+    this.#timeoutMs = options.timeoutMs ?? readTimeoutMs();
   }
 
   async apiJson<T>(input: GhApiJsonInput<T>): Promise<T> {
@@ -110,6 +115,7 @@ export class GhCli {
       cwd: this.#cwd,
       env: this.#env,
       stdin: body,
+      timeoutMs: this.#timeoutMs,
     });
     return result.stdout;
   }
@@ -129,6 +135,7 @@ type CommandInput = {
   args: string[];
   cwd: string | undefined;
   env: NodeJS.ProcessEnv;
+  timeoutMs: number;
   stdin?: string | undefined;
 };
 
@@ -149,37 +156,89 @@ function runCommand(input: CommandInput): Promise<CommandOutput> {
         : spawnCommandWithPipeStdin(input.command, input.args, options);
     const stdout: string[] = [];
     const stderr: string[] = [];
+    const command = `${input.command} ${input.args.join(" ")}`;
+    let settled = false;
+    let timedOut = false;
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = (
+      callback: () => void,
+      options: { clearForceKillTimer?: boolean } = {},
+    ): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      if (options.clearForceKillTimer !== false && forceKillTimer) {
+        clearTimeout(forceKillTimer);
+      }
+      callback();
+    };
+    const timeoutError = (): GhCliError =>
+      new GhCliError({
+        command,
+        exitCode: null,
+        stderr: `timed out after ${input.timeoutMs}ms`,
+      });
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      child.stdout.destroy();
+      child.stderr.destroy();
+      child.stdin?.destroy();
+      forceKillTimer = setTimeout(() => {
+        child.kill("SIGKILL");
+      }, FORCE_KILL_TIMEOUT_MS);
+      finish(() => rejectRun(timeoutError()), { clearForceKillTimer: false });
+    }, input.timeoutMs);
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => stdout.push(chunk));
     child.stderr.on("data", (chunk: string) => stderr.push(chunk));
-    child.on("error", (error) => rejectRun(error));
+    child.on("error", (error) => {
+      finish(() => rejectRun(error));
+    });
     child.on("close", (exitCode) => {
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       const output = {
         stdout: stdout.join(""),
         stderr: stderr.join(""),
       };
-      if (exitCode === 0) {
-        resolveRun(output);
+      if (timedOut) {
+        finish(() => rejectRun(timeoutError()));
         return;
       }
-      rejectRun(
-        new GhCliError({
-          command: `${input.command} ${input.args.join(" ")}`,
-          exitCode,
-          stderr: output.stderr || output.stdout,
-        }),
+      if (exitCode === 0) {
+        finish(() => resolveRun(output));
+        return;
+      }
+      finish(() =>
+        rejectRun(
+          new GhCliError({
+            command,
+            exitCode,
+            stderr: output.stderr || output.stdout,
+          }),
+        ),
       );
     });
 
     if (input.stdin !== undefined) {
       const stdin = child.stdin;
       if (!stdin) {
-        rejectRun(new Error("gh command stdin pipe was not available"));
+        finish(() =>
+          rejectRun(new Error("gh command stdin pipe was not available")),
+        );
         return;
       }
       stdin.end(input.stdin);
     }
   });
+}
+
+function readTimeoutMs(): number {
+  const raw = process.env["SANDI_GH_TIMEOUT_MS"]?.trim();
+  if (!raw) return DEFAULT_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
 }

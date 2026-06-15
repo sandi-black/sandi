@@ -90,10 +90,12 @@ Sandi has three persistent Discord conversation modes:
   message replies to the triggering message.
 - Sandi message threads: mentioning Sandi in a top-level text channel that is
   not an automatic Sandi-handled channel creates a Discord thread from that user
-  message. The origin message is the first user prompt for a new persistent Pi
-  session scoped to that thread. Later non-bot replies inside the thread trigger
-  Sandi without requiring a mention. Other top-level parent-channel messages get
-  their own Sandi thread sessions.
+  message. The thread starts as `new thread`, then Sandi runs a short no-session
+  Pi title turn with the normal configured model and low thinking to rename it
+  from the starter message. The origin message is the first user prompt for a new
+  persistent Pi session scoped to that thread. Later non-bot replies inside the
+  thread trigger Sandi without requiring a mention. Other top-level
+  parent-channel messages get their own Sandi thread sessions.
 - Automatic channel rooms: channels with dedicated automatic handling, such as
   `todo-` and `tasks-` channels, continue to use persistent channel
   conversations instead of creating per-message threads.

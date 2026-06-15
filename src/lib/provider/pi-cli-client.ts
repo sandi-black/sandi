@@ -35,6 +35,8 @@ export type ProviderTurnRequest = {
   instructions: string;
   input: string;
   sessionMode?: "persistent" | "none";
+  thinking?: string;
+  timeoutMs?: number;
   platformContext?: Record<string, unknown>;
   accountRouting?: PiAccountRoutingRequest;
   surfaceContext?: SandiSurfaceContext;
@@ -211,7 +213,7 @@ export class PiCliClient implements ModelProviderClient {
     }
     const provider = account?.provider ?? this.#provider;
     const model = account?.model ?? this.#model;
-    const thinking = account?.thinking ?? this.#thinking;
+    const thinking = request.thinking ?? account?.thinking ?? this.#thinking;
     if (provider) args.push("--provider", provider);
     if (model) args.push("--model", model);
     if (thinking) args.push("--thinking", thinking);
@@ -239,7 +241,7 @@ export class PiCliClient implements ModelProviderClient {
     try {
       const result = await this.#run(
         args,
-        this.#timeoutMs,
+        request.timeoutMs ?? this.#timeoutMs,
         request.platformContext,
         request.surfaceContext,
         request.memoryContext,

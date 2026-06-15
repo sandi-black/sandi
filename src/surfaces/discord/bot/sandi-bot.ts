@@ -44,6 +44,14 @@ import {
   botStatusMessage,
   postStartupStatus,
 } from "@/surfaces/discord/bot/startup-status";
+import {
+  MENTION_THREAD_PLACEHOLDER_TITLE,
+  MENTION_THREAD_TITLE_THINKING,
+  MENTION_THREAD_TITLE_TIMEOUT_MS,
+  normalizeGeneratedThreadTitle,
+  THREAD_TITLE_INSTRUCTIONS,
+  threadTitleRequestInput,
+} from "@/surfaces/discord/bot/thread-title";
 import { TodoListManager } from "@/surfaces/discord/bot/todo-list";
 import type { DiscordAppConfig } from "@/surfaces/discord/config";
 import {
@@ -92,7 +100,6 @@ const TYPING_INTERVAL_MS = 9_000;
 const TYPING_FALLBACK_COOLDOWN_MS = 15_000;
 const ACTIVITY_FALLBACK_EMOJI = "👀";
 const DEFAULT_MENTION_THREAD_AUTO_ARCHIVE = ThreadAutoArchiveDuration.OneDay;
-const MENTION_THREAD_NAME_MAX_LENGTH = 100;
 const TODO_CHANNEL_PREFIXES = ["todo-", "tasks-"];
 const RECENT_THREAD_CONTEXT_FETCH_LIMIT = 20;
 const RECENT_THREAD_CONTEXT_DISPLAY_LIMIT = 8;
@@ -506,14 +513,16 @@ export class SandiBot {
       input.strippedContent || "Sandi was mentioned without additional text.";
     const author = await this.#participantFromMessage(input.message);
     let thread = asThread(input.message.thread);
+    let createdThread = false;
 
     if (!thread) {
       try {
         thread = await input.message.startThread({
-          name: messageThreadNameFromPrompt(prompt),
+          name: MENTION_THREAD_PLACEHOLDER_TITLE,
           autoArchiveDuration: DEFAULT_MENTION_THREAD_AUTO_ARCHIVE,
           reason: `Sandi conversation requested by ${input.message.author.tag}`,
         });
+        createdThread = true;
       } catch (error) {
         log.error("failed to create Sandi message thread", {
           messageId: input.message.id,
@@ -534,6 +543,16 @@ export class SandiBot {
       createdByUserId: author.platformUserId,
     };
 
+    const title = createdThread
+      ? await this.#titleCreatedMessageThread({
+          thread,
+          originMessage: input.message,
+          originChannel: input.channel,
+          prompt,
+          author,
+        })
+      : thread.name;
+
     await this.#enqueueThreadTurn({
       thread,
       author,
@@ -548,11 +567,75 @@ export class SandiBot {
         thread,
         author,
       }),
-      title: thread.name,
+      title,
       source,
       reactOnTypingFailure: false,
       failureReplyToMessageId: false,
     });
+  }
+
+  async #titleCreatedMessageThread(input: {
+    thread: AnyThreadChannel;
+    originMessage: Message;
+    originChannel: ConversationDiscordChannel;
+    prompt: string;
+    author: ConversationParticipant;
+  }): Promise<string> {
+    let title: string | undefined;
+    try {
+      const response = await this.#provider.generateTurn({
+        conversationId: `thread-title:${input.originMessage.id}`,
+        instructions: THREAD_TITLE_INSTRUCTIONS,
+        input: threadTitleRequestInput({
+          authorUsername: input.author.username,
+          authorDisplayName: input.author.displayName,
+          channelName: input.originChannel.name,
+          message: input.prompt,
+        }),
+        sessionMode: "none",
+        accountRouting: accountRoutingForOneOffTurn(input.author),
+        memoryContext: this.#memoryContext(undefined, [input.author]),
+        thinking: MENTION_THREAD_TITLE_THINKING,
+        timeoutMs: MENTION_THREAD_TITLE_TIMEOUT_MS,
+      });
+      title = normalizeGeneratedThreadTitle(response.text);
+      if (!title) {
+        log.warn("thread title provider returned an empty title", {
+          messageId: input.originMessage.id,
+          threadId: input.thread.id,
+          responseLength: response.text.length,
+        });
+      }
+    } catch (error) {
+      log.warn("failed to generate Sandi message thread title", {
+        messageId: input.originMessage.id,
+        threadId: input.thread.id,
+        error: errorMessage(error),
+      });
+    }
+
+    if (!title) return input.thread.name;
+
+    try {
+      const renamed = await input.thread.setName(
+        title,
+        `Sandi title generated from ${input.originMessage.author.tag}'s starter message`,
+      );
+      log.info("renamed Sandi message thread", {
+        messageId: input.originMessage.id,
+        threadId: renamed.id,
+        title: renamed.name,
+      });
+      return renamed.name;
+    } catch (error) {
+      log.warn("failed to rename Sandi message thread", {
+        messageId: input.originMessage.id,
+        threadId: input.thread.id,
+        title,
+        error: errorMessage(error),
+      });
+      return input.thread.name;
+    }
   }
 
   async #replyToTodoInteraction(
@@ -1514,17 +1597,6 @@ function inlineCode(value: string): string {
 function limitText(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength - 3)}...`;
-}
-
-function messageThreadNameFromPrompt(prompt: string): string {
-  const firstLine = prompt
-    .split(/\r?\n/)
-    .map((line) => line.replace(/\s+/g, " ").trim())
-    .find((line) => line.length > 0);
-  return limitText(
-    firstLine ?? "Sandi conversation",
-    MENTION_THREAD_NAME_MAX_LENGTH,
-  );
 }
 
 function setBoundedMapEntry<K, V>(

@@ -112,6 +112,14 @@ process.stdout.write("fake model output\\n");
     record.args.includes("--append-system-prompt"),
     "main Pi turns should append the full system prompt from a payload file",
   );
+  assert(
+    valueAfter(record.args, "--model") === "gpt-5.5",
+    "turns should use the configured Pi model by default",
+  );
+  assert(
+    valueAfter(record.args, "--thinking") === "high",
+    "turns should use the configured Pi thinking mode by default",
+  );
   const promptPath = valueAfter(record.args, "--append-system-prompt");
   assert(
     promptPath !== undefined &&
@@ -141,6 +149,36 @@ process.stdout.write("fake model output\\n");
   assert(
     record.env.SANDI_SESSION_MODE === "persistent",
     "token usage metadata should include session mode",
+  );
+
+  await new PiCliClient(config).generateTurn({
+    conversationId: "thread-title-test",
+    instructions: "title instructions",
+    input: "title stdin",
+    sessionMode: "none",
+    memoryContext: {
+      memoryRoot: join(tempRoot, "memory"),
+      memoryScopes: [],
+      participants: [],
+    },
+    thinking: "low",
+  });
+  const overrideRecord = parseRecord(await readFile(recordPath, "utf8"));
+  assert(
+    valueAfter(overrideRecord.args, "--model") === "gpt-5.5",
+    "request-level thinking overrides should keep the configured model",
+  );
+  assert(
+    valueAfter(overrideRecord.args, "--thinking") === "low",
+    "turns should support request-level thinking overrides",
+  );
+  assert(
+    overrideRecord.args.includes("--no-session"),
+    "no-session turns should disable persistent Pi sessions",
+  );
+  assert(
+    overrideRecord.env.SANDI_SESSION_MODE === "none",
+    "token usage metadata should record no-session turns",
   );
 
   console.log("Pi harness verification passed");

@@ -91,6 +91,11 @@ The GitHub surface starts with `npm run dev:github` or `npm run start:github`.
 It assumes `gh` is already authenticated as Sandi's GitHub user. Sandi is not a
 GitHub App and does not require webhook settings.
 
+For systemd deployments, the Discord and GitHub services should invoke the
+checked-out `tsx` binary directly rather than using `npm run start` wrappers so
+routine stop signals reach the Node process without `npm` reporting the service
+as a failed signal exit.
+
 The poller reads participating notifications and handles direct mention and
 review-request notifications. For `mention`, the router fetches the latest issue
 comment, PR comment, or review comment and verifies the body still contains

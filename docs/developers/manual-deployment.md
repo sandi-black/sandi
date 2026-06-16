@@ -227,7 +227,7 @@ WorkingDirectory=/srv/sandi/app
 Environment=NODE_ENV=production
 Environment=PATH=/root/.volta/bin:/root/.volta/tools/image/node/24.15.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=/srv/sandi/app/.env
-ExecStart=/root/.volta/bin/npm run start
+ExecStart=/srv/sandi/app/node_modules/.bin/tsx src/surfaces/discord/index.ts
 Restart=always
 RestartSec=10
 TimeoutStopSec=30
@@ -239,6 +239,19 @@ WantedBy=multi-user.target
 
 If using a dedicated `sandi` user, change `User`, `PATH`, `ExecStart`, and Pi
 account directories accordingly.
+
+Use the checked-out `tsx` binary directly instead of `npm run start` in systemd
+units. Systemd sends the stop signal to every process in the service control
+group; when `npm` is the parent process, routine restarts can still be reported
+as signal/error exits even when Sandi's Node process handles `SIGINT` or
+`SIGTERM` cleanly.
+
+For the optional GitHub polling surface, create a matching unit with the same
+environment and this entrypoint:
+
+```ini
+ExecStart=/srv/sandi/app/node_modules/.bin/tsx src/surfaces/github/index.ts
+```
 
 Enable and start the service:
 

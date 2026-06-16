@@ -55,7 +55,7 @@
     "@biomejs/biome": "^2.5.0",
     "@types/node": "^25.9.3",
     "biome-plugin-no-type-assertion": "^1.1.1",
-    "oxfmt": "^0.54.0",
+    "oxfmt": "^0.55.0",
     "typescript": "^6.0.3"
   }
 }

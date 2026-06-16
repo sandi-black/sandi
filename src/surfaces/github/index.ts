@@ -20,7 +20,7 @@ await migrateDataDir(config.paths.dataDir, {
   logger: log,
 });
 await ensurePiRuntimeSetup(config.pi);
-startEmbeddingIndexMaintenance({
+const embeddingMaintenance = startEmbeddingIndexMaintenance({
   dataDir: config.paths.dataDir,
   skillsRoot: config.paths.skillsRoot,
   memoryRoot: resolve(config.paths.dataDir, "memory"),
@@ -54,14 +54,23 @@ process.on("uncaughtException", (error) => {
   process.exitCode = 1;
 });
 
-process.on("SIGINT", () => {
+let shutdownStarted = false;
+
+function shutdown(signal: NodeJS.Signals): void {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  log.info("shutdown signal received", { signal });
+
   bot.stop();
-  process.exitCode = 130;
+  embeddingMaintenance.stop();
+}
+
+process.once("SIGINT", () => {
+  shutdown("SIGINT");
 });
 
-process.on("SIGTERM", () => {
-  bot.stop();
-  process.exitCode = 143;
+process.once("SIGTERM", () => {
+  shutdown("SIGTERM");
 });
 
 await bot.start();

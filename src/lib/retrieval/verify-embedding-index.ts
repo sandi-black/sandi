@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +21,7 @@ import {
   skillEmbeddingIndexSnapshot,
 } from "@/lib/pi-extension/skill-hybrid-search";
 import {
+  cleanupOldEmbeddingIndexGenerations,
   EMBEDDING_INDEX_VERSION,
   embeddingIndexCacheRoot,
   loadCurrentEmbeddingIndex,
@@ -105,6 +113,11 @@ async function verifyMemoryIndex(dataDir: string): Promise<void> {
   assert.equal(cached?.manifest.version, EMBEDDING_INDEX_VERSION);
   assert.equal(cached?.manifest.contentHash, snapshot.contentHash);
   assert.equal(cached?.manifest.sourceFileCount, 2);
+  await verifyTmpGenerationCleanup(
+    dataDir,
+    "memory",
+    cached?.manifest.generation,
+  );
 
   const search = await searchMemoryHybrid({
     root: memoryRoot,
@@ -126,6 +139,32 @@ async function verifyMemoryIndex(dataDir: string): Promise<void> {
     embeddingEngine: queryOnlyEmbeddingEngine,
   });
   assert.equal(search.results[0]?.ref, "github/user-1/preferences.md");
+}
+
+async function verifyTmpGenerationCleanup(
+  dataDir: string,
+  kind: "memory" | "skills",
+  currentGeneration: string | undefined,
+): Promise<void> {
+  assert.ok(currentGeneration, "expected a current generation");
+  const cacheRoot = embeddingIndexCacheRoot(dataDir);
+  const generationsRoot = join(cacheRoot, kind, "generations");
+  const freshTmp = "fresh.tmp-test";
+  const staleTmp = "stale.tmp-test";
+  await mkdir(join(generationsRoot, freshTmp), { recursive: true });
+  await mkdir(join(generationsRoot, staleTmp), { recursive: true });
+  const staleDate = new Date(Date.now() - 2 * 60 * 60 * 1_000);
+  await utimes(join(generationsRoot, staleTmp), staleDate, staleDate);
+
+  await cleanupOldEmbeddingIndexGenerations({
+    kind,
+    cacheRoot,
+    currentGeneration,
+  });
+
+  const entries = await readdir(generationsRoot);
+  assert.ok(entries.includes(freshTmp), "fresh tmp generations are preserved");
+  assert.ok(!entries.includes(staleTmp), "stale tmp generations are cleaned");
 }
 
 const buildEmbeddingEngine: EmbeddingEngine = {

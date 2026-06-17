@@ -5,6 +5,7 @@ import {
   readFile,
   rename,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -106,6 +107,7 @@ const LOADED_INDEX_CACHE = new Map<
   string,
   { generation: string; index: CachedEmbeddingIndex }
 >();
+const STALE_TMP_GENERATION_MS = 60 * 60 * 1_000;
 
 export function embeddingIndexCacheRoot(dataDir: string): string {
   return join(dataDir, "cache", "embeddings");
@@ -246,6 +248,7 @@ export async function cleanupOldEmbeddingIndexGenerations(input: {
     input.currentGeneration,
     ...generationNames.slice(0, keepCount),
   ]);
+  const nowMs = Date.now();
 
   await Promise.all(
     entries.map(async (entry) => {
@@ -262,13 +265,22 @@ export async function cleanupOldEmbeddingIndexGenerations(input: {
         return;
       }
       if (entry.name.includes(".tmp-")) {
-        await rm(join(generationsRoot, entry.name), {
-          recursive: true,
-          force: true,
-        });
+        await cleanupStaleTmpGeneration(generationsRoot, entry.name, nowMs);
       }
     }),
   );
+}
+
+async function cleanupStaleTmpGeneration(
+  generationsRoot: string,
+  generationName: string,
+  nowMs: number,
+): Promise<void> {
+  const path = join(generationsRoot, generationName);
+  const info = await stat(path).catch(() => undefined);
+  if (!info) return;
+  if (nowMs - info.mtimeMs < STALE_TMP_GENERATION_MS) return;
+  await rm(path, { recursive: true, force: true });
 }
 
 export async function readSourceFiles(input: {

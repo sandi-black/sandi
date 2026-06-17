@@ -252,6 +252,7 @@ function piConfig(
     timeoutMs: 1000,
     eventsRoot: join(root, name, "events"),
     remindersRoot: join(root, name, "reminders"),
+    feedbackRoot: join(root, name, "feedback"),
     skillsRoot: join(root, name, "skills"),
     ...(options?.agentDir ? { agentDir: options.agentDir } : {}),
     ...(options?.packageDir

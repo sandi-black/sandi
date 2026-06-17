@@ -186,9 +186,12 @@ Main turns intentionally leave Pi extension discovery and builtin tools enabled
 so installed conversion tools can load. Read-only nested memory/skill search
 sessions still use `--no-extensions` and `--no-builtin-tools`.
 
-`SANDI_PI_EXTENSIONS` can replace the default extension list. The stop extension
-watches a conversation-scoped sentinel file and calls Pi's cooperative
-`ctx.abort()` path when `/sandi stop` is used.
+`SANDI_PI_EXTENSIONS` can replace the default extension list. The feedback
+extension writes append-only memory/skill feedback events under
+`SANDI_FEEDBACK_ROOT` so later review can distinguish useful, distracting, and
+ignored retrieved resources. The stop extension watches a conversation-scoped
+sentinel file and calls Pi's cooperative `ctx.abort()` path when `/sandi stop`
+is used.
 
 The default path is code-mode first: Sandi composes local capabilities by calling
 `sandi_js_run` and importing helpers from the runtime import path owned by the

@@ -196,6 +196,7 @@ disable discovery and builtin tools explicitly.
 - `SANDI_PI_JS_EXTENSION=./src/lib/pi-extension/js-run-tool.ts`
 - `SANDI_PI_MEMORY_EXTENSION=./src/lib/pi-extension/memory-tools.ts`
 - `SANDI_PI_SKILL_EXTENSION=./src/lib/pi-extension/skill-tools.ts`
+- `SANDI_PI_FEEDBACK_EXTENSION=./src/lib/pi-extension/feedback-tools.ts`
 - `SANDI_PI_POLICY_EXTENSION=./src/lib/pi-extension/policy-tools.ts`
 - `SANDI_PI_IMAGEGEN_EXTENSION=./src/lib/pi-extension/imagegen-tools.ts`
 - `SANDI_PI_STOP_EXTENSION=./src/lib/pi-extension/stop-sentinel.ts`
@@ -220,6 +221,7 @@ disable discovery and builtin tools explicitly.
 - Policies are loaded by convention from `./data/config/policies`, followed by
   `./config/policies`.
 - `SANDI_EVENTS_ROOT=./data/events`
+- `SANDI_FEEDBACK_ROOT=./data/feedback`
 - `SANDI_SKILLS_ROOT=./data/skills`
 - `SANDI_EMBEDDING_PROVIDER=local`
 - `SANDI_EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2`

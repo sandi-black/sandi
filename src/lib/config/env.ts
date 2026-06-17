@@ -7,6 +7,7 @@ import { z } from "zod";
 
 import type { PiAccountRoutingConfig } from "@/lib/provider/pi-account-routing";
 import {
+  defaultPiFeedbackExtensionPath,
   defaultPiImagegenExtensionPath,
   defaultPiJsRunExtensionPath,
   defaultPiMemoryExtensionPath,
@@ -31,6 +32,7 @@ export type PiConfig = {
   timeoutMs: number;
   eventsRoot: string;
   remindersRoot: string;
+  feedbackRoot: string;
   skillsRoot: string;
 };
 
@@ -41,6 +43,7 @@ export type PathConfig = {
   configDirs: string[];
   eventsRoot: string;
   remindersRoot: string;
+  feedbackRoot: string;
   skillsRoot: string;
 };
 
@@ -78,6 +81,10 @@ function readNumberEnv(names: readonly string[], defaultValue: number): number {
 
 function defaultRemindersRoot(dataDir: string): string {
   return resolve(dataDir, "reminders");
+}
+
+function defaultFeedbackRoot(dataDir: string): string {
+  return resolve(dataDir, "feedback");
 }
 
 const PiAccountRoutingFileSchema = z.object({
@@ -120,6 +127,9 @@ export function loadCoreConfig(): CoreConfig {
   const remindersRoot = resolve(
     readEnv(["SANDI_REMINDERS_ROOT"]) ?? defaultRemindersRoot(dataDir),
   );
+  const feedbackRoot = resolve(
+    readEnv(["SANDI_FEEDBACK_ROOT"]) ?? defaultFeedbackRoot(dataDir),
+  );
   const skillsRoot = resolve(
     readEnv(["SANDI_SKILLS_ROOT"]) ?? `${dataDir}/skills`,
   );
@@ -146,6 +156,7 @@ export function loadCoreConfig(): CoreConfig {
       timeoutMs: readNumberEnv(["SANDI_PI_TIMEOUT_MS"], 3_600_000),
       eventsRoot,
       remindersRoot,
+      feedbackRoot,
       skillsRoot,
     },
     paths: {
@@ -155,6 +166,7 @@ export function loadCoreConfig(): CoreConfig {
       configDirs,
       eventsRoot,
       remindersRoot,
+      feedbackRoot,
       skillsRoot,
     },
   };
@@ -191,6 +203,10 @@ function readExtensionPaths(): string[] {
   const skillExtension = resolve(
     readEnv(["SANDI_PI_SKILL_EXTENSION"]) ?? defaultPiSkillExtensionPath(),
   );
+  const feedbackExtension = resolve(
+    readEnv(["SANDI_PI_FEEDBACK_EXTENSION"]) ??
+      defaultPiFeedbackExtensionPath(),
+  );
   const policyExtension = resolve(
     readEnv(["SANDI_PI_POLICY_EXTENSION"]) ?? defaultPiPolicyExtensionPath(),
   );
@@ -209,6 +225,7 @@ function readExtensionPaths(): string[] {
     jsRunExtension,
     memoryExtension,
     skillExtension,
+    feedbackExtension,
     policyExtension,
     imagegenExtension,
     stopExtension,

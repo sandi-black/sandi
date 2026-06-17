@@ -76,6 +76,7 @@ process.stdout.write("fake model output\\n");
     timeoutMs: 5000,
     eventsRoot: join(tempRoot, "events"),
     remindersRoot: join(tempRoot, "reminders"),
+    feedbackRoot: join(tempRoot, "feedback"),
     skillsRoot: join(tempRoot, "skills"),
   };
 

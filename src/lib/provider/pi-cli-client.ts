@@ -111,6 +111,7 @@ export class PiCliClient implements ModelProviderClient {
   readonly #timeoutMs: number;
   readonly #eventsRoot: string;
   readonly #remindersRoot: string;
+  readonly #feedbackRoot: string;
   readonly #skillsRoot: string;
   readonly #accountRouter: PiAccountRouter | undefined;
 
@@ -127,6 +128,7 @@ export class PiCliClient implements ModelProviderClient {
     this.#timeoutMs = config.timeoutMs;
     this.#eventsRoot = config.eventsRoot;
     this.#remindersRoot = config.remindersRoot;
+    this.#feedbackRoot = config.feedbackRoot;
     this.#skillsRoot = config.skillsRoot;
     this.#accountRouter = config.accountRouting
       ? new PiAccountRouter(config.accountRouting)
@@ -247,6 +249,7 @@ export class PiCliClient implements ModelProviderClient {
         request.memoryContext,
         this.#eventsRoot,
         this.#remindersRoot,
+        this.#feedbackRoot,
         this.#skillsRoot,
         deliverySideEffectFile,
         stopFile,
@@ -318,6 +321,7 @@ export class PiCliClient implements ModelProviderClient {
     memoryContext?: MemoryContext,
     eventsRoot?: string,
     remindersRoot?: string,
+    feedbackRoot?: string,
     skillsRoot?: string,
     deliverySideEffectFile?: string,
     stopFile?: string,
@@ -349,6 +353,7 @@ export class PiCliClient implements ModelProviderClient {
           memoryContext,
           eventsRoot,
           remindersRoot,
+          feedbackRoot,
           skillsRoot,
           deliverySideEffectFile,
           stopFile,
@@ -580,6 +585,7 @@ function childEnv(
   memoryContext: MemoryContext | undefined,
   eventsRoot: string | undefined,
   remindersRoot: string | undefined,
+  feedbackRoot: string | undefined,
   skillsRoot: string | undefined,
   deliverySideEffectFile: string | undefined,
   stopFile: string | undefined,
@@ -603,6 +609,7 @@ function childEnv(
   delete env["SANDI_PI_ACCOUNT_ID"];
   delete env["SANDI_POLICY_ROOT"];
   delete env["SANDI_POLICY_ROOTS"];
+  delete env["SANDI_FEEDBACK_ROOT"];
   delete env["PI_CODING_AGENT_DIR"];
   delete env["PI_PACKAGE_DIR"];
   const piAgentDir = account?.agentDir ?? agentDir;
@@ -641,6 +648,9 @@ function childEnv(
   }
   if (remindersRoot) {
     env["SANDI_REMINDERS_ROOT"] = remindersRoot;
+  }
+  if (feedbackRoot) {
+    env["SANDI_FEEDBACK_ROOT"] = feedbackRoot;
   }
   if (skillsRoot) {
     env["SANDI_SKILLS_ROOT"] = skillsRoot;
@@ -690,6 +700,10 @@ export function defaultPiMemoryExtensionPath(): string {
 
 export function defaultPiSkillExtensionPath(): string {
   return resolve("src/lib/pi-extension/skill-tools.ts");
+}
+
+export function defaultPiFeedbackExtensionPath(): string {
+  return resolve("src/lib/pi-extension/feedback-tools.ts");
 }
 
 export function defaultPiPolicyExtensionPath(): string {

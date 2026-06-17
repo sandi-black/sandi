@@ -204,6 +204,7 @@ function testConfig(dataDir: string): GitHubAppConfig {
       timeoutMs: 1_000,
       eventsRoot: join(dataDir, "events"),
       remindersRoot: join(dataDir, "reminders"),
+      feedbackRoot: join(dataDir, "feedback"),
       skillsRoot: join(dataDir, "skills"),
     },
     paths: {
@@ -213,6 +214,7 @@ function testConfig(dataDir: string): GitHubAppConfig {
       configDirs: [join(dataDir, "private-config"), join(dataDir, "config")],
       eventsRoot: join(dataDir, "events"),
       remindersRoot: join(dataDir, "reminders"),
+      feedbackRoot: join(dataDir, "feedback"),
       skillsRoot: join(dataDir, "skills"),
     },
     github: {

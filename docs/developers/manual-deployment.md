@@ -143,6 +143,7 @@ SANDI_DATA_DIR=/srv/sandi/data
 SANDI_CONFIG_DIR=./config
 SANDI_EVENTS_ROOT=/srv/sandi/data/events
 SANDI_REMINDERS_ROOT=/srv/sandi/data/reminders
+SANDI_FEEDBACK_ROOT=/srv/sandi/data/feedback
 SANDI_SKILLS_ROOT=/srv/sandi/data/skills
 SANDI_JS_RUN_ROOT=/srv/sandi/data/js-runs
 SANDI_PI_SESSION_DIR=/srv/sandi/data/pi-sessions

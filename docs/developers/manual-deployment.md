@@ -213,6 +213,22 @@ Run this again after deploys that change slash commands.
 
 ## Systemd Service
 
+The repository includes direct-host unit templates under `deploy/systemd/`.
+Install or refresh them with:
+
+```sh
+cd /srv/sandi/app
+sudo cp deploy/systemd/sandi.service /etc/systemd/system/sandi.service
+sudo cp deploy/systemd/sandi-github.service /etc/systemd/system/sandi-github.service
+sudo systemctl daemon-reload
+```
+
+If you use a dedicated `sandi` user or a different Node installation, update the
+copied units' `User`, `PATH`, `ExecStart`, and Pi account directories before
+starting them.
+
+The checked-in templates are equivalent to the examples below.
+
 Create `/etc/systemd/system/sandi.service`:
 
 ```ini
@@ -238,9 +254,6 @@ KillSignal=SIGINT
 WantedBy=multi-user.target
 ```
 
-If using a dedicated `sandi` user, change `User`, `PATH`, `ExecStart`, and Pi
-account directories accordingly.
-
 Use the checked-out `tsx` binary directly instead of `npm run start` in systemd
 units. Systemd sends the stop signal to every process in the service control
 group; when `npm` is the parent process, routine restarts can still be reported
@@ -258,16 +271,17 @@ Enable and start the service:
 
 ```sh
 sudo systemctl daemon-reload
-sudo systemctl enable --now sandi.service
-sudo systemctl status sandi.service --no-pager
+sudo systemctl enable --now sandi.service sandi-github.service
+sudo systemctl status sandi.service sandi-github.service --no-pager
 ```
 
 Useful operations:
 
 ```sh
 sudo journalctl -u sandi.service -f
-sudo systemctl restart sandi.service
-sudo systemctl stop sandi.service
+sudo journalctl -u sandi-github.service -f
+sudo systemctl restart sandi.service sandi-github.service
+sudo systemctl stop sandi.service sandi-github.service
 ```
 
 ## Optional Autoupdate

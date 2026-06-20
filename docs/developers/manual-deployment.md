@@ -165,6 +165,13 @@ For a more deterministic deploy, point Sandi at the package-locked Pi CLI:
 SANDI_PI_COMMAND=/srv/sandi/app/node_modules/.bin/pi
 ```
 
+Leave the `SANDI_PI_*_EXTENSION` variables unset for normal deployments. Sandi
+derives the default Pi extension graph from the checked-out code so extension
+paths move with the repository. Set an individual `SANDI_PI_JS_EXTENSION`,
+`SANDI_PI_MEMORY_EXTENSION`, or similar variable only when debugging or testing a
+custom extension path. Set `SANDI_PI_EXTENSIONS` only when intentionally
+replacing the full default extension list.
+
 Use `SANDI_ENVIRONMENT_HINT` to tell Sandi about the host boundary:
 
 ```sh

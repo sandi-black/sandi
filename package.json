@@ -44,8 +44,8 @@
     "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.79.8",
-    "@earendil-works/pi-coding-agent": "0.79.8",
+    "@earendil-works/pi-ai": "0.79.10",
+    "@earendil-works/pi-coding-agent": "0.79.10",
     "@huggingface/transformers": "^4.2.0",
     "croner": "^10.0.1",
     "discord.js": "^14.19.3",

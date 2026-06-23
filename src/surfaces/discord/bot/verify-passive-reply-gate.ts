@@ -10,7 +10,7 @@ import {
   passiveReplyGateRequestInput,
 } from "@/surfaces/discord/bot/passive-reply-gate";
 
-assert.equal(PASSIVE_REPLY_GATE_THINKING, "low");
+assert.equal(PASSIVE_REPLY_GATE_THINKING, "off");
 assert.equal(PASSIVE_REPLY_DECISION_RESPOND, "RESPOND");
 assert.equal(PASSIVE_REPLY_DECISION_IGNORE, "IGNORE");
 assert.ok(PASSIVE_REPLY_GATE_TIMEOUT_MS > 0);

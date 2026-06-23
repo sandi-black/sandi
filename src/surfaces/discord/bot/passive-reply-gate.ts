@@ -1,4 +1,4 @@
-export const PASSIVE_REPLY_GATE_THINKING = "low";
+export const PASSIVE_REPLY_GATE_THINKING = "off";
 export const PASSIVE_REPLY_GATE_TIMEOUT_MS = 30_000;
 
 export const PASSIVE_REPLY_DECISION_RESPOND = "RESPOND";

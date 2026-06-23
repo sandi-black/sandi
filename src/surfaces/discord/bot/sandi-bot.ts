@@ -410,13 +410,33 @@ export class SandiBot {
     }
 
     // Sandi has decided to engage. Create an on-demand thread for a busy
-    // top-level channel so the reply stays grouped, otherwise reply in place.
+    // top-level channel so the reply stays grouped, unless that channel is
+    // configured to keep Sandi conversation inline.
     const channel = asConversationChannel(message.channel);
     if (channel && !thread) {
       const strippedContent = stripBotMention(
         message.content,
         this.#client.user?.id,
       );
+      if (this.#shouldReplyInlineInChannel(channel)) {
+        const author = await this.#participantFromMessage(message);
+        log.info("engaging top-level channel message inline", {
+          messageId: message.id,
+          channelId: channel.id,
+          mustRespond,
+        });
+        await this.#enqueueChannelTurn({
+          channel,
+          author,
+          messageId: message.id,
+          input: strippedContent,
+          metadata: await messageMetadata(message),
+          toolContext: toolContextFromMessage(message, author),
+          title: channel.name,
+          replyToMessageId: message.id,
+        });
+        return;
+      }
       log.info("engaging top-level channel message via on-demand thread", {
         messageId: message.id,
         channelId: channel.id,
@@ -465,6 +485,15 @@ export class SandiBot {
       ? message.channel["parentId"]
       : undefined;
     return typeof parentId === "string" && ignored.has(parentId);
+  }
+
+  #shouldReplyInlineInChannel(channel: ConversationDiscordChannel): boolean {
+    if (this.#config.discord.inlineReplyChannelIds.includes(channel.id)) {
+      return true;
+    }
+    return this.#config.discord.inlineReplyChannelNames.includes(
+      channel.name.toLowerCase(),
+    );
   }
 
   async #shouldRespondToPassiveMessage(message: Message): Promise<boolean> {

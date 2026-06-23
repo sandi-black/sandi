@@ -34,6 +34,8 @@ Common commands:
 - `/sandi status`: inspect Sandi's runtime health and current conversation
   status.
 - `/sandi stop`: ask the current turn in this conversation to stop.
+- `/sandi ignore`: stop the current turn and have Sandi ignore this channel or
+  thread unless she is @-mentioned.
 - `/sandi events list`: inspect scheduled Sandi events.
 - `/sandi reminders list`: inspect interactive human reminders.
 

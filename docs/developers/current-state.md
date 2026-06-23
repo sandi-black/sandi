@@ -49,10 +49,14 @@ a managed conversation is routed through a decision.
   channel messages for context. The gate fails quiet, so gate errors, timeouts,
   or ambiguous output leave Sandi silent. This is what lets Sandi decline messages
   that were not actually directed at her.
-- Channels listed in `data/discord/ignored-channels.json` are skipped before the
-  gate runs, so Sandi never spends a gate turn on them. The file is optional and
-  uses `{ "channels": [{ "id": "..." }] }`; @-mentions and replies still reach her
-  there. With no file present, no channel is ignored.
+- Channels or threads listed in `data/discord/ignored-channels.json` are skipped
+  entirely (before the managed-thread check and the gate) unless the message
+  explicitly @-mentions Sandi. Replies to her and the passive gate do not wake her
+  in an ignored channel. The file is optional and uses
+  `{ "channels": [{ "id": "..." }] }`, where each `id` is a channel or thread ID;
+  with no file present, nothing is ignored. The `/sandi ignore` command appends
+  the current channel or thread to this file (and stops any running turn there),
+  so the same denylist is both operator- and in-Discord-managed.
 
 Once Sandi decides to engage, threads are created on demand rather than on every
 message:
@@ -95,6 +99,8 @@ Sandi has Discord application commands registered by `npm run commands:sync`:
 
 - `/sandi help`: shows the available Sandi commands from Discord.
 - `/sandi stop`: asks the current Sandi turn in this conversation to stop.
+- `/sandi ignore`: stops the current turn and adds this channel or thread to the
+  ignore list, so Sandi only responds there when she is @-mentioned.
 - `/sandi todo`: creates and pins an interactive todo list in the current channel
   or thread.
 - `/sandi status`: reports runtime status, uptime/memory health, queue state,

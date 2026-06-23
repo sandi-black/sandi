@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-
 import { Cron } from "croner";
 import {
   type AnyThreadChannel,
@@ -41,6 +38,10 @@ import {
   type ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
 import { ThreadQueue } from "@/lib/turns/turn-queue";
+import {
+  appendIgnoredConversationChannel,
+  loadIgnoredConversationChannels,
+} from "@/surfaces/discord/bot/ignored-channels";
 import {
   PASSIVE_REPLY_GATE_INSTRUCTIONS,
   PASSIVE_REPLY_GATE_THINKING,
@@ -95,6 +96,7 @@ const HELP_MESSAGE = [
   "**Sandi commands**",
   "`/sandi help` — show this command guide.",
   "`/sandi stop` — ask the current Sandi turn in this conversation to stop.",
+  "`/sandi ignore` — stop the current turn and have Sandi ignore this channel or thread unless she is @-mentioned.",
   "`/sandi todo` — create and pin an interactive todo list in this channel.",
   "`/sandi status` — show runtime status, uptime/memory health, queue state, git revision, token usage, provider limits, and current conversation context size.",
   "`/sandi events list` — list scheduled events for this conversation.",
@@ -112,7 +114,6 @@ const TYPING_FALLBACK_COOLDOWN_MS = 15_000;
 const ACTIVITY_FALLBACK_EMOJI = "👀";
 const DEFAULT_MENTION_THREAD_AUTO_ARCHIVE = ThreadAutoArchiveDuration.OneDay;
 const TODO_CHANNEL_PREFIXES = ["todo-", "tasks-"];
-const IGNORED_CHANNELS_PATH = "discord/ignored-channels.json";
 const RECENT_THREAD_CONTEXT_FETCH_LIMIT = 20;
 const RECENT_THREAD_CONTEXT_DISPLAY_LIMIT = 8;
 const RECENT_THREAD_MESSAGE_MAX_LENGTH = 260;
@@ -354,6 +355,19 @@ export class SandiBot {
 
     await this.#todoList.maybeCapture(message);
 
+    // Ignore list: an ignored channel or thread (set via `/sandi ignore`) is
+    // skipped entirely unless someone explicitly @-mentions Sandi. Replies and
+    // the passive gate do not wake her there. This intentionally also gates
+    // Sandi-managed threads so an ignored thread truly goes quiet.
+    const mentioned = this.#isBotMentioned(message);
+    if (!mentioned && (await this.#isIgnoredChannel(message))) {
+      log.info("skipping message in ignored channel or thread", {
+        messageId: message.id,
+        channelId: message.channelId,
+      });
+      return;
+    }
+
     const thread = asThread(message.channel);
     if (thread && (await this.#isManagedThread(thread))) {
       log.info("enqueueing sandi thread turn", {
@@ -382,16 +396,8 @@ export class SandiBot {
     // Sandi passively reads every other message. An explicit mention or a reply
     // to one of her own messages always earns a response; anything else goes
     // through a cheap gate that decides whether the message was meant for her.
-    const mustRespond =
-      this.#isBotMentioned(message) || (await this.#isReplyToSandi(message));
+    const mustRespond = mentioned || (await this.#isReplyToSandi(message));
     if (!mustRespond) {
-      if (await this.#isIgnoredChannel(message)) {
-        log.info("skipping passive message in ignored channel", {
-          messageId: message.id,
-          channelId: message.channelId,
-        });
-        return;
-      }
       if (!(await this.#shouldRespondToPassiveMessage(message))) {
         log.info("passive reply gate chose to stay silent", {
           messageId: message.id,
@@ -554,6 +560,10 @@ export class SandiBot {
       await this.#replyToStopInteraction(interaction);
       return;
     }
+    if (!group && subcommand === "ignore") {
+      await this.#replyToIgnoreInteraction(interaction);
+      return;
+    }
     if (!group && subcommand === "todo") {
       await this.#replyToTodoInteraction(interaction);
       return;
@@ -581,6 +591,41 @@ export class SandiBot {
       : "No active Sandi turn is running in this conversation.";
     await interaction.reply({
       content,
+      allowedMentions: { parse: [] },
+      ephemeral: true,
+    });
+  }
+
+  async #replyToIgnoreInteraction(
+    interaction: ChatInputCommandInteraction,
+  ): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({
+        content: "I can only ignore channels and threads inside a server.",
+        allowedMentions: { parse: [] },
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const queueKey = queueKeyFromInteraction(interaction);
+    const aborted = queueKey ? this.#queue.abortActive(queueKey) : false;
+    const targetId =
+      conversationStorageIdFromInteraction(interaction) ??
+      interaction.channelId;
+    await this.#addIgnoredChannel(targetId);
+    log.info("added channel or thread to ignore list", {
+      targetId,
+      guildId: interaction.guildId,
+      stoppedActiveTurn: aborted,
+    });
+
+    const place = asThread(interaction.channel) ? "thread" : "channel";
+    const stopNote = aborted
+      ? " I also stopped the turn that was running here."
+      : "";
+    await interaction.reply({
+      content: `Okay, I'll ignore this ${place} from now on and only chime in when someone @-mentions me here.${stopNote} To undo this, edit \`data/discord/ignored-channels.json\`.`,
       allowedMentions: { parse: [] },
       ephemeral: true,
     });
@@ -1445,6 +1490,14 @@ export class SandiBot {
       this.#config.paths.dataDir,
     );
     return this.#ignoredChannels;
+  }
+
+  async #addIgnoredChannel(channelId: string): Promise<void> {
+    const updated = await appendIgnoredConversationChannel(
+      this.#config.paths.dataDir,
+      channelId,
+    );
+    this.#ignoredChannels = Promise.resolve(updated);
   }
 }
 
@@ -2407,46 +2460,4 @@ function estimatePromptTokens(text: string): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-async function loadIgnoredConversationChannels(
-  dataDir: string,
-): Promise<Set<string>> {
-  const filePath = join(dataDir, IGNORED_CHANNELS_PATH);
-  try {
-    const parsed: unknown = JSON.parse(await readFile(filePath, "utf8"));
-    if (!isChannelIdConfig(parsed)) {
-      log.warn("ignoring invalid ignored channels config", { filePath });
-      return new Set();
-    }
-    return new Set(parsed.channels.map((channel) => channel.id));
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return new Set();
-    }
-    log.warn("failed to load ignored channels config", {
-      filePath,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return new Set();
-  }
-}
-
-type ChannelIdConfig = {
-  channels: Array<{ id: string }>;
-};
-
-function isChannelIdConfig(value: unknown): value is ChannelIdConfig {
-  const channels = objectProperty(value, "channels");
-  if (!Array.isArray(channels)) return false;
-  return channels.every((channel) => {
-    const id = objectProperty(channel, "id");
-    return typeof id === "string" && /^\d+$/.test(id);
-  });
-}
-
-function objectProperty(value: unknown, key: string): unknown {
-  if (!value || typeof value !== "object") return undefined;
-  if (!(key in value)) return undefined;
-  return Reflect.get(value, key);
 }

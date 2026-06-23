@@ -41,6 +41,14 @@ import {
   type ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
 import { ThreadQueue } from "@/lib/turns/turn-queue";
+import {
+  PASSIVE_REPLY_GATE_INSTRUCTIONS,
+  PASSIVE_REPLY_GATE_THINKING,
+  PASSIVE_REPLY_GATE_TIMEOUT_MS,
+  type PassiveReplyGateContextMessage,
+  parsePassiveReplyGateDecision,
+  passiveReplyGateRequestInput,
+} from "@/surfaces/discord/bot/passive-reply-gate";
 import { ReactionDigestStore } from "@/surfaces/discord/bot/reaction-digest";
 import { ReminderManager } from "@/surfaces/discord/bot/reminders";
 import {
@@ -94,7 +102,7 @@ const HELP_MESSAGE = [
   "`/sandi reminders list` — list interactive human reminders for this conversation.",
   "`/sandi reminders list scope: All reminders` — list every interactive reminder Sandi can see.",
   "",
-  "For ordinary conversation, make a post in the Sandi forum, mention Sandi in a top-level channel to start a thread, or reply in a Sandi-managed thread.",
+  "Sandi reads the channels she can see and chimes in when a message seems meant for her. Mention her or reply to one of her messages to be sure she answers; when she replies in a busy channel she opens a thread to keep things tidy.",
 ].join("\n");
 const MAX_EVENTS_DISPLAYED = 10;
 const MAX_INTERACTION_RESPONSE_CHARS = 2_000;
@@ -104,10 +112,12 @@ const TYPING_FALLBACK_COOLDOWN_MS = 15_000;
 const ACTIVITY_FALLBACK_EMOJI = "👀";
 const DEFAULT_MENTION_THREAD_AUTO_ARCHIVE = ThreadAutoArchiveDuration.OneDay;
 const TODO_CHANNEL_PREFIXES = ["todo-", "tasks-"];
-const WATCHED_CHANNELS_PATH = "discord/watched-channels.json";
+const IGNORED_CHANNELS_PATH = "discord/ignored-channels.json";
 const RECENT_THREAD_CONTEXT_FETCH_LIMIT = 20;
 const RECENT_THREAD_CONTEXT_DISPLAY_LIMIT = 8;
 const RECENT_THREAD_MESSAGE_MAX_LENGTH = 260;
+const PASSIVE_GATE_CONTEXT_FETCH_LIMIT = 12;
+const PASSIVE_GATE_CONTEXT_DISPLAY_LIMIT = 6;
 const MAX_TYPING_COOLDOWNS = 512;
 const MAX_FAILURE_NOTICE_COOLDOWNS = 512;
 const TODO_CHANNEL_SURFACE_PROMPT = [
@@ -181,7 +191,7 @@ export class SandiBot {
   readonly #reactions: ReactionDigestStore;
   readonly #todoList: TodoListManager;
   readonly #queue = new ThreadQueue();
-  #watchedChannels: Promise<Set<string>> | undefined;
+  #ignoredChannels: Promise<Set<string>> | undefined;
   readonly #failureNotices = new Map<string, number>();
   #identities: Promise<HumanIdentityConfig> | undefined;
   #forum: ForumChannel | undefined;
@@ -343,30 +353,6 @@ export class SandiBot {
     }
 
     await this.#todoList.maybeCapture(message);
-    const watchedChannel = asWatchedConversationChannel(
-      message.channel,
-      await this.#loadWatchedChannels(),
-    );
-    if (watchedChannel) {
-      log.info("enqueueing watched channel turn", {
-        messageId: message.id,
-        channelId: watchedChannel.id,
-      });
-      const author = await this.#participantFromMessage(message);
-      await this.#enqueueChannelTurn({
-        channel: watchedChannel,
-        author,
-        messageId: message.id,
-        input:
-          message.content.trim() ||
-          "A watched-channel message arrived without text content.",
-        metadata: await messageMetadata(message),
-        toolContext: toolContextFromMessage(message, author),
-        title: watchedChannel.name,
-        replyToMessageId: message.id,
-      });
-      return;
-    }
 
     const thread = asThread(message.channel);
     if (thread && (await this.#isManagedThread(thread))) {
@@ -393,26 +379,42 @@ export class SandiBot {
       return;
     }
 
-    if (!this.#isBotMentioned(message)) {
-      log.info("ignoring message without bot mention", {
-        messageId: message.id,
-        channelId: message.channelId,
-      });
-      return;
+    // Sandi passively reads every other message. An explicit mention or a reply
+    // to one of her own messages always earns a response; anything else goes
+    // through a cheap gate that decides whether the message was meant for her.
+    const mustRespond =
+      this.#isBotMentioned(message) || (await this.#isReplyToSandi(message));
+    if (!mustRespond) {
+      if (await this.#isIgnoredChannel(message)) {
+        log.info("skipping passive message in ignored channel", {
+          messageId: message.id,
+          channelId: message.channelId,
+        });
+        return;
+      }
+      if (!(await this.#shouldRespondToPassiveMessage(message))) {
+        log.info("passive reply gate chose to stay silent", {
+          messageId: message.id,
+          channelId: message.channelId,
+        });
+        return;
+      }
     }
 
+    // Sandi has decided to engage. Create an on-demand thread for a busy
+    // top-level channel so the reply stays grouped, otherwise reply in place.
     const channel = asConversationChannel(message.channel);
     if (channel && !thread) {
       const strippedContent = stripBotMention(
         message.content,
         this.#client.user?.id,
       );
-
-      log.info("starting thread for mentioned top-level channel message", {
+      log.info("engaging top-level channel message via on-demand thread", {
         messageId: message.id,
         channelId: channel.id,
+        mustRespond,
       });
-      await this.#startThreadForMentionedChannelMessage({
+      await this.#startThreadForChannelMessage({
         message,
         channel,
         strippedContent,
@@ -420,9 +422,10 @@ export class SandiBot {
       return;
     }
 
-    log.info("enqueueing one-off mention turn", {
+    log.info("engaging message via one-off reply", {
       messageId: message.id,
       channelId: message.channelId,
+      mustRespond,
     });
     this.#queue.enqueue(
       `oneoff:${message.guildId ?? "dm"}:${message.channelId}`,
@@ -431,6 +434,63 @@ export class SandiBot {
         await this.#runOneOffMention(message, signal);
       },
     );
+  }
+
+  async #isReplyToSandi(message: Message): Promise<boolean> {
+    const referencedId = message.reference?.messageId;
+    if (!referencedId) return false;
+    const botId = this.#client.user?.id;
+    if (!botId) return false;
+    try {
+      const referenced = await message.channel.messages.fetch(referencedId);
+      return referenced.author.id === botId;
+    } catch {
+      return false;
+    }
+  }
+
+  async #isIgnoredChannel(message: Message): Promise<boolean> {
+    const ignored = await this.#loadIgnoredChannels();
+    if (ignored.size === 0) return false;
+    if (ignored.has(message.channelId)) return true;
+    const parentId = isRecord(message.channel)
+      ? message.channel["parentId"]
+      : undefined;
+    return typeof parentId === "string" && ignored.has(parentId);
+  }
+
+  async #shouldRespondToPassiveMessage(message: Message): Promise<boolean> {
+    if (!message.content.trim() && message.attachments.size === 0) return false;
+    const author = await this.#participantFromMessage(message);
+    try {
+      const response = await this.#provider.generateTurn({
+        conversationId: `passive-gate:${message.id}`,
+        instructions: PASSIVE_REPLY_GATE_INSTRUCTIONS,
+        input: await passiveReplyGateInput(
+          message,
+          this.#client.user?.username,
+        ),
+        sessionMode: "none",
+        accountRouting: accountRoutingForOneOffTurn(author),
+        memoryContext: this.#memoryContext(undefined, [author]),
+        thinking: PASSIVE_REPLY_GATE_THINKING,
+        timeoutMs: PASSIVE_REPLY_GATE_TIMEOUT_MS,
+      });
+      const respond = parsePassiveReplyGateDecision(response.text);
+      log.info("passive reply gate decision", {
+        messageId: message.id,
+        channelId: message.channelId,
+        respond,
+      });
+      return respond;
+    } catch (error) {
+      log.warn("passive reply gate failed; staying silent", {
+        messageId: message.id,
+        channelId: message.channelId,
+        error: errorMessage(error),
+      });
+      return false;
+    }
   }
 
   async #handleMessageReaction(
@@ -526,7 +586,7 @@ export class SandiBot {
     });
   }
 
-  async #startThreadForMentionedChannelMessage(input: {
+  async #startThreadForChannelMessage(input: {
     message: Message;
     channel: ConversationDiscordChannel;
     strippedContent: string;
@@ -540,7 +600,7 @@ export class SandiBot {
     }
 
     const prompt =
-      input.strippedContent || "Sandi was mentioned without additional text.";
+      input.strippedContent || "Sandi engaged without additional text.";
     const author = await this.#participantFromMessage(input.message);
     let thread = asThread(input.message.thread);
     let createdThread = false;
@@ -1380,11 +1440,11 @@ export class SandiBot {
     return this.#identities;
   }
 
-  #loadWatchedChannels(): Promise<Set<string>> {
-    this.#watchedChannels ??= loadWatchedConversationChannels(
+  #loadIgnoredChannels(): Promise<Set<string>> {
+    this.#ignoredChannels ??= loadIgnoredConversationChannels(
       this.#config.paths.dataDir,
     );
-    return this.#watchedChannels;
+    return this.#ignoredChannels;
   }
 }
 
@@ -1403,18 +1463,6 @@ function asConversationChannel(
   channel: unknown,
 ): ConversationDiscordChannel | undefined {
   return isConversationChannel(channel) ? channel : undefined;
-}
-
-function asWatchedConversationChannel(
-  channel: unknown,
-  watchedChannels: Set<string>,
-): ConversationDiscordChannel | undefined {
-  const conversationChannel = asConversationChannel(channel);
-  if (!conversationChannel) return undefined;
-  if (conversationChannel.isThread?.()) return undefined;
-  return watchedChannels.has(conversationChannel.id)
-    ? conversationChannel
-    : undefined;
 }
 
 function asTodoChannel(
@@ -2153,6 +2201,64 @@ function recentThreadMessageContent(message: Message): string {
   );
 }
 
+async function passiveReplyGateInput(
+  message: Message,
+  botName: string | undefined,
+): Promise<string> {
+  const [recentMessages, repliedTo] = await Promise.all([
+    recentChannelContextForGate(message),
+    referencedGateMessage(message),
+  ]);
+  return passiveReplyGateRequestInput({
+    sandiName: botName ?? "Sandi",
+    channelName: channelName(message),
+    author: {
+      username: message.author.username,
+      displayName: message.member?.displayName ?? message.author.username,
+    },
+    message: recentThreadMessageContent(message),
+    ...(repliedTo ? { repliedTo } : {}),
+    recentMessages,
+  });
+}
+
+async function recentChannelContextForGate(
+  message: Message,
+): Promise<PassiveReplyGateContextMessage[]> {
+  try {
+    const fetched = await message.channel.messages.fetch({
+      limit: PASSIVE_GATE_CONTEXT_FETCH_LIMIT,
+      before: message.id,
+    });
+    return [...fetched.values()]
+      .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+      .slice(-PASSIVE_GATE_CONTEXT_DISPLAY_LIMIT)
+      .map((recent) => gateContextMessage(recent));
+  } catch {
+    return [];
+  }
+}
+
+async function referencedGateMessage(
+  message: Message,
+): Promise<PassiveReplyGateContextMessage | undefined> {
+  const referencedId = message.reference?.messageId;
+  if (!referencedId) return undefined;
+  try {
+    const referenced = await message.channel.messages.fetch(referencedId);
+    return gateContextMessage(referenced);
+  } catch {
+    return undefined;
+  }
+}
+
+function gateContextMessage(message: Message): PassiveReplyGateContextMessage {
+  return {
+    author: message.member?.displayName ?? message.author.username,
+    content: recentThreadMessageContent(message),
+  };
+}
+
 async function referencedMessageMetadata(
   message: Message,
 ): Promise<string | undefined> {
@@ -2303,14 +2409,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-async function loadWatchedConversationChannels(
+async function loadIgnoredConversationChannels(
   dataDir: string,
 ): Promise<Set<string>> {
-  const filePath = join(dataDir, WATCHED_CHANNELS_PATH);
+  const filePath = join(dataDir, IGNORED_CHANNELS_PATH);
   try {
     const parsed: unknown = JSON.parse(await readFile(filePath, "utf8"));
-    if (!isWatchedChannelConfig(parsed)) {
-      log.warn("ignoring invalid watched channels config", { filePath });
+    if (!isChannelIdConfig(parsed)) {
+      log.warn("ignoring invalid ignored channels config", { filePath });
       return new Set();
     }
     return new Set(parsed.channels.map((channel) => channel.id));
@@ -2318,7 +2424,7 @@ async function loadWatchedConversationChannels(
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return new Set();
     }
-    log.warn("failed to load watched channels config", {
+    log.warn("failed to load ignored channels config", {
       filePath,
       error: error instanceof Error ? error.message : String(error),
     });
@@ -2326,11 +2432,11 @@ async function loadWatchedConversationChannels(
   }
 }
 
-type WatchedChannelConfig = {
+type ChannelIdConfig = {
   channels: Array<{ id: string }>;
 };
 
-function isWatchedChannelConfig(value: unknown): value is WatchedChannelConfig {
+function isChannelIdConfig(value: unknown): value is ChannelIdConfig {
   const channels = objectProperty(value, "channels");
   if (!Array.isArray(channels)) return false;
   return channels.every((channel) => {

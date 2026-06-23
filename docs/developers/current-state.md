@@ -37,22 +37,46 @@ The bot listens with the Discord `Guilds`, `GuildMessages`, and privileged
 
 ## Discord Behavior
 
-Sandi has three persistent Discord conversation modes:
+Sandi passively reads every non-bot message in the channels she can see. She is
+not gated on being @-mentioned: instead, each message that is not already part of
+a managed conversation is routed through a decision.
 
+- Explicit @-mentions of Sandi and replies to one of her own messages always earn
+  a response (they bypass the gate).
+- Every other passively observed message runs through a cheap reply gate: a short
+  no-session Pi turn (low thinking, ~30s timeout) that answers `RESPOND` or
+  `IGNORE` given the message, its author, the channel name, and a few recent
+  channel messages for context. The gate fails quiet, so gate errors, timeouts,
+  or ambiguous output leave Sandi silent. This is what lets Sandi decline messages
+  that were not actually directed at her.
+- Channels listed in `data/discord/ignored-channels.json` are skipped before the
+  gate runs, so Sandi never spends a gate turn on them. The file is optional and
+  uses `{ "channels": [{ "id": "..." }] }`; @-mentions and replies still reach her
+  there. With no file present, no channel is ignored.
+
+Once Sandi decides to engage, threads are created on demand rather than on every
+message:
+
+- Sandi message threads: when Sandi engages a top-level text channel message (via
+  mention, reply, or a gate `RESPOND`) and that message is not already inside a
+  thread, she creates a Discord thread from it at that point. The thread starts as
+  `new thread`, then Sandi runs a short no-session Pi title turn with the normal
+  configured model and low thinking to rename it from the starter message. The
+  origin message is the first user prompt for a new persistent Pi session scoped
+  to that thread. Later non-bot replies inside the thread trigger Sandi without
+  requiring a mention or a gate check. Because the thread session is keyed by the
+  Discord thread ID, the thread is created when Sandi commits to replying rather
+  than at the exact moment her text is posted.
 - Sandi forum posts: every non-bot message inside a Sandi forum thread becomes a
   persistent Pi turn for that forum conversation. The first response to a message
   replies to the triggering message.
-- Sandi message threads: mentioning Sandi in a top-level text channel that is
-  not an automatic Sandi-handled channel creates a Discord thread from that user
-  message. The thread starts as `new thread`, then Sandi runs a short no-session
-  Pi title turn with the normal configured model and low thinking to rename it
-  from the starter message. The origin message is the first user prompt for a new
-  persistent Pi session scoped to that thread. Later non-bot replies inside the
-  thread trigger Sandi without requiring a mention. Other top-level
-  parent-channel messages get their own Sandi thread sessions.
 - Automatic channel rooms: channels with dedicated automatic handling, such as
   `todo-` and `tasks-` channels, continue to use persistent channel
   conversations instead of creating per-message threads.
+- One-off replies: when Sandi engages a message that is already inside a
+  non-managed thread (or any context that is not a top-level conversation
+  channel), she replies in place with a no-session Pi turn instead of nesting a
+  new thread.
 
 When available, Discord message and scheduled-event metadata includes the active
 channel topic and thread parent-channel topic so Sandi can see room norms or
@@ -62,9 +86,10 @@ messages since Sandi's last visible reply, helping recover context from queued
 human chatter or downtime without copying parent-channel transcripts.
 
 When a new Discord user speaks in a persistent conversation, Sandi adds that user
-to the conversation manifest. One-off mention handling remains as a fallback for
-Discord contexts that are not persistent conversation channels. Sandi sends typing
-indicators while Pi is running.
+to the conversation manifest. One-off reply handling remains the fallback for
+Discord contexts that are not persistent conversation channels, including engaged
+messages inside non-managed threads. Sandi sends typing indicators while Pi is
+running.
 
 Sandi has Discord application commands registered by `npm run commands:sync`:
 

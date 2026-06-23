@@ -15,6 +15,8 @@ becomes yours.
 
 The current primary surface is Discord. In a Discord server, Sandi can:
 
+- passively read the channels she can see and decide for herself when a message
+  is meant for her, staying quiet otherwise;
 - keep persistent conversations in forum posts, automatic channel rooms, and
   Sandi-managed threads;
 - remember useful context about the household, people, topics, and
@@ -36,9 +38,10 @@ turning those private details into public source code.
 
 In Discord:
 
-- create a post in Sandi's forum channel to start a conversation;
-- mention Sandi in a top-level text channel to start a dedicated thread
-  conversation from that message;
+- just talk in a channel Sandi can see; she replies when a message seems meant
+  for her and opens a thread to answer when the channel is busy;
+- mention Sandi or reply to one of her messages to guarantee a response;
+- create a post in Sandi's forum channel to start a longer conversation;
 - run `/sandi help` to see the available commands;
 - run `/sandi todo` to create a pinned interactive todo list;
 - run `/sandi status` to inspect runtime health;

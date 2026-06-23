@@ -499,6 +499,22 @@ export class SandiBot {
   async #shouldRespondToPassiveMessage(message: Message): Promise<boolean> {
     if (!message.content.trim() && message.attachments.size === 0) return false;
     const author = await this.#participantFromMessage(message);
+    // Show the typing indicator while the gate decides so onlookers can tell
+    // Sandi is weighing the message rather than frozen. The reaction fallback
+    // is intentionally disabled: a gate that lands on IGNORE must leave no
+    // visible trace on a message that was not meant for her.
+    void sendActivitySignal({
+      channelId: message.channelId,
+      token: this.#config.discord.token,
+      reactOnTypingFailure: false,
+    });
+    const typingTimer = setInterval(() => {
+      void sendActivitySignal({
+        channelId: message.channelId,
+        token: this.#config.discord.token,
+        reactOnTypingFailure: false,
+      });
+    }, TYPING_INTERVAL_MS);
     try {
       const response = await this.#provider.generateTurn({
         conversationId: `passive-gate:${message.id}`,
@@ -527,6 +543,8 @@ export class SandiBot {
         error: errorMessage(error),
       });
       return false;
+    } finally {
+      clearInterval(typingTimer);
     }
   }
 

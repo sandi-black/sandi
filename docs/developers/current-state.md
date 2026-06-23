@@ -44,11 +44,13 @@ a managed conversation is routed through a decision.
 - Explicit @-mentions of Sandi and replies to one of her own messages always earn
   a response (they bypass the gate).
 - Every other passively observed message runs through a cheap reply gate: a short
-  no-session Pi turn (low thinking, ~30s timeout) that answers `RESPOND` or
+  no-session Pi turn (thinking off, ~30s timeout) that answers `RESPOND` or
   `IGNORE` given the message, its author, the channel name, and a few recent
   channel messages for context. The gate fails quiet, so gate errors, timeouts,
   or ambiguous output leave Sandi silent. This is what lets Sandi decline messages
-  that were not actually directed at her.
+  that were not actually directed at her. While the gate is deciding, Sandi sends
+  the Discord typing indicator (no reaction fallback) so onlookers can tell she is
+  weighing the message; an `IGNORE` verdict leaves no visible trace.
 - Channels or threads listed in `data/discord/ignored-channels.json` are skipped
   entirely (before the managed-thread check and the gate) unless the message
   explicitly @-mentions Sandi. Replies to her and the passive gate do not wake her

@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { Cron } from "croner";
 import {
   type AnyThreadChannel,
@@ -101,6 +104,7 @@ const TYPING_FALLBACK_COOLDOWN_MS = 15_000;
 const ACTIVITY_FALLBACK_EMOJI = "👀";
 const DEFAULT_MENTION_THREAD_AUTO_ARCHIVE = ThreadAutoArchiveDuration.OneDay;
 const TODO_CHANNEL_PREFIXES = ["todo-", "tasks-"];
+const WATCHED_CHANNELS_PATH = "discord/watched-channels.json";
 const RECENT_THREAD_CONTEXT_FETCH_LIMIT = 20;
 const RECENT_THREAD_CONTEXT_DISPLAY_LIMIT = 8;
 const RECENT_THREAD_MESSAGE_MAX_LENGTH = 260;
@@ -177,6 +181,7 @@ export class SandiBot {
   readonly #reactions: ReactionDigestStore;
   readonly #todoList: TodoListManager;
   readonly #queue = new ThreadQueue();
+  #watchedChannels: Promise<Set<string>> | undefined;
   readonly #failureNotices = new Map<string, number>();
   #identities: Promise<HumanIdentityConfig> | undefined;
   #forum: ForumChannel | undefined;
@@ -338,6 +343,31 @@ export class SandiBot {
     }
 
     await this.#todoList.maybeCapture(message);
+    const watchedChannel = asWatchedConversationChannel(
+      message.channel,
+      await this.#loadWatchedChannels(),
+    );
+    if (watchedChannel) {
+      log.info("enqueueing watched channel turn", {
+        messageId: message.id,
+        channelId: watchedChannel.id,
+      });
+      const author = await this.#participantFromMessage(message);
+      await this.#enqueueChannelTurn({
+        channel: watchedChannel,
+        author,
+        messageId: message.id,
+        input:
+          message.content.trim() ||
+          "A watched-channel message arrived without text content.",
+        metadata: await messageMetadata(message),
+        toolContext: toolContextFromMessage(message, author),
+        title: watchedChannel.name,
+        replyToMessageId: message.id,
+      });
+      return;
+    }
+
     const thread = asThread(message.channel);
     if (thread && (await this.#isManagedThread(thread))) {
       log.info("enqueueing sandi thread turn", {
@@ -1349,6 +1379,13 @@ export class SandiBot {
     this.#identities ??= loadHumanIdentities(this.#config.paths.configDirs);
     return this.#identities;
   }
+
+  #loadWatchedChannels(): Promise<Set<string>> {
+    this.#watchedChannels ??= loadWatchedConversationChannels(
+      this.#config.paths.dataDir,
+    );
+    return this.#watchedChannels;
+  }
 }
 
 type ThreadCheckable = {
@@ -1366,6 +1403,18 @@ function asConversationChannel(
   channel: unknown,
 ): ConversationDiscordChannel | undefined {
   return isConversationChannel(channel) ? channel : undefined;
+}
+
+function asWatchedConversationChannel(
+  channel: unknown,
+  watchedChannels: Set<string>,
+): ConversationDiscordChannel | undefined {
+  const conversationChannel = asConversationChannel(channel);
+  if (!conversationChannel) return undefined;
+  if (conversationChannel.isThread?.()) return undefined;
+  return watchedChannels.has(conversationChannel.id)
+    ? conversationChannel
+    : undefined;
 }
 
 function asTodoChannel(
@@ -2252,4 +2301,46 @@ function estimatePromptTokens(text: string): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+async function loadWatchedConversationChannels(
+  dataDir: string,
+): Promise<Set<string>> {
+  const filePath = join(dataDir, WATCHED_CHANNELS_PATH);
+  try {
+    const parsed: unknown = JSON.parse(await readFile(filePath, "utf8"));
+    if (!isWatchedChannelConfig(parsed)) {
+      log.warn("ignoring invalid watched channels config", { filePath });
+      return new Set();
+    }
+    return new Set(parsed.channels.map((channel) => channel.id));
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return new Set();
+    }
+    log.warn("failed to load watched channels config", {
+      filePath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return new Set();
+  }
+}
+
+type WatchedChannelConfig = {
+  channels: Array<{ id: string }>;
+};
+
+function isWatchedChannelConfig(value: unknown): value is WatchedChannelConfig {
+  const channels = objectProperty(value, "channels");
+  if (!Array.isArray(channels)) return false;
+  return channels.every((channel) => {
+    const id = objectProperty(channel, "id");
+    return typeof id === "string" && /^\d+$/.test(id);
+  });
+}
+
+function objectProperty(value: unknown, key: string): unknown {
+  if (!value || typeof value !== "object") return undefined;
+  if (!(key in value)) return undefined;
+  return Reflect.get(value, key);
 }

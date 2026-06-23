@@ -58,6 +58,28 @@ export async function appendIgnoredConversationChannel(
   return channels;
 }
 
+/**
+ * Removes a channel/thread ID from the ignore list and persists the result.
+ * Returns the updated set and whether the ID was present. The file is only
+ * rewritten when something actually changed.
+ */
+export async function removeIgnoredConversationChannel(
+  dataDir: string,
+  channelId: string,
+): Promise<{ channels: Set<string>; removed: boolean }> {
+  const channels = await loadIgnoredConversationChannels(dataDir);
+  const removed = channels.delete(channelId);
+  if (removed) {
+    const filePath = join(dataDir, IGNORED_CHANNELS_PATH);
+    const payload: ChannelIdConfig = {
+      channels: [...channels].map((id) => ({ id })),
+    };
+    await mkdir(dirname(filePath), { recursive: true });
+    await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  }
+  return { channels, removed };
+}
+
 function isChannelIdConfig(value: unknown): value is ChannelIdConfig {
   const channels = objectProperty(value, "channels");
   if (!Array.isArray(channels)) return false;

@@ -36,6 +36,7 @@ Common commands:
 - `/sandi stop`: ask the current turn in this conversation to stop.
 - `/sandi ignore`: stop the current turn and have Sandi ignore this channel or
   thread unless she is @-mentioned.
+- `/sandi listen`: undo `/sandi ignore` so Sandi responds here again.
 - `/sandi events list`: inspect scheduled Sandi events.
 - `/sandi reminders list`: inspect interactive human reminders.
 

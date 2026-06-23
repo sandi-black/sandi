@@ -41,6 +41,7 @@ import { ThreadQueue } from "@/lib/turns/turn-queue";
 import {
   appendIgnoredConversationChannel,
   loadIgnoredConversationChannels,
+  removeIgnoredConversationChannel,
 } from "@/surfaces/discord/bot/ignored-channels";
 import {
   PASSIVE_REPLY_GATE_INSTRUCTIONS,
@@ -97,6 +98,7 @@ const HELP_MESSAGE = [
   "`/sandi help` — show this command guide.",
   "`/sandi stop` — ask the current Sandi turn in this conversation to stop.",
   "`/sandi ignore` — stop the current turn and have Sandi ignore this channel or thread unless she is @-mentioned.",
+  "`/sandi listen` — undo `/sandi ignore` so Sandi responds in this channel or thread again.",
   "`/sandi todo` — create and pin an interactive todo list in this channel.",
   "`/sandi status` — show runtime status, uptime/memory health, queue state, git revision, token usage, provider limits, and current conversation context size.",
   "`/sandi events list` — list scheduled events for this conversation.",
@@ -564,6 +566,10 @@ export class SandiBot {
       await this.#replyToIgnoreInteraction(interaction);
       return;
     }
+    if (!group && subcommand === "listen") {
+      await this.#replyToListenInteraction(interaction);
+      return;
+    }
     if (!group && subcommand === "todo") {
       await this.#replyToTodoInteraction(interaction);
       return;
@@ -625,7 +631,40 @@ export class SandiBot {
       ? " I also stopped the turn that was running here."
       : "";
     await interaction.reply({
-      content: `Okay, I'll ignore this ${place} from now on and only chime in when someone @-mentions me here.${stopNote} To undo this, edit \`data/discord/ignored-channels.json\`.`,
+      content: `Okay, I'll ignore this ${place} from now on and only chime in when someone @-mentions me here.${stopNote} Run \`/sandi listen\` to undo this.`,
+      allowedMentions: { parse: [] },
+      ephemeral: true,
+    });
+  }
+
+  async #replyToListenInteraction(
+    interaction: ChatInputCommandInteraction,
+  ): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({
+        content: "I can only manage ignored channels and threads in a server.",
+        allowedMentions: { parse: [] },
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const targetId =
+      conversationStorageIdFromInteraction(interaction) ??
+      interaction.channelId;
+    const removed = await this.#removeIgnoredChannel(targetId);
+    log.info("removed channel or thread from ignore list", {
+      targetId,
+      guildId: interaction.guildId,
+      wasIgnored: removed,
+    });
+
+    const place = asThread(interaction.channel) ? "thread" : "channel";
+    const content = removed
+      ? `Back to listening in this ${place}. I'll chime in again whenever something seems meant for me.`
+      : `I'm already listening in this ${place}; it wasn't on my ignore list.`;
+    await interaction.reply({
+      content,
       allowedMentions: { parse: [] },
       ephemeral: true,
     });
@@ -1498,6 +1537,15 @@ export class SandiBot {
       channelId,
     );
     this.#ignoredChannels = Promise.resolve(updated);
+  }
+
+  async #removeIgnoredChannel(channelId: string): Promise<boolean> {
+    const { channels, removed } = await removeIgnoredConversationChannel(
+      this.#config.paths.dataDir,
+      channelId,
+    );
+    this.#ignoredChannels = Promise.resolve(channels);
+    return removed;
   }
 }
 

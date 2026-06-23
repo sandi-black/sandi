@@ -56,7 +56,8 @@ a managed conversation is routed through a decision.
   `{ "channels": [{ "id": "..." }] }`, where each `id` is a channel or thread ID;
   with no file present, nothing is ignored. The `/sandi ignore` command appends
   the current channel or thread to this file (and stops any running turn there),
-  so the same denylist is both operator- and in-Discord-managed.
+  and `/sandi listen` removes it again, so the same denylist is both operator- and
+  in-Discord-managed.
 
 Once Sandi decides to engage, threads are created on demand rather than on every
 message:
@@ -101,6 +102,8 @@ Sandi has Discord application commands registered by `npm run commands:sync`:
 - `/sandi stop`: asks the current Sandi turn in this conversation to stop.
 - `/sandi ignore`: stops the current turn and adds this channel or thread to the
   ignore list, so Sandi only responds there when she is @-mentioned.
+- `/sandi listen`: removes this channel or thread from the ignore list, undoing a
+  previous `/sandi ignore`.
 - `/sandi todo`: creates and pins an interactive todo list in the current channel
   or thread.
 - `/sandi status`: reports runtime status, uptime/memory health, queue state,

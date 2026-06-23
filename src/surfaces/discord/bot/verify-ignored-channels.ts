@@ -7,6 +7,7 @@ import {
   appendIgnoredConversationChannel,
   IGNORED_CHANNELS_PATH,
   loadIgnoredConversationChannels,
+  removeIgnoredConversationChannel,
 } from "@/surfaces/discord/bot/ignored-channels";
 
 const dataDir = await mkdtemp(join(tmpdir(), "sandi-ignored-channels-"));
@@ -36,6 +37,18 @@ try {
   assert.equal(finalSet.size, 2);
   assert(finalSet.has("111"));
   assert(finalSet.has("222"));
+
+  // Removing a present ID rewrites the file and reports it was removed.
+  const removeHit = await removeIgnoredConversationChannel(dataDir, "111");
+  assert.equal(removeHit.removed, true);
+  assert.deepEqual([...removeHit.channels], ["222"]);
+  const afterRemove = await loadIgnoredConversationChannels(dataDir);
+  assert.deepEqual([...afterRemove], ["222"]);
+
+  // Removing an absent ID is a no-op that reports nothing was removed.
+  const removeMiss = await removeIgnoredConversationChannel(dataDir, "999");
+  assert.equal(removeMiss.removed, false);
+  assert.deepEqual([...removeMiss.channels], ["222"]);
 
   // Invalid configs are ignored rather than throwing.
   await writeFile(filePath, JSON.stringify({ channels: "nope" }), "utf8");

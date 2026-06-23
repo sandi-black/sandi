@@ -15,6 +15,20 @@ export function serializedCommands(): unknown[] {
       )
       .addSubcommand((command) =>
         command
+          .setName("ignore")
+          .setDescription(
+            "Stop the current turn and ignore this channel/thread unless @-mentioned",
+          ),
+      )
+      .addSubcommand((command) =>
+        command
+          .setName("listen")
+          .setDescription(
+            "Undo /sandi ignore so Sandi responds in this channel/thread again",
+          ),
+      )
+      .addSubcommand((command) =>
+        command
           .setName("todo")
           .setDescription("Create and pin an interactive todo list here"),
       )

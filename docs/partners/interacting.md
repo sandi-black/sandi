@@ -8,11 +8,17 @@ habits as people collaborate with her.
 
 Sandi's current primary home is Discord.
 
-- Start a conversation by creating a post in Sandi's forum channel.
-- Mention Sandi in a top-level text channel to start a dedicated thread
-  conversation from that message.
-- Reply inside a Sandi-managed thread without mentioning her; the thread already
-  belongs to that conversation.
+- Sandi passively reads the channels she can see. She decides for herself whether
+  a given message was meant for her, and stays quiet when it was not.
+- Mention Sandi, or reply to one of her messages, to guarantee a response.
+- When Sandi replies to a top-level channel message, she opens a thread on the
+  spot and answers there, so a busy channel stays readable. Keep talking in that
+  thread and she keeps responding without a mention.
+- Start a longer conversation by creating a post in Sandi's forum channel.
+
+Because she only speaks when a message seems directed at her, mentions are a
+convenience, not a requirement. If she stays quiet when you wanted her, mention
+her or reply to her and she will answer.
 
 Forum posts, automatic channel rooms, and Sandi-managed threads all carry their
 own continuity. Sandi can keep separate context for different rooms, topics,
@@ -28,6 +34,9 @@ Common commands:
 - `/sandi status`: inspect Sandi's runtime health and current conversation
   status.
 - `/sandi stop`: ask the current turn in this conversation to stop.
+- `/sandi ignore`: stop the current turn and have Sandi ignore this channel or
+  thread unless she is @-mentioned.
+- `/sandi listen`: undo `/sandi ignore` so Sandi responds here again.
 - `/sandi events list`: inspect scheduled Sandi events.
 - `/sandi reminders list`: inspect interactive human reminders.
 

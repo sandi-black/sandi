@@ -207,9 +207,10 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
   const signal = AbortSignal.any([conn.signal, call.signal]);
   conn.inflight.set(id, call);
   try {
+    // dispatch.data is `{ id } & BrokerCall`, so it carries the validated tool
+    // and typed params straight into the executor; no re-parsing downstream.
     const outcome = await executeLocalTool(
-      dispatch.data.tool,
-      dispatch.data.params,
+      dispatch.data,
       { rootDir: conn.options.rootDir },
       signal,
     );

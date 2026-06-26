@@ -5,13 +5,30 @@ import { dirname, join, resolve } from "node:path";
 
 import { z } from "zod/v4";
 
+// A per-device bearer token is the api surface's hex secret: 32 bytes rendered
+// as 64 lowercase hex chars. Pinning the exact shape here means a truncated or
+// mangled token in the on-disk file is rejected at load, not as a late 401.
+const HEX_TOKEN = /^[0-9a-f]{64}$/;
+
+// The server url must be an absolute http(s) origin: the client builds request
+// URLs against it, so a relative or non-http value could never carry a turn.
+function isHttpUrl(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return parsed.protocol === "http:" || parsed.protocol === "https:";
+}
+
 // Credentials the desktop client holds after pairing. This file lives on the
 // human's own machine and is NOT Sandi-managed server state, so it is written
 // with plain fs (owner-only mode), never the managed-write lock. The bearer
 // token authenticates both the turn requests and the device link.
 const DesktopCredentialsSchema = z.object({
-  url: z.string().min(1),
-  token: z.string().min(1),
+  url: z.string().refine(isHttpUrl, "must be an http(s) url"),
+  token: z.string().regex(HEX_TOKEN, "must be a 64-character hex token"),
   deviceId: z.string().min(1),
   identityId: z.string().min(1),
 });

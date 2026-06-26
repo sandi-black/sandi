@@ -8,12 +8,17 @@ import { pairDesktop } from "@/surfaces/api/client/pairing";
 
 type Reply = { status: number; body: unknown };
 
+// A 64-char hex stand-in for the minted per-device token, the only shape the
+// pairing response schema accepts.
+const DEVICE_TOKEN =
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 async function verifyPairing(): Promise<void> {
   await withServer({ status: 200, body: okBody("my-laptop") }, async (url) => {
     const outcome = await pairDesktop({ url, code: "ABCD1234" });
     assert(outcome.ok, "a 200 yields a successful outcome");
     if (outcome.ok) {
-      assertEqual(outcome.credentials.token, "device-token", "token is stored");
+      assertEqual(outcome.credentials.token, DEVICE_TOKEN, "token is stored");
       assertEqual(outcome.credentials.url, url, "the server url is stored");
       assertEqual(outcome.label, "my-laptop", "the server label is used");
     }
@@ -63,7 +68,7 @@ async function verifyPairing(): Promise<void> {
 function okBody(label?: string): Record<string, unknown> {
   return {
     surface: "api",
-    token: "device-token",
+    token: DEVICE_TOKEN,
     deviceId: "device-1",
     identityId: "tester",
     ...(label !== undefined ? { label } : {}),

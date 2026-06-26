@@ -80,6 +80,20 @@ function verifyReadBroker(): void {
     // value to a later tool call.
     process.env["SANDI_TOOL_BROKER_URL"] = "not a url";
     assertEqual(readBroker(), undefined, "a malformed broker url is rejected");
+
+    // A well-formed but non-loopback url is rejected: the broker is local-only,
+    // so a remote host in the env means tampering, not a valid coordinate.
+    process.env["SANDI_TOOL_BROKER_URL"] = "http://10.0.0.5:1";
+    assertEqual(
+      readBroker(),
+      undefined,
+      "a non-loopback broker url is rejected",
+    );
+
+    // https is rejected too: the loopback hop is plain http by construction.
+    process.env["SANDI_TOOL_BROKER_URL"] = "https://127.0.0.1:1";
+    assertEqual(readBroker(), undefined, "a non-http broker url is rejected");
+
     process.env["SANDI_TOOL_BROKER_URL"] = "http://127.0.0.1:1";
     process.env["SANDI_TOOL_BROKER_TOKEN"] = "too-short";
     assertEqual(
@@ -87,6 +101,10 @@ function verifyReadBroker(): void {
       undefined,
       "a malformed broker token is rejected",
     );
+
+    // A token of the right length but with a non-hex character is also rejected.
+    process.env["SANDI_TOOL_BROKER_TOKEN"] = "g".repeat(64);
+    assertEqual(readBroker(), undefined, "a non-hex broker token is rejected");
     console.log("ok readBroker rejects malformed broker coordinates");
   } finally {
     restoreEnv("SANDI_TOOL_BROKER_URL", url);

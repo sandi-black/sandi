@@ -4,8 +4,11 @@ import { z } from "zod/v4";
 import type { DesktopCredentials } from "@/surfaces/api/client/credentials";
 import { type JsonResponse, postJson } from "@/surfaces/api/client/http";
 
+// The minted token is the api surface's hex secret (32 bytes -> 64 hex chars).
+// Pin the shape so a malformed redemption response is rejected here rather than
+// stored and failing later as a 401 on the first turn.
 const PairResponseSchema = z.object({
-  token: z.string().min(1),
+  token: z.string().regex(/^[0-9a-f]{64}$/, "must be a 64-character hex token"),
   deviceId: z.string().min(1),
   identityId: z.string().min(1),
   label: z.string().optional(),

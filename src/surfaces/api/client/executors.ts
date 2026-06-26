@@ -3,24 +3,26 @@ import type { Dirent, Stats } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import {
-  LocalBashParamsSchema,
-  LocalEditParamsSchema,
-  LocalGlobParamsSchema,
-  LocalGrepParamsSchema,
-  LocalLsParamsSchema,
-  LocalReadParamsSchema,
-  type LocalToolName,
-  LocalWriteParamsSchema,
-  type ToolCallOutcome,
+import type {
+  BrokerCall,
+  LocalBashParams,
+  LocalEditParams,
+  LocalGlobParams,
+  LocalGrepParams,
+  LocalLsParams,
+  LocalReadParams,
+  LocalWriteParams,
+  ToolCallOutcome,
 } from "@/surfaces/api/devices/protocol";
 
 // The desktop side of hands-local: the real file and shell operations a paired
-// desktop runs on the human's behalf. Each executor parses its params, acts on
-// the local machine, and returns evidence. By design there is no path sandbox:
-// pairing a desktop grants Sandi the same reach the human has there, the same
-// trust model as running a coding agent locally. The only rails are output and
-// time caps so one call cannot flood the model or hang the link.
+// desktop runs on the human's behalf. The call arrives already parsed as a
+// BrokerCall (the wire boundary validated tool and params together), so each
+// executor receives typed params and acts on the local machine. By design there
+// is no path sandbox: pairing a desktop grants Sandi the same reach the human
+// has there, the same trust model as running a coding agent locally. The only
+// rails are output and time caps so one call cannot flood the model or hang the
+// link.
 
 const MAX_OUTPUT_CHARS = 100_000;
 const MAX_LIST_ENTRIES = 1_000;
@@ -39,8 +41,7 @@ export type ExecutorContext = {
 };
 
 export async function executeLocalTool(
-  tool: LocalToolName,
-  rawParams: unknown,
+  call: BrokerCall,
   context: ExecutorContext,
   signal?: AbortSignal,
 ): Promise<ToolCallOutcome> {
@@ -50,21 +51,21 @@ export async function executeLocalTool(
   // cancel cannot tear a half-written file.
   if (signal?.aborted) return refused("cancelled");
   try {
-    switch (tool) {
+    switch (call.tool) {
       case "local_read":
-        return await readLocal(rawParams, context);
+        return await readLocal(call.params, context);
       case "local_write":
-        return await writeLocal(rawParams, context);
+        return await writeLocal(call.params, context);
       case "local_edit":
-        return await editLocal(rawParams, context);
+        return await editLocal(call.params, context);
       case "local_ls":
-        return await listLocal(rawParams, context);
+        return await listLocal(call.params, context);
       case "local_glob":
-        return await globLocal(rawParams, context, signal);
+        return await globLocal(call.params, context, signal);
       case "local_grep":
-        return await grepLocal(rawParams, context, signal);
+        return await grepLocal(call.params, context, signal);
       case "local_bash":
-        return await bashLocal(rawParams, context, signal);
+        return await bashLocal(call.params, context, signal);
     }
   } catch (error) {
     return refused(errorMessage(error));
@@ -72,17 +73,14 @@ export async function executeLocalTool(
 }
 
 async function readLocal(
-  rawParams: unknown,
+  params: LocalReadParams,
   context: ExecutorContext,
 ): Promise<ToolCallOutcome> {
-  const parsed = LocalReadParamsSchema.safeParse(rawParams);
-  if (!parsed.success) return refused("invalid local_read params");
-  const path = resolvePath(context, parsed.data.path);
+  const path = resolvePath(context, params.path);
   const content = await readFile(path, "utf8");
   const lines = content.split("\n");
-  const offset = parsed.data.offset ?? 0;
-  const end =
-    parsed.data.limit !== undefined ? offset + parsed.data.limit : lines.length;
+  const offset = params.offset ?? 0;
+  const end = params.limit !== undefined ? offset + params.limit : lines.length;
   const slice = lines.slice(offset, end);
   const numbered = slice
     .map((line, index) => `${offset + index + 1}\t${line}`)
@@ -91,50 +89,44 @@ async function readLocal(
 }
 
 async function writeLocal(
-  rawParams: unknown,
+  params: LocalWriteParams,
   context: ExecutorContext,
 ): Promise<ToolCallOutcome> {
-  const parsed = LocalWriteParamsSchema.safeParse(rawParams);
-  if (!parsed.success) return refused("invalid local_write params");
-  const path = resolvePath(context, parsed.data.path);
+  const path = resolvePath(context, params.path);
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, parsed.data.content, "utf8");
-  const bytes = Buffer.byteLength(parsed.data.content, "utf8");
+  await writeFile(path, params.content, "utf8");
+  const bytes = Buffer.byteLength(params.content, "utf8");
   return ok(`wrote ${bytes} bytes to ${path}`);
 }
 
 async function editLocal(
-  rawParams: unknown,
+  params: LocalEditParams,
   context: ExecutorContext,
 ): Promise<ToolCallOutcome> {
-  const parsed = LocalEditParamsSchema.safeParse(rawParams);
-  if (!parsed.success) return refused("invalid local_edit params");
-  const path = resolvePath(context, parsed.data.path);
+  const path = resolvePath(context, params.path);
   const content = await readFile(path, "utf8");
-  const occurrences = countOccurrences(content, parsed.data.oldString);
+  const occurrences = countOccurrences(content, params.oldString);
   if (occurrences === 0) {
     return refused("oldString was not found in the file");
   }
-  if (occurrences > 1 && parsed.data.replaceAll !== true) {
+  if (occurrences > 1 && params.replaceAll !== true) {
     return refused(
       `oldString is not unique (${occurrences} matches); pass replaceAll to replace every one`,
     );
   }
   const next =
-    parsed.data.replaceAll === true
-      ? content.split(parsed.data.oldString).join(parsed.data.newString)
-      : content.replace(parsed.data.oldString, parsed.data.newString);
+    params.replaceAll === true
+      ? content.split(params.oldString).join(params.newString)
+      : content.replace(params.oldString, params.newString);
   await writeFile(path, next, "utf8");
   return ok(`replaced ${occurrences} occurrence(s) in ${path}`);
 }
 
 async function listLocal(
-  rawParams: unknown,
+  params: LocalLsParams,
   context: ExecutorContext,
 ): Promise<ToolCallOutcome> {
-  const parsed = LocalLsParamsSchema.safeParse(rawParams);
-  if (!parsed.success) return refused("invalid local_ls params");
-  const path = resolvePath(context, parsed.data.path);
+  const path = resolvePath(context, params.path);
   const entries = await readdir(path, { withFileTypes: true });
   const names = entries
     .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
@@ -148,13 +140,11 @@ async function listLocal(
 }
 
 async function globLocal(
-  rawParams: unknown,
+  params: LocalGlobParams,
   context: ExecutorContext,
   signal?: AbortSignal,
 ): Promise<ToolCallOutcome> {
-  const parsed = LocalGlobParamsSchema.safeParse(rawParams);
-  if (!parsed.success) return refused("invalid local_glob params");
-  const base = resolvePath(context, parsed.data.path ?? ".");
+  const base = resolvePath(context, params.path ?? ".");
   // A missing or non-directory base is a failed call, not an empty match set, so
   // refuse rather than return "(no files matched)" for a path that is not there.
   let baseStat: Stats;
@@ -165,7 +155,7 @@ async function globLocal(
   }
   if (!baseStat.isDirectory()) return refused(`not a directory: ${base}`);
 
-  const matcher = globToRegExp(parsed.data.pattern);
+  const matcher = globToRegExp(params.pattern);
   const matches: string[] = [];
   const skipped: string[] = [];
   for await (const file of walkFiles(base, skipped)) {
@@ -183,21 +173,19 @@ async function globLocal(
 }
 
 async function grepLocal(
-  rawParams: unknown,
+  params: LocalGrepParams,
   context: ExecutorContext,
   signal?: AbortSignal,
 ): Promise<ToolCallOutcome> {
-  const parsed = LocalGrepParamsSchema.safeParse(rawParams);
-  if (!parsed.success) return refused("invalid local_grep params");
   let regex: RegExp;
   try {
-    regex = new RegExp(parsed.data.pattern, parsed.data.ignoreCase ? "i" : "");
+    regex = new RegExp(params.pattern, params.ignoreCase ? "i" : "");
   } catch (error) {
     return refused(`invalid regular expression: ${errorMessage(error)}`);
   }
-  const base = resolvePath(context, parsed.data.path ?? ".");
+  const base = resolvePath(context, params.path ?? ".");
   const fileFilter =
-    parsed.data.glob !== undefined ? globToRegExp(parsed.data.glob) : undefined;
+    params.glob !== undefined ? globToRegExp(params.glob) : undefined;
   const results: string[] = [];
   const skipped: string[] = [];
 
@@ -232,22 +220,18 @@ async function grepLocal(
 }
 
 function bashLocal(
-  rawParams: unknown,
+  params: LocalBashParams,
   context: ExecutorContext,
   signal?: AbortSignal,
 ): Promise<ToolCallOutcome> {
-  const parsed = LocalBashParamsSchema.safeParse(rawParams);
-  if (!parsed.success) {
-    return Promise.resolve(refused("invalid local_bash params"));
-  }
   if (signal?.aborted) return Promise.resolve(refused("cancelled"));
   const cwd =
-    parsed.data.cwd !== undefined
-      ? resolvePath(context, parsed.data.cwd)
+    params.cwd !== undefined
+      ? resolvePath(context, params.cwd)
       : context.rootDir;
   const timeoutMs = Math.min(
     MAX_BASH_TIMEOUT_MS,
-    parsed.data.timeoutMs ?? DEFAULT_BASH_TIMEOUT_MS,
+    params.timeoutMs ?? DEFAULT_BASH_TIMEOUT_MS,
   );
 
   return new Promise((resolveRun) => {
@@ -258,7 +242,7 @@ function bashLocal(
     // wrapper (which would orphan the real command and leave it holding the
     // output pipe open). Windows has no process groups here; killTree uses
     // taskkill /t instead, so detached would only spawn a stray console window.
-    const child = spawn(parsed.data.command, {
+    const child = spawn(params.command, {
       shell: true,
       cwd,
       detached: process.platform !== "win32",
@@ -340,11 +324,13 @@ function killTree(
   }
   if (process.platform === "win32") {
     // taskkill /f is already a forced kill, so it covers both the polite and the
-    // escalated step. stdio ignored and the error swallowed so taskkill's own
-    // failure (an already-exited pid) cannot throw into the caller.
-    spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+    // escalated step. stdio is ignored, but a spawn failure (taskkill missing or
+    // unable to start) falls back to signaling the child directly so a cancel is
+    // never silently a no-op that leaves the command running.
+    const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
       stdio: "ignore",
-    }).on("error", () => {});
+    });
+    killer.on("error", () => child.kill(signal));
     return;
   }
   try {

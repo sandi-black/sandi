@@ -7,6 +7,10 @@ import {
   executeLocalTool,
 } from "@/surfaces/api/client/executors";
 
+// executeLocalTool takes a validated BrokerCall (the wire boundary parses tool
+// and params together), so these cases build typed calls directly. Malformed
+// params are a boundary concern, covered by verify-desktop-client, not here.
+
 async function verifyExecutors(): Promise<void> {
   await withTempDir(async (dir) => {
     const context: ExecutorContext = { rootDir: dir };
@@ -18,15 +22,16 @@ async function verifyExecutors(): Promise<void> {
     await verifyBash(context);
     await verifyBashCancellation(context);
     await verifyBashTimeout(context);
-    await verifyBadParams(context);
   });
   console.log("executors verification passed");
 }
 
 async function verifyWriteAndRead(context: ExecutorContext): Promise<void> {
   const wrote = await executeLocalTool(
-    "local_write",
-    { path: "notes.txt", content: "alpha\nbeta\ngamma\n" },
+    {
+      tool: "local_write",
+      params: { path: "notes.txt", content: "alpha\nbeta\ngamma\n" },
+    },
     context,
   );
   assert(wrote.ok, "write succeeds");
@@ -38,8 +43,7 @@ async function verifyWriteAndRead(context: ExecutorContext): Promise<void> {
   );
 
   const read = await executeLocalTool(
-    "local_read",
-    { path: "notes.txt" },
+    { tool: "local_read", params: { path: "notes.txt" } },
     context,
   );
   assert(read.ok, "read succeeds");
@@ -47,8 +51,7 @@ async function verifyWriteAndRead(context: ExecutorContext): Promise<void> {
   assert(read.output.includes("3\tgamma"), "read numbers the last line");
 
   const sliced = await executeLocalTool(
-    "local_read",
-    { path: "notes.txt", offset: 1, limit: 1 },
+    { tool: "local_read", params: { path: "notes.txt", offset: 1, limit: 1 } },
     context,
   );
   assertEqual(sliced.output, "2\tbeta", "read honors offset and limit");
@@ -57,13 +60,17 @@ async function verifyWriteAndRead(context: ExecutorContext): Promise<void> {
 
 async function verifyEdit(context: ExecutorContext): Promise<void> {
   await executeLocalTool(
-    "local_write",
-    { path: "edit.txt", content: "one two two three" },
+    {
+      tool: "local_write",
+      params: { path: "edit.txt", content: "one two two three" },
+    },
     context,
   );
   const notUnique = await executeLocalTool(
-    "local_edit",
-    { path: "edit.txt", oldString: "two", newString: "X" },
+    {
+      tool: "local_edit",
+      params: { path: "edit.txt", oldString: "two", newString: "X" },
+    },
     context,
   );
   assert(
@@ -72,8 +79,15 @@ async function verifyEdit(context: ExecutorContext): Promise<void> {
   );
 
   const all = await executeLocalTool(
-    "local_edit",
-    { path: "edit.txt", oldString: "two", newString: "X", replaceAll: true },
+    {
+      tool: "local_edit",
+      params: {
+        path: "edit.txt",
+        oldString: "two",
+        newString: "X",
+        replaceAll: true,
+      },
+    },
     context,
   );
   assert(all.ok, "edit replaceAll succeeds");
@@ -84,8 +98,10 @@ async function verifyEdit(context: ExecutorContext): Promise<void> {
   );
 
   const missing = await executeLocalTool(
-    "local_edit",
-    { path: "edit.txt", oldString: "absent", newString: "Y" },
+    {
+      tool: "local_edit",
+      params: { path: "edit.txt", oldString: "absent", newString: "Y" },
+    },
     context,
   );
   assert(!missing.ok, "edit refuses an oldString that is not present");
@@ -94,16 +110,17 @@ async function verifyEdit(context: ExecutorContext): Promise<void> {
 
 async function verifyList(context: ExecutorContext): Promise<void> {
   await executeLocalTool(
-    "local_write",
-    { path: "dir/a.txt", content: "a" },
+    { tool: "local_write", params: { path: "dir/a.txt", content: "a" } },
     context,
   );
   await executeLocalTool(
-    "local_write",
-    { path: "dir/b.txt", content: "b" },
+    { tool: "local_write", params: { path: "dir/b.txt", content: "b" } },
     context,
   );
-  const listed = await executeLocalTool("local_ls", { path: "dir" }, context);
+  const listed = await executeLocalTool(
+    { tool: "local_ls", params: { path: "dir" } },
+    context,
+  );
   assert(listed.ok, "ls succeeds");
   assert(listed.output.includes("a.txt"), "ls shows a.txt");
   assert(listed.output.includes("b.txt"), "ls shows b.txt");
@@ -111,24 +128,18 @@ async function verifyList(context: ExecutorContext): Promise<void> {
 }
 
 async function verifyGlob(context: ExecutorContext): Promise<void> {
-  await executeLocalTool(
-    "local_write",
-    { path: "src/x.ts", content: "x" },
-    context,
-  );
-  await executeLocalTool(
-    "local_write",
-    { path: "src/nested/y.ts", content: "y" },
-    context,
-  );
-  await executeLocalTool(
-    "local_write",
-    { path: "src/z.md", content: "z" },
-    context,
-  );
+  for (const [path, content] of [
+    ["src/x.ts", "x"],
+    ["src/nested/y.ts", "y"],
+    ["src/z.md", "z"],
+  ] as const) {
+    await executeLocalTool(
+      { tool: "local_write", params: { path, content } },
+      context,
+    );
+  }
   const matched = await executeLocalTool(
-    "local_glob",
-    { pattern: "src/**/*.ts" },
+    { tool: "local_glob", params: { pattern: "src/**/*.ts" } },
     context,
   );
   assert(matched.ok, "glob succeeds");
@@ -141,18 +152,26 @@ async function verifyGlob(context: ExecutorContext): Promise<void> {
     !matched.output.includes("src/z.md"),
     "glob excludes non-matching extensions",
   );
-  console.log("ok local_glob matches ** across directories");
+
+  // A missing base directory is a failed call, not an empty match set.
+  const missing = await executeLocalTool(
+    { tool: "local_glob", params: { pattern: "*", path: "no-such-dir" } },
+    context,
+  );
+  assert(!missing.ok, "glob refuses a missing base directory");
+  console.log("ok local_glob matches ** and refuses a missing base");
 }
 
 async function verifyGrep(context: ExecutorContext): Promise<void> {
   await executeLocalTool(
-    "local_write",
-    { path: "grep/a.txt", content: "needle here\nhay\nNeEdLe again" },
+    {
+      tool: "local_write",
+      params: { path: "grep/a.txt", content: "needle here\nhay\nNeEdLe again" },
+    },
     context,
   );
   await executeLocalTool(
-    "local_write",
-    { path: "grep/b.md", content: "needle" },
+    { tool: "local_write", params: { path: "grep/b.md", content: "needle" } },
     context,
   );
   // A binary file (contains a NUL byte) must be skipped by the line search.
@@ -162,8 +181,7 @@ async function verifyGrep(context: ExecutorContext): Promise<void> {
   );
 
   const found = await executeLocalTool(
-    "local_grep",
-    { pattern: "needle", path: "grep" },
+    { tool: "local_grep", params: { pattern: "needle", path: "grep" } },
     context,
   );
   assert(found.ok, "grep succeeds");
@@ -175,8 +193,10 @@ async function verifyGrep(context: ExecutorContext): Promise<void> {
   assert(!found.output.includes("bin.dat"), "grep skips binary files");
 
   const insensitive = await executeLocalTool(
-    "local_grep",
-    { pattern: "needle", path: "grep", ignoreCase: true },
+    {
+      tool: "local_grep",
+      params: { pattern: "needle", path: "grep", ignoreCase: true },
+    },
     context,
   );
   assert(
@@ -185,8 +205,10 @@ async function verifyGrep(context: ExecutorContext): Promise<void> {
   );
 
   const filtered = await executeLocalTool(
-    "local_grep",
-    { pattern: "needle", path: "grep", glob: "*.md" },
+    {
+      tool: "local_grep",
+      params: { pattern: "needle", path: "grep", glob: "*.md" },
+    },
     context,
   );
   assert(
@@ -202,16 +224,14 @@ async function verifyGrep(context: ExecutorContext): Promise<void> {
 
 async function verifyBash(context: ExecutorContext): Promise<void> {
   const echoed = await executeLocalTool(
-    "local_bash",
-    { command: "echo hands-local" },
+    { tool: "local_bash", params: { command: "echo hands-local" } },
     context,
   );
   assert(echoed.ok, "bash returns a result");
   assert(echoed.output.includes("hands-local"), "bash captures stdout");
 
   const failed = await executeLocalTool(
-    "local_bash",
-    { command: "exit 3" },
+    { tool: "local_bash", params: { command: "exit 3" } },
     context,
   );
   assert(
@@ -227,8 +247,7 @@ async function verifyBashCancellation(context: ExecutorContext): Promise<void> {
   const already = new AbortController();
   already.abort();
   const refusedEarly = await executeLocalTool(
-    "local_bash",
-    { command: "echo should-not-run" },
+    { tool: "local_bash", params: { command: "echo should-not-run" } },
     context,
     already.signal,
   );
@@ -250,8 +269,7 @@ async function verifyBashCancellation(context: ExecutorContext): Promise<void> {
       : `sleep ${sleepSeconds}`;
   const startedAt = Date.now();
   const pending = executeLocalTool(
-    "local_bash",
-    { command: sleepCmd },
+    { tool: "local_bash", params: { command: sleepCmd } },
     context,
     controller.signal,
   );
@@ -278,8 +296,7 @@ async function verifyBashTimeout(context: ExecutorContext): Promise<void> {
     process.platform === "win32" ? "ping -n 30 127.0.0.1 > NUL" : "sleep 30";
   const startedAt = Date.now();
   const outcome = await executeLocalTool(
-    "local_bash",
-    { command: sleepCmd, timeoutMs: 200 },
+    { tool: "local_bash", params: { command: sleepCmd, timeoutMs: 200 } },
     context,
   );
   const elapsedMs = Date.now() - startedAt;
@@ -294,13 +311,6 @@ async function verifyBashTimeout(context: ExecutorContext): Promise<void> {
     `a timed-out command must be killed promptly (took ${elapsedMs}ms)`,
   );
   console.log("ok local_bash reports a timeout as a failed call");
-}
-
-async function verifyBadParams(context: ExecutorContext): Promise<void> {
-  const bad = await executeLocalTool("local_read", { path: 42 }, context);
-  assert(!bad.ok, "a malformed param is refused");
-  assert(bad.error !== undefined, "a refusal carries an error message");
-  console.log("ok malformed params are refused");
 }
 
 async function withTempDir(run: (dir: string) => Promise<void>): Promise<void> {

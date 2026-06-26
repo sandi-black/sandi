@@ -190,14 +190,16 @@ export function readBroker(): Broker | undefined {
   } catch {
     return undefined;
   }
-  // The broker is loopback http(s); reject anything else (a file: or data: URL
-  // has no business here).
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return undefined;
-  }
-  // The broker mints a hex secret (32 bytes -> 64 hex chars). Require that shape
-  // so a truncated or non-hex token is rejected here, not as a late broker 401.
-  if (!/^[0-9a-f]{32,}$/i.test(rawToken)) return undefined;
+  // The broker listens on a loopback http origin that the api surface set on
+  // this child. Pin it to http on 127.0.0.1: a non-loopback or non-http value
+  // would mean the env was tampered with, and a tool call must never leave the
+  // local hop.
+  if (parsed.protocol !== "http:") return undefined;
+  if (parsed.hostname !== "127.0.0.1") return undefined;
+  // The broker mints a hex secret (32 bytes -> exactly 64 hex chars). Require
+  // that exact shape so a truncated or non-hex token is rejected here, not as a
+  // late broker 401.
+  if (!/^[0-9a-f]{64}$/.test(rawToken)) return undefined;
   return { url: parsed.origin, token: rawToken };
 }
 

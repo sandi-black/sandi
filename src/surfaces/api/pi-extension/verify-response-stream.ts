@@ -2,22 +2,110 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 
 import {
   classifyAssistantEvent,
+  createChunkRelay,
+  intentToChunk,
   postChunk,
   readStreamTarget,
   type StreamTarget,
 } from "./response-stream";
 
 // Exercises the response-stream extension's pure classification, its env
-// parsing, and its POST to the broker's streaming ingress, without a real pi
-// child or desktop.
+// parsing, its intent-to-chunk mapping, the serialized relay that carries deltas
+// to the broker, and the POST to the broker's streaming ingress, without a real
+// pi child or desktop.
 
 const HEX_TOKEN = "a1b2c3d4e5f60718293a4b5c6d7e8f90".repeat(2);
 
 async function verifyResponseStream(): Promise<void> {
   verifyClassify();
+  verifyIntentToChunk();
   verifyReadStreamTarget();
+  await verifyChunkRelay();
   await verifyPostChunk();
   console.log("response stream verification passed");
+}
+
+function verifyIntentToChunk(): void {
+  assertEqual(
+    intentToChunk({ kind: "text", delta: "a" }),
+    { type: "delta", channel: "text", delta: "a" },
+    "a text intent becomes a text delta chunk",
+  );
+  assertEqual(
+    intentToChunk({ kind: "thinking", delta: "h" }),
+    { type: "delta", channel: "thinking", delta: "h" },
+    "a thinking intent becomes a thinking delta chunk",
+  );
+  assertEqual(
+    intentToChunk({ kind: "end" }),
+    { type: "end" },
+    "an end intent becomes an end chunk",
+  );
+  assertEqual(
+    intentToChunk({ kind: "ignore" }),
+    undefined,
+    "an ignored intent yields no chunk",
+  );
+  console.log("ok intentToChunk maps streaming intents to wire chunks");
+}
+
+async function verifyChunkRelay(): Promise<void> {
+  const target: StreamTarget = {
+    url: "http://127.0.0.1:1",
+    token: HEX_TOKEN,
+    turnId: "turn-x",
+  };
+
+  // Sends run in generation order, each stamped with the turn id and the next
+  // seq, even though the relay awaits the prior POST before the next.
+  const sent: unknown[] = [];
+  const relay = createChunkRelay(target, async (_t, chunk) => {
+    sent.push(chunk);
+    return 202;
+  });
+  relay.relay({ type: "delta", channel: "text", delta: "a" });
+  relay.relay({ type: "delta", channel: "thinking", delta: "b" });
+  relay.relay({ type: "end" });
+  await relay.drain();
+  assertEqual(
+    sent,
+    [
+      { type: "delta", channel: "text", delta: "a", turnId: "turn-x", seq: 0 },
+      {
+        type: "delta",
+        channel: "thinking",
+        delta: "b",
+        turnId: "turn-x",
+        seq: 1,
+      },
+      { type: "end", turnId: "turn-x", seq: 2 },
+    ],
+    "relayed chunks carry the turn id and an increasing seq, in order",
+  );
+  assertEqual(relay.stopped, false, "a fully accepted stream is not stopped");
+
+  // A non-202 stops the stream: the in-flight chunk was sent, later ones are not.
+  const afterStop: unknown[] = [];
+  const stopping = createChunkRelay(target, async (_t, chunk) => {
+    afterStop.push(chunk);
+    return 503;
+  });
+  stopping.relay({ type: "delta", channel: "text", delta: "x" });
+  await stopping.drain();
+  assertEqual(stopping.stopped, true, "a 503 stops the stream");
+  stopping.relay({ type: "delta", channel: "text", delta: "y" });
+  await stopping.drain();
+  assertEqual(afterStop.length, 1, "no further chunk is sent after a stop");
+
+  // A transport error is terminal too.
+  const throwing = createChunkRelay(target, async () => {
+    throw new Error("socket hangup");
+  });
+  throwing.relay({ type: "delta", channel: "text", delta: "z" });
+  await throwing.drain();
+  assertEqual(throwing.stopped, true, "a transport error stops the stream");
+
+  console.log("ok createChunkRelay serializes, seqs, and stops on failure");
 }
 
 function verifyClassify(): void {

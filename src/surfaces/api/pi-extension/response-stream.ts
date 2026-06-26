@@ -40,42 +40,86 @@ export default function responseStreamExtension(pi: ExtensionAPI): void {
     return;
   }
 
+  const relay = createChunkRelay(target);
+  pi.on("message_update", (event) => {
+    const chunk = intentToChunk(
+      classifyAssistantEvent(event.assistantMessageEvent),
+    );
+    if (chunk) relay.relay(chunk);
+  });
+}
+
+export type OutChunk =
+  | { type: "delta"; channel: "text" | "thinking"; delta: string }
+  | { type: "end" };
+
+// Maps a classified streaming intent to the chunk to relay, or undefined when
+// the intent carries nothing to send (a tool-call delta, a content-block marker,
+// an unrecognized event). The turnId and seq are added by the relay, so this
+// stays a pure shape conversion the tests can check in isolation.
+export function intentToChunk(
+  intent: AssistantStreamIntent,
+): OutChunk | undefined {
+  if (intent.kind === "text") {
+    return { type: "delta", channel: "text", delta: intent.delta };
+  }
+  if (intent.kind === "thinking") {
+    return { type: "delta", channel: "thinking", delta: intent.delta };
+  }
+  if (intent.kind === "end") {
+    return { type: "end" };
+  }
+  return undefined;
+}
+
+export type ChunkRelay = {
+  // Queue one chunk for the broker. Stamps it with the target's turnId and the
+  // next seq (assigned synchronously so order is fixed at call time), then sends
+  // it after any prior chunk. A no-op once the stream has stopped.
+  relay(partial: OutChunk): void;
+  // Resolves once every queued send has settled (exposed for tests).
+  drain(): Promise<void>;
+  // True once a send returned a non-202 status or threw, so the stream is done.
+  readonly stopped: boolean;
+};
+
+// Builds the serialized relay behind the extension. Sends run one at a time in
+// generation order so deltas reach the broker without blocking pi's event loop
+// on the network, and the first non-202 (desktop gone, token revoked, turn
+// mismatch) or transport error stops the stream rather than hammering a dead
+// channel. The `post` seam lets tests drive the status without a real broker.
+export function createChunkRelay(
+  target: StreamTarget,
+  post: (target: StreamTarget, chunk: unknown) => Promise<number> = postChunk,
+): ChunkRelay {
   let seq = 0;
   let stopped = false;
-  // Serialize sends so deltas reach the broker in generation order without
-  // blocking pi's event loop on the network. Each relay appends to the chain and
-  // returns immediately; the chain awaits the prior POST before the next.
   let chain: Promise<void> = Promise.resolve();
-  const relay = (partial: OutChunk): void => {
-    if (stopped) return;
-    const chunk = { ...partial, turnId: target.turnId, seq: seq++ };
-    chain = chain.then(async () => {
+  return {
+    relay(partial: OutChunk): void {
       if (stopped) return;
-      try {
-        const status = await postChunk(target, chunk);
-        // Anything but 202 is terminal for this turn's stream: 503 (desktop
-        // gone), 401 (token revoked), 409 (turn mismatch), or a broker error.
-        // Stop pushing rather than hammer a dead channel; the turn's final HTTP
-        // body still carries the complete answer.
-        if (status !== 202) stopped = true;
-      } catch {
-        // A transport error is terminal too. Best-effort: a lost stream costs
-        // only the live preview, never the turn (the final body is authoritative).
-        stopped = true;
-      }
-    });
+      const chunk = { ...partial, turnId: target.turnId, seq: seq++ };
+      chain = chain.then(async () => {
+        if (stopped) return;
+        try {
+          const status = await post(target, chunk);
+          // Anything but 202 is terminal for this turn's stream. Stop pushing;
+          // the turn's final HTTP body still carries the complete answer.
+          if (status !== 202) stopped = true;
+        } catch {
+          // A transport error is terminal too. A lost stream costs only the live
+          // preview, never the turn (the final body is authoritative).
+          stopped = true;
+        }
+      });
+    },
+    drain(): Promise<void> {
+      return chain;
+    },
+    get stopped(): boolean {
+      return stopped;
+    },
   };
-
-  pi.on("message_update", (event) => {
-    const intent = classifyAssistantEvent(event.assistantMessageEvent);
-    if (intent.kind === "text") {
-      relay({ type: "delta", channel: "text", delta: intent.delta });
-    } else if (intent.kind === "thinking") {
-      relay({ type: "delta", channel: "thinking", delta: intent.delta });
-    } else if (intent.kind === "end") {
-      relay({ type: "end" });
-    }
-  });
 }
 
 // The streaming intents this extension acts on, distilled from pi's assistant
@@ -110,10 +154,6 @@ export function classifyAssistantEvent(event: unknown): AssistantStreamIntent {
   }
   return { kind: "ignore" };
 }
-
-type OutChunk =
-  | { type: "delta"; channel: "text" | "thinking"; delta: string }
-  | { type: "end" };
 
 // Exported for tests: reads and validates the per-turn streaming target the api
 // surface set on this child, or undefined when streaming is not wired (no broker

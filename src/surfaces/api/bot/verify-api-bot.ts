@@ -59,6 +59,7 @@ async function verifyApiBot(): Promise<void> {
     await verifyMalformedSchemeIsRejected(base, provider);
     await verifyWrongBearerIsRejected(base, provider);
     await verifyUnmappedIdentityIsRejected(base, provider);
+    await verifyMalformedTurnIdIsRejected(base, provider);
     await verifyValidTurn(base, provider);
     await verifySecondTurnDoesNotDuplicateParticipant(base);
     await verifyManifestPersisted(dataDir);
@@ -172,6 +173,39 @@ async function verifyUnmappedIdentityIsRejected(
   );
 }
 
+async function verifyMalformedTurnIdIsRejected(
+  base: string,
+  provider: RecordingProvider,
+): Promise<void> {
+  const before = provider.callCount;
+  // turnId is optional, but when present it must be a non-empty string. A
+  // malformed value is rejected at the request boundary with 400 before the
+  // provider runs, so a bad id cannot drive a turn or bind a stream.
+  const response = await fetch(turnsUrl(base), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${RAW_TOKEN}`,
+    },
+    body: JSON.stringify({ input: "hello", turnId: 42 }),
+  });
+  assertEqual(response.status, 400, "malformed turnId status");
+  const body = await response.json();
+  assertEqual(
+    isRecord(body) && body["error"],
+    "invalid_turn_id",
+    "malformed turnId error code",
+  );
+  assertEqual(
+    provider.callCount,
+    before,
+    "malformed turnId provider not called",
+  );
+  console.log(
+    "ok POST turn with a malformed turnId returns 400, provider untouched",
+  );
+}
+
 async function verifyValidTurn(
   base: string,
   provider: RecordingProvider,
@@ -182,7 +216,9 @@ async function verifyValidTurn(
       "content-type": "application/json",
       authorization: `Bearer ${RAW_TOKEN}`,
     },
-    body: JSON.stringify({ input: "what is the weather" }),
+    // A client-minted turn id rides along so the response stream can bind to this
+    // exact turn; it must reach the provider request that drives the pi child.
+    body: JSON.stringify({ input: "what is the weather", turnId: "turn-abc" }),
   });
   assertEqual(response.status, 200, "valid turn status");
   const body = await response.json();
@@ -205,6 +241,7 @@ async function verifyValidTurn(
     expectedCanonical,
     "provider conversationId",
   );
+  assertEqual(request.turnId, "turn-abc", "provider turnId");
   assertEqual(
     request.accountRouting?.identityId,
     IDENTITY_ID,

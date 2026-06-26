@@ -1471,7 +1471,10 @@ export class SandiBot {
     title: string,
     starter: ConversationParticipant,
   ): Promise<ConversationManifest> {
-    const manifest = await this.#conversations.getOrCreate({
+    // Read-or-create and apply the todo-channel prompt in one cross-process
+    // lock. A bare getOrCreate then save would clobber a participant another
+    // process added via addParticipant in the gap between the two.
+    return this.#conversations.applyManaged({
       storageId: channel.id,
       fallback: buildDiscordChannelManifest({
         guildId: channel.guildId,
@@ -1479,12 +1482,8 @@ export class SandiBot {
         title,
         starter,
       }),
+      mutate: (manifest) => withTodoChannelPrompt(manifest, channel.name),
     });
-    const todoManifest = withTodoChannelPrompt(manifest, channel.name);
-    if (todoManifest !== manifest) {
-      await this.#conversations.save(channel.id, todoManifest);
-    }
-    return todoManifest;
   }
 
   async #conversationIdForReactionMessage(

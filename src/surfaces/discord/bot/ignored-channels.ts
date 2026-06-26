@@ -1,7 +1,11 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { createLogger } from "@/lib/logging";
+import {
+  atomicWriteInPlace,
+  withManagedWrite,
+} from "@/lib/state/managed-write";
 
 const log = createLogger("bot");
 
@@ -47,15 +51,16 @@ export async function appendIgnoredConversationChannel(
   dataDir: string,
   channelId: string,
 ): Promise<Set<string>> {
-  const channels = await loadIgnoredConversationChannels(dataDir);
-  channels.add(channelId);
   const filePath = join(dataDir, IGNORED_CHANNELS_PATH);
-  const payload: ChannelIdConfig = {
-    channels: [...channels].map((id) => ({ id })),
-  };
-  await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-  return channels;
+  return withManagedWrite(filePath, async () => {
+    const channels = await loadIgnoredConversationChannels(dataDir);
+    channels.add(channelId);
+    const payload: ChannelIdConfig = {
+      channels: [...channels].map((id) => ({ id })),
+    };
+    await atomicWriteInPlace(filePath, `${JSON.stringify(payload, null, 2)}\n`);
+    return channels;
+  });
 }
 
 /**
@@ -67,17 +72,21 @@ export async function removeIgnoredConversationChannel(
   dataDir: string,
   channelId: string,
 ): Promise<{ channels: Set<string>; removed: boolean }> {
-  const channels = await loadIgnoredConversationChannels(dataDir);
-  const removed = channels.delete(channelId);
-  if (removed) {
-    const filePath = join(dataDir, IGNORED_CHANNELS_PATH);
-    const payload: ChannelIdConfig = {
-      channels: [...channels].map((id) => ({ id })),
-    };
-    await mkdir(dirname(filePath), { recursive: true });
-    await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-  }
-  return { channels, removed };
+  const filePath = join(dataDir, IGNORED_CHANNELS_PATH);
+  return withManagedWrite(filePath, async () => {
+    const channels = await loadIgnoredConversationChannels(dataDir);
+    const removed = channels.delete(channelId);
+    if (removed) {
+      const payload: ChannelIdConfig = {
+        channels: [...channels].map((id) => ({ id })),
+      };
+      await atomicWriteInPlace(
+        filePath,
+        `${JSON.stringify(payload, null, 2)}\n`,
+      );
+    }
+    return { channels, removed };
+  });
 }
 
 function isChannelIdConfig(value: unknown): value is ChannelIdConfig {

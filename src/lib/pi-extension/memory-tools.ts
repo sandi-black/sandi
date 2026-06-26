@@ -1,5 +1,4 @@
-import { mkdir, readFile, rm } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile, rm } from "node:fs/promises";
 
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -8,7 +7,7 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 
-import { writePrivateTextFile } from "../state/private-files";
+import { atomicWriteInPlace, withManagedWrite } from "../state/managed-write";
 import {
   listAllowedRefs,
   parseFrontmatter,
@@ -171,13 +170,14 @@ export default function memoryToolsExtension(pi: ExtensionAPI): void {
           content: params.content,
           mode,
         };
-        const content = await formatMemoryWrite(
-          params.summary === undefined
-            ? writeInput
-            : { ...writeInput, summary: params.summary },
-        );
-        await mkdir(dirname(filePath), { recursive: true });
-        await writePrivateTextFile(filePath, content);
+        await withManagedWrite(filePath, async () => {
+          const content = await formatMemoryWrite(
+            params.summary === undefined
+              ? writeInput
+              : { ...writeInput, summary: params.summary },
+          );
+          await atomicWriteInPlace(filePath, content);
+        });
         return textResult(
           [
             `Memory ${mode === "append" ? "appended" : "written"}: ${params.ref}`,
@@ -207,7 +207,9 @@ export default function memoryToolsExtension(pi: ExtensionAPI): void {
         const root = readMemoryRoot();
         const context = readMemoryContext();
         const filePath = resolveAllowedRef(root, context, params.ref);
-        await rm(filePath, { force: true });
+        await withManagedWrite(filePath, async () => {
+          await rm(filePath, { force: true });
+        });
         return textResult(`Memory forgotten: ${params.ref}`, {
           ref: params.ref,
         });

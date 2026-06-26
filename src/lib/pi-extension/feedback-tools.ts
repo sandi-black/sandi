@@ -9,6 +9,7 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 
+import { withManagedWrite } from "../state/managed-write";
 import { PRIVATE_FILE_MODE } from "../state/private-files";
 
 type FeedbackTargetType = "memory" | "skill";
@@ -128,12 +129,14 @@ export async function appendResourceFeedback(
 ): Promise<ResourceFeedbackRecord> {
   const record = resourceFeedbackRecord(input);
   const path = feedbackFilePath();
-  await mkdir(join(feedbackRoot(), "resources"), { recursive: true });
-  await appendFile(path, `${JSON.stringify(record)}\n`, {
-    encoding: "utf8",
-    mode: PRIVATE_FILE_MODE,
+  await withManagedWrite(path, async () => {
+    await mkdir(join(feedbackRoot(), "resources"), { recursive: true });
+    await appendFile(path, `${JSON.stringify(record)}\n`, {
+      encoding: "utf8",
+      mode: PRIVATE_FILE_MODE,
+    });
+    await chmodPrivate(path);
   });
-  await chmodPrivate(path);
   return record;
 }
 

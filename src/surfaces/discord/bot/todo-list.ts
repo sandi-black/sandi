@@ -142,6 +142,11 @@ type TodoListRef =
   | { kind: "channel"; channelId: string; list: ChannelTodoState }
   | { kind: "legacy"; list: ChannelTodoState };
 
+type AddFromModalResult =
+  | { kind: "stale" }
+  | { kind: "full" }
+  | { kind: "added"; item: TodoItem };
+
 type TodoDestination = TodoListRef & {
   channel?: SendableChannels;
 };
@@ -180,7 +185,6 @@ export class TodoListManager {
   readonly #client: Client;
   readonly #store: JsonFileStore<TodoListState>;
   readonly #remindersRoot: string;
-  #lastOperation: Promise<void> = Promise.resolve();
 
   constructor(input: {
     client: Client;
@@ -198,15 +202,11 @@ export class TodoListManager {
   async maybeCapture(message: Message): Promise<void> {
     const itemText = extractTodoItem(message.content);
     if (!itemText) return;
-
-    await this.#serialize(async () => {
-      await this.#capture(message, itemText);
-    });
+    await this.#capture(message, itemText);
   }
 
   async removeCompletedOneTimeReminder(reminderId: string): Promise<boolean> {
-    return await this.#serialize(async () => {
-      const state = await this.#store.read(EMPTY_STATE);
+    return await this.#updateState<boolean>(async (state) => {
       let guilds = state.guilds;
       let removed = false;
 
@@ -253,8 +253,8 @@ export class TodoListManager {
         }
       }
 
-      if (removed) await this.#store.write({ guilds });
-      return removed;
+      if (!removed) return { result: false };
+      return { result: true, next: { guilds } };
     });
   }
 
@@ -265,8 +265,7 @@ export class TodoListManager {
     const guildId = interaction.guildId;
     if (!guildId || !channel?.isSendable()) return undefined;
 
-    return await this.#serialize(async () => {
-      const state = await this.#store.read(EMPTY_STATE);
+    return await this.#updateState<CreateTodoListResult>(async (state) => {
       const current = state.guilds[guildId] ?? emptyGuildState();
       const existing = listForChannel(current, channel.id);
       const items =
@@ -299,17 +298,19 @@ export class TodoListManager {
         });
       }
 
-      await this.#store.write({
-        guilds: {
-          ...state.guilds,
-          [guildId]: updateGuildList(current, {
-            kind: "channel",
-            channelId: sent.channelId,
-            list,
-          }),
+      return {
+        result: buildCreateTodoListResult(sent.url, pinned, pinError),
+        next: {
+          guilds: {
+            ...state.guilds,
+            [guildId]: updateGuildList(current, {
+              kind: "channel",
+              channelId: sent.channelId,
+              list,
+            }),
+          },
         },
-      });
-      return buildCreateTodoListResult(sent.url, pinned, pinError);
+      };
     });
   }
 
@@ -400,61 +401,81 @@ export class TodoListManager {
     return false;
   }
 
-  async #serialize<T>(operation: () => Promise<T>): Promise<T> {
-    const run = this.#lastOperation.then(operation, operation);
-    this.#lastOperation = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return await run;
+  /**
+   * Runs a read, mutate, and write of the todo state inside one cross-process
+   * lock so concurrent same-identity processes cannot lose updates. The apply
+   * callback receives the freshest on-disk state and returns an out-of-band
+   * result plus, when there is something to persist, the next state. Returning
+   * no `next` skips the write (the no-op or stale-list paths). Any Discord I/O
+   * the callback performs (rendering, reminder writes) runs while the lock is
+   * held; the managed-write heartbeat keeps the lock alive for the duration.
+   */
+  async #updateState<T>(
+    apply: (
+      state: TodoListState,
+    ) => Promise<{ result: T; next?: TodoListState }>,
+  ): Promise<T> {
+    const box: { value?: { result: T } } = {};
+    await this.#store.updateManaged(async (state) => {
+      const applied = await apply(state);
+      box.value = { result: applied.result };
+      return applied.next ?? state;
+    }, EMPTY_STATE);
+    if (!box.value) throw new Error("todo update produced no result");
+    return box.value.result;
   }
 
   async #capture(message: Message, itemText: string): Promise<void> {
-    if (!message.guildId) return;
+    const guildId = message.guildId;
+    if (!guildId) return;
 
     try {
-      const state = await this.#store.read(EMPTY_STATE);
-      const current = state.guilds[message.guildId] ?? emptyGuildState();
-      const destination = await this.#destinationForMessage(message, current);
-      if (!destination) return;
+      await this.#updateState<void>(async (state) => {
+        const current = state.guilds[guildId] ?? emptyGuildState();
+        const destination = await this.#destinationForMessage(message, current);
+        if (!destination) return { result: undefined };
 
-      if (destination.list.items.length >= MAX_TODO_ITEMS) {
-        log.info("todo list is full; skipping captured item", {
-          messageId: message.id,
-          guildId: message.guildId,
-          channelId: destination.list.channelId,
-        });
-        await this.#renderList(destination.list);
-        return;
-      }
+        if (destination.list.items.length >= MAX_TODO_ITEMS) {
+          log.info("todo list is full; skipping captured item", {
+            messageId: message.id,
+            guildId,
+            channelId: destination.list.channelId,
+          });
+          await this.#renderList(destination.list);
+          return { result: undefined };
+        }
 
-      const item: TodoItem = {
-        id: message.id,
-        text: itemText,
-        authorName: message.member?.displayName ?? message.author.username,
-        sourceUrl: message.url,
-        createdAt: message.createdAt.toISOString(),
-      };
-      const updatedList = await this.#upsertRenderedList(
-        {
-          ...destination.list,
-          items: [...destination.list.items, item],
-        },
-        destination.channel,
-      );
-      await this.#store.write({
-        guilds: {
-          ...state.guilds,
-          [message.guildId]: updateGuildList(current, {
-            ...destination,
-            list: updatedList,
-          }),
-        },
+        const item: TodoItem = {
+          id: message.id,
+          text: itemText,
+          authorName: message.member?.displayName ?? message.author.username,
+          sourceUrl: message.url,
+          createdAt: message.createdAt.toISOString(),
+        };
+        const updatedList = await this.#upsertRenderedList(
+          {
+            ...destination.list,
+            items: [...destination.list.items, item],
+          },
+          destination.channel,
+        );
+        return {
+          result: undefined,
+          next: {
+            guilds: {
+              ...state.guilds,
+              [guildId]: updateGuildList(current, {
+                ...destination,
+                list: updatedList,
+              }),
+            },
+          },
+        };
       });
     } catch (error) {
       log.error("failed to capture todo item", {
         messageId: message.id,
-        guildId: message.guildId,
+        guildId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -524,15 +545,9 @@ export class TodoListManager {
     interaction: ButtonInteraction,
     messageId: string,
   ): Promise<void> {
-    const refreshed = await this.#serialize(async () => {
-      const ref = await this.#readListByMessageId(
-        interaction.guildId,
-        messageId,
-      );
-      if (!ref) return false;
-      await this.#renderList(ref.list);
-      return true;
-    });
+    const ref = await this.#readListByMessageId(interaction.guildId, messageId);
+    if (ref) await this.#renderList(ref.list);
+    const refreshed = ref !== undefined;
 
     if (!refreshed) {
       await interaction.reply(staleListResponse());
@@ -561,36 +576,42 @@ export class TodoListManager {
       return;
     }
 
-    const result = await this.#serialize(async () => {
-      const state = await this.#store.read(EMPTY_STATE);
-      const guildId = interaction.guildId;
-      if (!guildId) return { kind: "stale" } as const;
-      const current = state.guilds[guildId] ?? emptyGuildState();
-      const ref = findListByMessageId(current, messageId);
-      if (!ref) return { kind: "stale" } as const;
-      if (ref.list.items.length >= MAX_TODO_ITEMS) {
-        await this.#renderList(ref.list);
-        return { kind: "full" } as const;
-      }
+    const result = await this.#updateState<AddFromModalResult>(
+      async (state) => {
+        const guildId = interaction.guildId;
+        if (!guildId) return { result: { kind: "stale" } };
+        const current = state.guilds[guildId] ?? emptyGuildState();
+        const ref = findListByMessageId(current, messageId);
+        if (!ref) return { result: { kind: "stale" } };
+        if (ref.list.items.length >= MAX_TODO_ITEMS) {
+          await this.#renderList(ref.list);
+          return { result: { kind: "full" } };
+        }
 
-      const item = buildTodoItem({
-        id: randomUUID(),
-        text,
-        authorName: displayNameFromInteraction(interaction),
-        createdAt: new Date().toISOString(),
-      });
-      const updatedList = await this.#upsertRenderedList({
-        ...ref.list,
-        items: [...ref.list.items, item],
-      });
-      await this.#store.write({
-        guilds: {
-          ...state.guilds,
-          [guildId]: updateGuildList(current, { ...ref, list: updatedList }),
-        },
-      });
-      return { kind: "added", item } as const;
-    });
+        const item = buildTodoItem({
+          id: randomUUID(),
+          text,
+          authorName: displayNameFromInteraction(interaction),
+          createdAt: new Date().toISOString(),
+        });
+        const updatedList = await this.#upsertRenderedList({
+          ...ref.list,
+          items: [...ref.list.items, item],
+        });
+        return {
+          result: { kind: "added", item },
+          next: {
+            guilds: {
+              ...state.guilds,
+              [guildId]: updateGuildList(current, {
+                ...ref,
+                list: updatedList,
+              }),
+            },
+          },
+        };
+      },
+    );
 
     if (result.kind === "stale") {
       await interaction.reply(staleListResponse());
@@ -638,17 +659,15 @@ export class TodoListManager {
       return;
     }
 
-    const updated = await this.#serialize(async () => {
-      return await this.#updateTodoReminder({
-        guildId: interaction.guildId,
-        messageId,
-        itemId,
-        userId: interaction.user.id,
-        createdBy: userFromInteraction(interaction),
-        reminderAt,
-        recurrence: undefined,
-        recurrenceSummary: undefined,
-      });
+    const updated = await this.#updateTodoReminder({
+      guildId: interaction.guildId,
+      messageId,
+      itemId,
+      userId: interaction.user.id,
+      createdBy: userFromInteraction(interaction),
+      reminderAt,
+      recurrence: undefined,
+      recurrenceSummary: undefined,
     });
 
     if (!updated) {
@@ -683,17 +702,15 @@ export class TodoListManager {
       return;
     }
 
-    const updated = await this.#serialize(async () => {
-      return await this.#updateTodoReminder({
-        guildId: interaction.guildId,
-        messageId,
-        itemId,
-        userId: interaction.user.id,
-        createdBy: userFromInteraction(interaction),
-        reminderAt: parsed.iso,
-        recurrence: undefined,
-        recurrenceSummary: undefined,
-      });
+    const updated = await this.#updateTodoReminder({
+      guildId: interaction.guildId,
+      messageId,
+      itemId,
+      userId: interaction.user.id,
+      createdBy: userFromInteraction(interaction),
+      reminderAt: parsed.iso,
+      recurrence: undefined,
+      recurrenceSummary: undefined,
     });
 
     if (!updated) {
@@ -750,17 +767,15 @@ export class TodoListManager {
       return;
     }
 
-    const updated = await this.#serialize(async () => {
-      return await this.#updateTodoReminder({
-        guildId: interaction.guildId,
-        messageId,
-        itemId,
-        userId: interaction.user.id,
-        createdBy: userFromInteraction(interaction),
-        reminderAt: current.item.reminderAt,
-        recurrence: repeat?.recurrence,
-        recurrenceSummary: repeat?.summary,
-      });
+    const updated = await this.#updateTodoReminder({
+      guildId: interaction.guildId,
+      messageId,
+      itemId,
+      userId: interaction.user.id,
+      createdBy: userFromInteraction(interaction),
+      reminderAt: current.item.reminderAt,
+      recurrence: repeat?.recurrence,
+      recurrenceSummary: repeat?.summary,
     });
 
     if (!updated) {
@@ -805,19 +820,17 @@ export class TodoListManager {
       return;
     }
 
-    const updated = await this.#serialize(async () => {
-      return await this.#updateTodoReminder({
-        guildId: interaction.guildId,
-        messageId,
-        itemId,
-        userId: interaction.user.id,
-        createdBy: userFromInteraction(interaction),
-        reminderAt:
-          current.item.reminderAt ??
-          nextReminderAt(parsed.recurrence).toISOString(),
-        recurrence: parsed.recurrence,
-        recurrenceSummary: parsed.summary,
-      });
+    const updated = await this.#updateTodoReminder({
+      guildId: interaction.guildId,
+      messageId,
+      itemId,
+      userId: interaction.user.id,
+      createdBy: userFromInteraction(interaction),
+      reminderAt:
+        current.item.reminderAt ??
+        nextReminderAt(parsed.recurrence).toISOString(),
+      recurrence: parsed.recurrence,
+      recurrenceSummary: parsed.summary,
     });
 
     if (!updated) {
@@ -838,32 +851,35 @@ export class TodoListManager {
     messageId: string,
     itemId: string,
   ): Promise<void> {
-    const completed = await this.#serialize(async () => {
-      const state = await this.#store.read(EMPTY_STATE);
+    const completed = await this.#updateState<
+      { item: TodoItem; list: ChannelTodoState } | undefined
+    >(async (state) => {
       const guildId = interaction.guildId;
-      if (!guildId) return undefined;
+      if (!guildId) return { result: undefined };
       const current = state.guilds[guildId] ?? emptyGuildState();
       const ref = findListByMessageId(current, messageId);
-      if (!ref) return undefined;
+      if (!ref) return { result: undefined };
 
       const item = ref.list.items.find((candidate) => candidate.id === itemId);
-      if (!item) return undefined;
+      if (!item) return { result: undefined };
 
       const updatedList: ChannelTodoState = {
         ...ref.list,
         items: ref.list.items.filter((candidate) => candidate.id !== itemId),
       };
-      await this.#store.write({
-        guilds: {
-          ...state.guilds,
-          [guildId]: updateGuildList(current, {
-            ...ref,
-            list: updatedList,
-          }),
-        },
-      });
       await this.#markLinkedReminderDone(item, interaction);
-      return { item, list: updatedList };
+      return {
+        result: { item, list: updatedList },
+        next: {
+          guilds: {
+            ...state.guilds,
+            [guildId]: updateGuildList(current, {
+              ...ref,
+              list: updatedList,
+            }),
+          },
+        },
+      };
     });
 
     if (!completed) {
@@ -894,34 +910,40 @@ export class TodoListManager {
     }
 
     await interaction.deferUpdate();
-    const completed = await this.#serialize(async () => {
-      const state = await this.#store.read(EMPTY_STATE);
-      const guildId = interaction.guildId;
-      if (!guildId) return undefined;
-      const current = state.guilds[guildId] ?? emptyGuildState();
-      const ref = findListByMessageId(current, messageId);
-      if (!ref) return undefined;
+    const completed = await this.#updateState<TodoItem | undefined>(
+      async (state) => {
+        const guildId = interaction.guildId;
+        if (!guildId) return { result: undefined };
+        const current = state.guilds[guildId] ?? emptyGuildState();
+        const ref = findListByMessageId(current, messageId);
+        if (!ref) return { result: undefined };
 
-      const item = ref.list.items.find(
-        (candidate) => candidate.id === selectedId,
-      );
-      if (!item) return undefined;
+        const item = ref.list.items.find(
+          (candidate) => candidate.id === selectedId,
+        );
+        if (!item) return { result: undefined };
 
-      const updatedList = await this.#upsertRenderedList({
-        ...ref.list,
-        items: ref.list.items.filter(
-          (candidate) => candidate.id !== selectedId,
-        ),
-      });
-      await this.#store.write({
-        guilds: {
-          ...state.guilds,
-          [guildId]: updateGuildList(current, { ...ref, list: updatedList }),
-        },
-      });
-      await this.#markLinkedReminderDone(item, interaction);
-      return item;
-    });
+        const updatedList = await this.#upsertRenderedList({
+          ...ref.list,
+          items: ref.list.items.filter(
+            (candidate) => candidate.id !== selectedId,
+          ),
+        });
+        await this.#markLinkedReminderDone(item, interaction);
+        return {
+          result: item,
+          next: {
+            guilds: {
+              ...state.guilds,
+              [guildId]: updateGuildList(current, {
+                ...ref,
+                list: updatedList,
+              }),
+            },
+          },
+        };
+      },
+    );
 
     if (!completed) {
       await interaction.editReply({
@@ -969,65 +991,61 @@ export class TodoListManager {
   }): Promise<TodoItem | undefined> {
     const guildId = input.guildId;
     if (!guildId) return undefined;
-    const state = await this.#store.read(EMPTY_STATE);
-    const current = state.guilds[guildId] ?? emptyGuildState();
-    const ref = findListByMessageId(current, input.messageId);
-    const item = ref?.list.items.find(
-      (candidate) => candidate.id === input.itemId,
-    );
-    if (!ref || !item) return undefined;
+    // Read, mutate the item, render, and write all under one cross-process lock
+    // so a concurrent reminder update or completion in another process cannot
+    // lose this change. The reminder file writes run inside the same section.
+    return this.#updateState<TodoItem | undefined>(async (state) => {
+      const current = state.guilds[guildId] ?? emptyGuildState();
+      const ref = findListByMessageId(current, input.messageId);
+      const item = ref?.list.items.find(
+        (candidate) => candidate.id === input.itemId,
+      );
+      if (!ref || !item) return { result: undefined };
 
-    if (!input.reminderAt) {
-      if (item.reminderId) {
-        await deleteReminder(this.#remindersRoot, item.reminderId);
+      let updatedItem: TodoItem;
+      if (!input.reminderAt) {
+        if (item.reminderId) {
+          await deleteReminder(this.#remindersRoot, item.reminderId);
+        }
+        updatedItem = withoutReminder(item);
+      } else {
+        const reminderId = item.reminderId ?? generatedTodoReminderId();
+        const reminder: Reminder = {
+          target: reminderTargetForList(ref.list),
+          text: `Todo: ${item.text}`,
+          createdAt: new Date().toISOString(),
+          createdBy: input.createdBy,
+          audienceUserIds: [input.userId],
+          status: "active",
+          nextFireAt: input.reminderAt,
+          ...(input.recurrence ? { recurrence: input.recurrence } : {}),
+          followupIntervalMinutes: DEFAULT_FOLLOWUP_INTERVAL_MINUTES,
+          fireCount: 0,
+          messageRefs: [],
+        };
+        await writeReminder(this.#remindersRoot, reminderId, reminder);
+        updatedItem = withReminder(item, {
+          reminderId,
+          reminderAt: input.reminderAt,
+          recurrenceSummary: input.recurrenceSummary,
+        });
       }
-      const updatedItem = withoutReminder(item);
-      await this.#writeUpdatedItem(state, guildId, current, ref, updatedItem);
-      return updatedItem;
-    }
 
-    const reminderId = item.reminderId ?? generatedTodoReminderId();
-    const reminder: Reminder = {
-      target: reminderTargetForList(ref.list),
-      text: `Todo: ${item.text}`,
-      createdAt: new Date().toISOString(),
-      createdBy: input.createdBy,
-      audienceUserIds: [input.userId],
-      status: "active",
-      nextFireAt: input.reminderAt,
-      ...(input.recurrence ? { recurrence: input.recurrence } : {}),
-      followupIntervalMinutes: DEFAULT_FOLLOWUP_INTERVAL_MINUTES,
-      fireCount: 0,
-      messageRefs: [],
-    };
-    await writeReminder(this.#remindersRoot, reminderId, reminder);
-    const updatedItem = withReminder(item, {
-      reminderId,
-      reminderAt: input.reminderAt,
-      recurrenceSummary: input.recurrenceSummary,
-    });
-    await this.#writeUpdatedItem(state, guildId, current, ref, updatedItem);
-    return updatedItem;
-  }
-
-  async #writeUpdatedItem(
-    state: TodoListState,
-    guildId: string,
-    current: GuildTodoState,
-    ref: TodoListRef,
-    updatedItem: TodoItem,
-  ): Promise<void> {
-    const updatedList = await this.#upsertRenderedList({
-      ...ref.list,
-      items: ref.list.items.map((candidate) =>
-        candidate.id === updatedItem.id ? updatedItem : candidate,
-      ),
-    });
-    await this.#store.write({
-      guilds: {
-        ...state.guilds,
-        [guildId]: updateGuildList(current, { ...ref, list: updatedList }),
-      },
+      const updatedList = await this.#upsertRenderedList({
+        ...ref.list,
+        items: ref.list.items.map((candidate) =>
+          candidate.id === updatedItem.id ? updatedItem : candidate,
+        ),
+      });
+      return {
+        result: updatedItem,
+        next: {
+          guilds: {
+            ...state.guilds,
+            [guildId]: updateGuildList(current, { ...ref, list: updatedList }),
+          },
+        },
+      };
     });
   }
 

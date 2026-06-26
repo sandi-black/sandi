@@ -16,6 +16,7 @@ async function verifyExecutors(): Promise<void> {
     await verifyGlob(context);
     await verifyGrep(context);
     await verifyBash(context);
+    await verifyBashCancellation(context);
     await verifyBadParams(context);
   });
   console.log("executors verification passed");
@@ -218,6 +219,41 @@ async function verifyBash(context: ExecutorContext): Promise<void> {
   );
   assert(failed.output.includes("exit code: 3"), "bash reports the exit code");
   console.log("ok local_bash captures output and exit codes");
+}
+
+async function verifyBashCancellation(context: ExecutorContext): Promise<void> {
+  // A pre-aborted signal short-circuits before spawning anything.
+  const already = new AbortController();
+  already.abort();
+  const refusedEarly = await executeLocalTool(
+    "local_bash",
+    { command: "echo should-not-run" },
+    context,
+    already.signal,
+  );
+  assert(
+    !refusedEarly.ok && refusedEarly.error === "cancelled",
+    "an already-aborted signal refuses before running the command",
+  );
+
+  // Aborting mid-flight kills the child and refuses rather than waiting it out.
+  const controller = new AbortController();
+  const sleepCmd =
+    process.platform === "win32" ? "ping -n 30 127.0.0.1 > NUL" : "sleep 30";
+  const pending = executeLocalTool(
+    "local_bash",
+    { command: sleepCmd },
+    context,
+    controller.signal,
+  );
+  const timer = setTimeout(() => controller.abort(), 100);
+  const outcome = await pending;
+  clearTimeout(timer);
+  assert(
+    !outcome.ok && outcome.error === "cancelled",
+    "aborting a running command kills it and refuses",
+  );
+  console.log("ok local_bash honors cancellation");
 }
 
 async function verifyBadParams(context: ExecutorContext): Promise<void> {

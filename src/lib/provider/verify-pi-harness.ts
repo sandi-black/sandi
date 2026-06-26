@@ -108,6 +108,10 @@ process.stdout.write("fake model output\\n");
     "default (non-api) Pi turns must leave native builtin tools enabled",
   );
   assert(
+    !record.args.includes("--exclude-tools"),
+    "default turns must not exclude any tools",
+  );
+  assert(
     record.env.SANDI_TOOL_BROKER_URL === undefined &&
       record.env.SANDI_TOOL_BROKER_TOKEN === undefined,
     "a turn with no leased broker must not carry broker env vars",
@@ -203,6 +207,7 @@ process.stdout.write("fake model output\\n");
       runtimeImport: "./sandi/runtime.ts",
       runtimeEntry: "./src/surfaces/api/runtime/index.ts",
       disableBuiltinTools: true,
+      excludeTools: ["sandi_js_run"],
     },
     localToolBroker: { url: "http://127.0.0.1:9", token: "broker-secret" },
     memoryContext: {
@@ -215,6 +220,10 @@ process.stdout.write("fake model output\\n");
   assert(
     apiRecord.args.includes("--no-builtin-tools"),
     "api turns disable pi's native builtin file and shell tools",
+  );
+  assert(
+    valueAfter(apiRecord.args, "--exclude-tools") === "sandi_js_run",
+    "api turns exclude sandi_js_run so no code runs on the server",
   );
   assert(
     apiRecord.env.SANDI_TOOL_BROKER_URL === "http://127.0.0.1:9",

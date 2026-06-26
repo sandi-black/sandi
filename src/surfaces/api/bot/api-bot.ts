@@ -324,7 +324,7 @@ export class ApiBot {
         canonicalId,
         conversation,
         participant,
-        deviceId: entry.deviceId,
+        deviceKey: entry.tokenSha256,
         input: parsed.input,
         requestSignal: abort.signal,
       });
@@ -432,6 +432,10 @@ export class ApiBot {
     response.write(": linked\n\n");
 
     const handle = this.#devices.connect({
+      // Route by the token hash, not the client-chosen deviceId: it is unique
+      // per token and identical for this device's link and its turns, so a
+      // deviceId reused across tokens can never cross to another's link.
+      key: entry.tokenSha256,
       deviceId: entry.deviceId,
       identityId: entry.identityId,
       write: (chunk) => {
@@ -475,7 +479,7 @@ export class ApiBot {
       return;
     }
 
-    const settled = this.#devices.settleResult(entry.deviceId, parsed.data);
+    const settled = this.#devices.settleResult(entry.tokenSha256, parsed.data);
     if (!settled) {
       // The call id is unknown for this device: a stale, duplicate, or already
       // aborted call. Nothing to resolve.
@@ -495,7 +499,7 @@ export class ApiBot {
     canonicalId: string;
     conversation: ConversationManifest;
     participant: ConversationParticipant;
-    deviceId: string;
+    deviceKey: string;
     input: string;
     requestSignal: AbortSignal;
   }): Promise<string> {
@@ -517,7 +521,7 @@ export class ApiBot {
               canonicalId: input.canonicalId,
               conversation: input.conversation,
               participant: input.participant,
-              deviceId: input.deviceId,
+              deviceKey: input.deviceKey,
               input: input.input,
               signal,
             });
@@ -534,7 +538,7 @@ export class ApiBot {
     canonicalId: string;
     conversation: ConversationManifest;
     participant: ConversationParticipant;
-    deviceId: string;
+    deviceKey: string;
     input: string;
     signal: AbortSignal;
   }): Promise<string> {
@@ -550,8 +554,8 @@ export class ApiBot {
     // Hand the turn a tool broker only when the caller's own desktop is holding
     // a link. With no link, the proxy extension registers no tools and the turn
     // runs without file or shell access rather than touching the server.
-    const lease = this.#devices.isConnected(input.deviceId)
-      ? this.#broker.lease({ deviceId: input.deviceId, signal: input.signal })
+    const lease = this.#devices.isConnected(input.deviceKey)
+      ? this.#broker.lease({ key: input.deviceKey, signal: input.signal })
       : undefined;
     try {
       const request: ProviderTurnRequest = {

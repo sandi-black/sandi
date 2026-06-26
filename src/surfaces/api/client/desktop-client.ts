@@ -53,6 +53,21 @@ function connectOnce(options: DesktopClientOptions): Promise<void> {
       rejectConn(error instanceof Error ? error : new Error(String(error)));
       return;
     }
+    // Scoped to this one connection: aborted whenever the link settles so any
+    // tool calls still running on this connection are cancelled, never left to
+    // post a result back over a link that has gone away.
+    const connection = new AbortController();
+    const onParentAbort = (): void => connection.abort();
+    options.signal?.addEventListener("abort", onParentAbort, { once: true });
+    let settled = false;
+    const settle = (run: () => void): void => {
+      if (settled) return;
+      settled = true;
+      options.signal?.removeEventListener("abort", onParentAbort);
+      connection.abort();
+      run();
+    };
+
     const requester = target.protocol === "https:" ? httpsRequest : httpRequest;
     const req = requester(
       target,
@@ -66,8 +81,10 @@ function connectOnce(options: DesktopClientOptions): Promise<void> {
       (res) => {
         if (res.statusCode !== 200) {
           res.resume();
-          rejectConn(
-            new Error(`device link returned status ${res.statusCode}`),
+          settle(() =>
+            rejectConn(
+              new Error(`device link returned status ${res.statusCode}`),
+            ),
           );
           return;
         }
@@ -80,24 +97,27 @@ function connectOnce(options: DesktopClientOptions): Promise<void> {
           while (boundary !== -1) {
             const block = buffer.slice(0, boundary);
             buffer = buffer.slice(boundary + 2);
-            handleEvent(block, options);
+            handleEvent(block, options, connection.signal);
             boundary = buffer.indexOf("\n\n");
           }
         });
-        res.on("end", () => resolveConn());
-        res.on("error", (error) => rejectConn(error));
+        res.on("end", () => settle(() => resolveConn()));
+        res.on("error", (error) => settle(() => rejectConn(error)));
       },
     );
-    req.on("error", (error) => rejectConn(error));
-    const onAbort = (): void => {
-      req.destroy();
-    };
-    options.signal?.addEventListener("abort", onAbort, { once: true });
+    req.on("error", (error) => settle(() => rejectConn(error)));
+    connection.signal.addEventListener("abort", () => req.destroy(), {
+      once: true,
+    });
     req.end();
   });
 }
 
-function handleEvent(block: string, options: DesktopClientOptions): void {
+function handleEvent(
+  block: string,
+  options: DesktopClientOptions,
+  signal: AbortSignal,
+): void {
   let event = "message";
   const dataLines: string[] = [];
   for (const line of block.split("\n")) {
@@ -113,7 +133,7 @@ function handleEvent(block: string, options: DesktopClientOptions): void {
   // several at once. The catch is a backstop: runToolCall already reports tool
   // failures, so reaching here means an unexpected internal error, not a tool
   // result, and must not become an unhandled rejection.
-  runToolCall(dataLines.join("\n"), options).catch((error: unknown) => {
+  runToolCall(dataLines.join("\n"), options, signal).catch((error: unknown) => {
     options.onStatus?.(
       `tool dispatch error: ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -123,6 +143,7 @@ function handleEvent(block: string, options: DesktopClientOptions): void {
 async function runToolCall(
   data: string,
   options: DesktopClientOptions,
+  signal: AbortSignal,
 ): Promise<void> {
   let raw: unknown;
   try {
@@ -146,9 +167,12 @@ async function runToolCall(
     return;
   }
 
-  const outcome = await executeLocalTool(toolParse.data, record["params"], {
-    rootDir: options.rootDir,
-  });
+  const outcome = await executeLocalTool(
+    toolParse.data,
+    record["params"],
+    { rootDir: options.rootDir },
+    signal,
+  );
   await reportResult(options, {
     id,
     ok: outcome.ok,

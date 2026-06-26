@@ -235,6 +235,14 @@ export class PiCliClient implements ModelProviderClient {
     if (request.surfaceContext?.disableBuiltinTools) {
       args.push("--no-builtin-tools");
     }
+    // Disable named extension tools that must not run for this surface (the api
+    // surface disables sandi_js_run so a hands-local turn cannot execute code on
+    // the server). --exclude-tools matches by name across builtin and extension
+    // tools, so this also covers a tool a future extension might register.
+    const excludeTools = request.surfaceContext?.excludeTools ?? [];
+    if (excludeTools.length > 0) {
+      args.push("--exclude-tools", excludeTools.join(","));
+    }
 
     const auditFields = providerAccountAuditFields({
       request,

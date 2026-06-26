@@ -33,7 +33,7 @@ async function verifyHappyPath(
   }));
   const controller = new AbortController();
   const lease = broker.lease({
-    deviceId: "d-happy",
+    key: "d-happy",
     signal: controller.signal,
   });
   const response = await postCall(lease.ticket.url, lease.ticket.token, {
@@ -54,7 +54,7 @@ async function verifyBadToken(
 ): Promise<void> {
   connectEchoDevice(registry, "d-token", okEcho);
   const lease = broker.lease({
-    deviceId: "d-token",
+    key: "d-token",
     signal: new AbortController().signal,
   });
   const response = await postCall(lease.ticket.url, "not-a-real-token", {
@@ -69,7 +69,7 @@ async function verifyBadToken(
 async function verifyDeviceUnavailable(broker: ToolBroker): Promise<void> {
   // Lease a turn for a device that never connected.
   const lease = broker.lease({
-    deviceId: "d-ghost",
+    key: "d-ghost",
     signal: new AbortController().signal,
   });
   const response = await postCall(lease.ticket.url, lease.ticket.token, {
@@ -91,6 +91,7 @@ async function verifyAbortRejects(
 ): Promise<void> {
   // A silent device that receives the dispatch but never answers.
   registry.connect({
+    key: "d-silent",
     deviceId: "d-silent",
     identityId: "i",
     write: () => {},
@@ -98,7 +99,7 @@ async function verifyAbortRejects(
   });
   const controller = new AbortController();
   const lease = broker.lease({
-    deviceId: "d-silent",
+    key: "d-silent",
     signal: controller.signal,
   });
   const pending = postCall(lease.ticket.url, lease.ticket.token, {
@@ -123,7 +124,7 @@ async function verifyInvalidCall(
 ): Promise<void> {
   connectEchoDevice(registry, "d-invalid", okEcho);
   const lease = broker.lease({
-    deviceId: "d-invalid",
+    key: "d-invalid",
     signal: new AbortController().signal,
   });
   const unknownTool = await postCall(lease.ticket.url, lease.ticket.token, {
@@ -141,7 +142,7 @@ async function verifyRevoke(
 ): Promise<void> {
   connectEchoDevice(registry, "d-revoke", okEcho);
   const lease = broker.lease({
-    deviceId: "d-revoke",
+    key: "d-revoke",
     signal: new AbortController().signal,
   });
   lease.revoke();
@@ -165,11 +166,12 @@ function okEcho(dispatch: EchoDispatch): EchoResult {
 // desktop on the other end of the link.
 function connectEchoDevice(
   registry: DeviceRegistry,
-  deviceId: string,
+  key: string,
   respond: (dispatch: EchoDispatch) => EchoResult,
 ): void {
   registry.connect({
-    deviceId,
+    key,
+    deviceId: key,
     identityId: "i",
     write: (chunk) => {
       const match = /event: tool_call\ndata: (.*)\n\n/s.exec(chunk);
@@ -180,7 +182,7 @@ function connectEchoDevice(
       const tool = record?.["tool"];
       if (typeof id !== "string" || typeof tool !== "string") return;
       queueMicrotask(() => {
-        registry.settleResult(deviceId, respond({ id, tool }));
+        registry.settleResult(key, respond({ id, tool }));
       });
     },
     end: () => {},

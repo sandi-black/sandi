@@ -35,7 +35,7 @@ const BROKER_HEADERS_TIMEOUT_MS = 10_000;
 const TOKEN_BYTES = 32;
 
 type TurnBinding = {
-  deviceId: string;
+  key: string;
   signal: AbortSignal;
 };
 
@@ -104,12 +104,13 @@ export class ToolBroker {
   }
 
   // Leases a per-turn ticket: the loopback URL plus a single-turn token that
-  // routes /call to one device under one abort signal.
-  lease(input: { deviceId: string; signal: AbortSignal }): TurnBrokerLease {
+  // routes /call to one device link (by its opaque routing key) under one abort
+  // signal.
+  lease(input: { key: string; signal: AbortSignal }): TurnBrokerLease {
     const url = this.#url;
     if (!url) throw new Error("tool broker is not started");
     const token = randomBytes(TOKEN_BYTES).toString("hex");
-    this.#turns.set(token, { deviceId: input.deviceId, signal: input.signal });
+    this.#turns.set(token, { key: input.key, signal: input.signal });
     return {
       ticket: { url, token },
       revoke: () => {
@@ -152,7 +153,7 @@ export class ToolBroker {
 
       try {
         const outcome = await this.#registry.dispatch({
-          deviceId: binding.deviceId,
+          key: binding.key,
           tool: parsed.data.tool,
           params: parsed.data.params,
           signal: binding.signal,

@@ -23,8 +23,8 @@ const DISPATCH_BACKSTOP_MS = 10 * 60_000;
 const HEARTBEAT_MS = 30_000;
 
 export class DeviceUnavailableError extends Error {
-  constructor(deviceId: string) {
-    super(`no connected desktop for device ${deviceId}`);
+  constructor() {
+    super("no connected desktop for this turn");
     this.name = "DeviceUnavailableError";
   }
 }
@@ -42,6 +42,7 @@ type PendingCall = {
 };
 
 type ConnectionState = {
+  key: string;
   deviceId: string;
   identityId: string;
   write: (chunk: string) => void;
@@ -52,28 +53,32 @@ type ConnectionState = {
 };
 
 // Tracks the desktops currently holding an SSE link and routes tool calls to
-// them. Keyed by deviceId: a turn authenticates with a token bound to one
-// device, and that device's link carries the turn's file and shell work, so a
-// turn always reaches the same machine that asked for it.
+// them. Links are keyed by an opaque routing key, not the client-chosen
+// deviceId: the api bot uses the authenticating token's hash, which is unique
+// per token and identical for a device's link and its turns, so a turn always
+// reaches the same token's desktop and a deviceId reused across tokens cannot
+// cross identities. deviceId and identityId are carried only for logging.
 export class DeviceRegistry {
   readonly #connections = new Map<string, ConnectionState>();
 
   // Registers a desktop's SSE link. `write` emits a raw SSE chunk and `end`
   // closes the underlying response; both are supplied by the HTTP layer so this
   // registry stays transport-agnostic and unit-testable. A second link for the
-  // same device supersedes the first.
+  // same key supersedes the first.
   connect(input: {
+    key: string;
     deviceId: string;
     identityId: string;
     write: (chunk: string) => void;
     end: () => void;
   }): DeviceConnectionHandle {
-    const existing = this.#connections.get(input.deviceId);
+    const existing = this.#connections.get(input.key);
     if (existing) {
       this.#teardown(existing, "superseded by a new device link");
     }
 
     const state: ConnectionState = {
+      key: input.key,
       deviceId: input.deviceId,
       identityId: input.identityId,
       write: input.write,
@@ -84,7 +89,7 @@ export class DeviceRegistry {
       }, HEARTBEAT_MS),
       closed: false,
     };
-    this.#connections.set(input.deviceId, state);
+    this.#connections.set(input.key, state);
     log.info("device link connected", {
       deviceId: input.deviceId,
       identityId: input.identityId,
@@ -94,23 +99,24 @@ export class DeviceRegistry {
     };
   }
 
-  isConnected(deviceId: string): boolean {
-    const state = this.#connections.get(deviceId);
+  isConnected(key: string): boolean {
+    const state = this.#connections.get(key);
     return state !== undefined && !state.closed;
   }
 
-  // Pushes a tool call to the device's stream and resolves with the outcome the
-  // device POSTs back. Rejects with DeviceUnavailableError if no link is present
-  // or the stream is dead, and rejects if the turn aborts or the backstop fires.
+  // Pushes a tool call to the keyed device's stream and resolves with the
+  // outcome the device POSTs back. Rejects with DeviceUnavailableError if no link
+  // is present or the stream is dead, and rejects if the turn aborts or the
+  // backstop fires.
   dispatch(input: {
-    deviceId: string;
+    key: string;
     tool: LocalToolName;
     params: unknown;
     signal?: AbortSignal;
   }): Promise<ToolCallOutcome> {
-    const state = this.#connections.get(input.deviceId);
+    const state = this.#connections.get(input.key);
     if (!state || state.closed) {
-      return Promise.reject(new DeviceUnavailableError(input.deviceId));
+      return Promise.reject(new DeviceUnavailableError());
     }
 
     return new Promise<ToolCallOutcome>((resolve, reject) => {
@@ -162,16 +168,16 @@ export class DeviceRegistry {
         clearTimeout(timer);
         input.signal?.removeEventListener("abort", onAbort);
         this.#teardown(state, "device link write failed");
-        reject(new DeviceUnavailableError(input.deviceId));
+        reject(new DeviceUnavailableError());
       }
     });
   }
 
-  // Resolves the pending call named by the result. Returns false when the device
-  // or the call id is unknown (a stale or duplicate result), so the caller can
+  // Resolves the pending call named by the result. Returns false when the key or
+  // the call id is unknown (a stale or duplicate result), so the caller can
   // answer the device with a 404 rather than silently dropping it.
-  settleResult(deviceId: string, result: DeviceResult): boolean {
-    const state = this.#connections.get(deviceId);
+  settleResult(key: string, result: DeviceResult): boolean {
+    const state = this.#connections.get(key);
     if (!state) return false;
     const call = state.pending.get(result.id);
     if (!call) return false;
@@ -205,12 +211,12 @@ export class DeviceRegistry {
     if (state.closed) return;
     state.closed = true;
     clearInterval(state.heartbeat);
-    if (this.#connections.get(state.deviceId) === state) {
-      this.#connections.delete(state.deviceId);
+    if (this.#connections.get(state.key) === state) {
+      this.#connections.delete(state.key);
     }
     for (const call of state.pending.values()) {
       clearTimeout(call.timer);
-      call.reject(new DeviceUnavailableError(state.deviceId));
+      call.reject(new DeviceUnavailableError());
     }
     state.pending.clear();
     try {

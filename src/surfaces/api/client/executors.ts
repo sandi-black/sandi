@@ -39,6 +39,7 @@ export async function executeLocalTool(
   tool: LocalToolName,
   rawParams: unknown,
   context: ExecutorContext,
+  signal?: AbortSignal,
 ): Promise<ToolCallOutcome> {
   try {
     switch (tool) {
@@ -51,11 +52,11 @@ export async function executeLocalTool(
       case "local_ls":
         return await listLocal(rawParams, context);
       case "local_glob":
-        return await globLocal(rawParams, context);
+        return await globLocal(rawParams, context, signal);
       case "local_grep":
-        return await grepLocal(rawParams, context);
+        return await grepLocal(rawParams, context, signal);
       case "local_bash":
-        return await bashLocal(rawParams, context);
+        return await bashLocal(rawParams, context, signal);
     }
   } catch (error) {
     return refused(errorMessage(error));
@@ -141,6 +142,7 @@ async function listLocal(
 async function globLocal(
   rawParams: unknown,
   context: ExecutorContext,
+  signal?: AbortSignal,
 ): Promise<ToolCallOutcome> {
   const parsed = LocalGlobParamsSchema.safeParse(rawParams);
   if (!parsed.success) return refused("invalid local_glob params");
@@ -148,6 +150,7 @@ async function globLocal(
   const matcher = globToRegExp(parsed.data.pattern);
   const matches: string[] = [];
   for await (const file of walkFiles(base)) {
+    if (signal?.aborted) return refused("cancelled");
     const rel = toPosix(relative(base, file));
     if (matcher.test(rel)) {
       matches.push(rel);
@@ -162,6 +165,7 @@ async function globLocal(
 async function grepLocal(
   rawParams: unknown,
   context: ExecutorContext,
+  signal?: AbortSignal,
 ): Promise<ToolCallOutcome> {
   const parsed = LocalGrepParamsSchema.safeParse(rawParams);
   if (!parsed.success) return refused("invalid local_grep params");
@@ -194,6 +198,7 @@ async function grepLocal(
     await searchFile(base, base);
   } else {
     for await (const file of walkFiles(base)) {
+      if (signal?.aborted) return refused("cancelled");
       const rel = toPosix(relative(base, file));
       if (fileFilter && !fileFilter.test(rel)) continue;
       await searchFile(file, rel);
@@ -207,11 +212,13 @@ async function grepLocal(
 function bashLocal(
   rawParams: unknown,
   context: ExecutorContext,
+  signal?: AbortSignal,
 ): Promise<ToolCallOutcome> {
   const parsed = LocalBashParamsSchema.safeParse(rawParams);
   if (!parsed.success) {
     return Promise.resolve(refused("invalid local_bash params"));
   }
+  if (signal?.aborted) return Promise.resolve(refused("cancelled"));
   const cwd =
     parsed.data.cwd !== undefined
       ? resolvePath(context, parsed.data.cwd)
@@ -227,10 +234,18 @@ function bashLocal(
     const child = spawn(parsed.data.command, { shell: true, cwd });
     const out: string[] = [];
     let timedOut = false;
+    let cancelled = false;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
     }, timeoutMs);
+    // If the turn aborts or the link drops, kill the command rather than let it
+    // run on past a result no one is waiting for.
+    const onAbort = (): void => {
+      cancelled = true;
+      child.kill("SIGTERM");
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
 
     child.stdout.on("data", (chunk: Buffer) =>
       out.push(chunk.toString("utf8")),
@@ -240,10 +255,16 @@ function bashLocal(
     );
     child.on("error", (error) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       resolveRun(refused(errorMessage(error)));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (cancelled) {
+        resolveRun(refused("cancelled"));
+        return;
+      }
       const header = timedOut
         ? `command timed out after ${timeoutMs}ms (exit ${code ?? "none"})`
         : `exit code: ${code ?? "none"}`;

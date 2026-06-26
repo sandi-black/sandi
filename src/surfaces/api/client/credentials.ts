@@ -1,4 +1,5 @@
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -18,8 +19,19 @@ export type DesktopCredentials = z.infer<typeof DesktopCredentialsSchema>;
 
 export function desktopConfigPath(): string {
   const explicit = process.env["SANDI_DESKTOP_CONFIG"]?.trim();
-  if (explicit) return resolve(explicit);
+  if (explicit) return resolve(expandHome(explicit));
   return join(homedir(), ".sandi", "desktop.json");
+}
+
+// A leading ~ is not shell-expanded inside a .env value, so expand it here.
+// Without this, the documented `~/.sandi/desktop.json` example would resolve
+// under the current directory (./~/.sandi/...) instead of the user's home.
+function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/") || path.startsWith("~\\")) {
+    return join(homedir(), path.slice(2));
+  }
+  return path;
 }
 
 export async function loadDesktopCredentials(
@@ -40,17 +52,22 @@ export async function saveDesktopCredentials(
   credentials: DesktopCredentials,
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(credentials, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  // writeFile only applies the mode when it creates the file; chmod an existing
-  // one too so a re-pair never widens the permissions. Best effort: platforms
-  // that ignore POSIX modes (Windows) simply no-op.
+  const body = `${JSON.stringify(credentials, null, 2)}\n`;
+  // Write a sibling temp file with owner-only mode, then rename it over the
+  // target. The destination inode carries 0o600 from creation, so the token is
+  // never briefly world-readable and a re-pair over an existing permissive file
+  // cannot leave wider permissions behind (writeFile's mode applies only when it
+  // creates a file, so overwriting in place would not retighten one). A failure
+  // throws rather than reporting success with an unprotected file. On platforms
+  // that ignore POSIX modes (Windows) the mode is a no-op and rename still
+  // replaces atomically.
+  const temp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+  await writeFile(temp, body, { encoding: "utf8", mode: 0o600 });
   try {
-    await chmod(path, 0o600);
-  } catch {
-    // Ignore: the filesystem does not enforce POSIX permissions here.
+    await rename(temp, path);
+  } catch (error) {
+    await rm(temp, { force: true });
+    throw error;
   }
 }
 

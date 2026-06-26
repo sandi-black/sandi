@@ -17,6 +17,7 @@ async function verifyExecutors(): Promise<void> {
     await verifyGrep(context);
     await verifyBash(context);
     await verifyBashCancellation(context);
+    await verifyBashTimeout(context);
     await verifyBadParams(context);
   });
   console.log("executors verification passed");
@@ -237,9 +238,17 @@ async function verifyBashCancellation(context: ExecutorContext): Promise<void> {
   );
 
   // Aborting mid-flight kills the child and refuses rather than waiting it out.
+  // The command sleeps far longer than the cancel delay, so resolving promptly
+  // is the proof the whole process tree was actually killed: signaling only the
+  // shell wrapper would leave the command holding the output pipe and the call
+  // would not settle until the sleep elapsed.
   const controller = new AbortController();
+  const sleepSeconds = 30;
   const sleepCmd =
-    process.platform === "win32" ? "ping -n 30 127.0.0.1 > NUL" : "sleep 30";
+    process.platform === "win32"
+      ? `ping -n ${sleepSeconds} 127.0.0.1 > NUL`
+      : `sleep ${sleepSeconds}`;
+  const startedAt = Date.now();
   const pending = executeLocalTool(
     "local_bash",
     { command: sleepCmd },
@@ -249,11 +258,42 @@ async function verifyBashCancellation(context: ExecutorContext): Promise<void> {
   const timer = setTimeout(() => controller.abort(), 100);
   const outcome = await pending;
   clearTimeout(timer);
+  const elapsedMs = Date.now() - startedAt;
   assert(
     !outcome.ok && outcome.error === "cancelled",
     "aborting a running command kills it and refuses",
   );
+  assert(
+    elapsedMs < (sleepSeconds * 1000) / 2,
+    `a cancelled command must stop promptly, not run to completion (took ${elapsedMs}ms)`,
+  );
   console.log("ok local_bash honors cancellation");
+}
+
+async function verifyBashTimeout(context: ExecutorContext): Promise<void> {
+  // A command that outruns its timeout never completed, so it is a failed call
+  // (ok: false), not a result. It must also resolve near the timeout, proving
+  // the process tree was killed rather than waited out.
+  const sleepCmd =
+    process.platform === "win32" ? "ping -n 30 127.0.0.1 > NUL" : "sleep 30";
+  const startedAt = Date.now();
+  const outcome = await executeLocalTool(
+    "local_bash",
+    { command: sleepCmd, timeoutMs: 200 },
+    context,
+  );
+  const elapsedMs = Date.now() - startedAt;
+  assert(
+    !outcome.ok &&
+      outcome.error !== undefined &&
+      outcome.error.includes("timed out"),
+    "a timed-out command is a failed call, not a successful result",
+  );
+  assert(
+    elapsedMs < 10_000,
+    `a timed-out command must be killed promptly (took ${elapsedMs}ms)`,
+  );
+  console.log("ok local_bash reports a timeout as a failed call");
 }
 
 async function verifyBadParams(context: ExecutorContext): Promise<void> {

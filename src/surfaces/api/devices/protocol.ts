@@ -78,25 +78,30 @@ export type LocalGlobParams = z.infer<typeof LocalGlobParamsSchema>;
 export type LocalGrepParams = z.infer<typeof LocalGrepParamsSchema>;
 export type LocalBashParams = z.infer<typeof LocalBashParamsSchema>;
 
-// What the pi child POSTs to the loopback broker. The per-turn bearer token in
-// the Authorization header identifies which device the call routes to, so the
-// body only needs to name a tool and carry its params. The broker is a dumb
-// pipe: it checks the tool name is one Sandi proxies and forwards params
-// verbatim, leaving param validation to the desktop that will run it.
-export const BrokerCallSchema = z.object({
-  tool: LocalToolNameSchema,
-  params: z.unknown(),
-});
+// What the pi child POSTs to the loopback broker, and what the broker pushes on
+// to the desktop. A discriminated union keyed by `tool`: each tool is paired
+// with its own params schema, so a call naming one tool but carrying another's
+// params (or a tool Sandi does not proxy) is rejected at the broker boundary
+// rather than forwarded as opaque JSON. The desktop re-validates before it
+// touches the disk, but the precise shape is established here, once, on entry.
+export const BrokerCallSchema = z.discriminatedUnion("tool", [
+  z.object({ tool: z.literal("local_read"), params: LocalReadParamsSchema }),
+  z.object({ tool: z.literal("local_write"), params: LocalWriteParamsSchema }),
+  z.object({ tool: z.literal("local_edit"), params: LocalEditParamsSchema }),
+  z.object({ tool: z.literal("local_ls"), params: LocalLsParamsSchema }),
+  z.object({ tool: z.literal("local_glob"), params: LocalGlobParamsSchema }),
+  z.object({ tool: z.literal("local_grep"), params: LocalGrepParamsSchema }),
+  z.object({ tool: z.literal("local_bash"), params: LocalBashParamsSchema }),
+]);
 export type BrokerCall = z.infer<typeof BrokerCallSchema>;
 
 // What the broker pushes to the desktop over SSE as the data of a `tool_call`
-// event. The `id` correlates the eventual result back to this call so many calls
-// can be in flight on one stream at once.
-export const ToolDispatchSchema = z.object({
-  id: z.string().min(1),
-  tool: LocalToolNameSchema,
-  params: z.unknown(),
-});
+// event: a validated call plus an `id` that correlates the eventual result back
+// to it, so many calls can be in flight on one stream at once. Parsing this once
+// on arrival hands the desktop typed params, never raw JSON it has to reach into.
+export const ToolDispatchSchema = z
+  .object({ id: z.string().min(1) })
+  .and(BrokerCallSchema);
 export type ToolDispatch = z.infer<typeof ToolDispatchSchema>;
 
 // What the desktop POSTs back once it has run the call. `ok` is the tool's own

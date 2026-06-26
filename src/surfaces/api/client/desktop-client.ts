@@ -5,7 +5,7 @@ import type { DesktopCredentials } from "@/surfaces/api/client/credentials";
 import { executeLocalTool } from "@/surfaces/api/client/executors";
 import { postJson } from "@/surfaces/api/client/http";
 import {
-  LocalToolNameSchema,
+  BrokerCallSchema,
   TOOL_CALL_EVENT,
   TOOL_CANCEL_EVENT,
   ToolCancelSchema,
@@ -185,13 +185,16 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
   const id = record["id"];
   if (typeof id !== "string" || id.length === 0) return;
 
-  const toolParse = LocalToolNameSchema.safeParse(record["tool"]);
-  if (!toolParse.success) {
+  // The id is read first so even a malformed call can be answered. Then validate
+  // the tool name and params together as the precise discriminated union, so the
+  // executor runs typed params, not raw JSON reached out of the event.
+  const callParse = BrokerCallSchema.safeParse(raw);
+  if (!callParse.success) {
     await reportResult(conn, {
       id,
       ok: false,
       output: "",
-      error: "unknown tool",
+      error: "invalid tool call",
     });
     return;
   }
@@ -204,8 +207,8 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
   conn.inflight.set(id, call);
   try {
     const outcome = await executeLocalTool(
-      toolParse.data,
-      record["params"],
+      callParse.data.tool,
+      callParse.data.params,
       { rootDir: conn.options.rootDir },
       signal,
     );
@@ -225,7 +228,7 @@ async function reportResult(
   result: { id: string; ok: boolean; output: string; error?: string },
 ): Promise<void> {
   try {
-    await postJson({
+    const response = await postJson({
       url: conn.options.credentials.url,
       path: "/v1/devices/result",
       token: conn.options.credentials.token,
@@ -235,6 +238,15 @@ async function reportResult(
       // the pending call by then, so the result is moot.
       signal: conn.signal,
     });
+    // postJson resolves for any status, so a rejected result (auth lost, the
+    // call already freed, a server error) would otherwise pass silently. Surface
+    // it: the turn falls back on the server's backstop rather than a phantom
+    // accepted result.
+    if (response.status < 200 || response.status >= 300) {
+      conn.options.onStatus?.(
+        `server rejected a tool result with status ${response.status}`,
+      );
+    }
   } catch (error) {
     // The broker's abort and backstop free a call whose result never lands, so a
     // failed POST degrades to a tool error on the server rather than a hang.

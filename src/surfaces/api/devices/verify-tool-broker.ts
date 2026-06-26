@@ -74,7 +74,7 @@ async function verifyDeviceUnavailable(broker: ToolBroker): Promise<void> {
   });
   const response = await postCall(lease.ticket.url, lease.ticket.token, {
     tool: "local_read",
-    params: {},
+    params: { path: "x" },
   });
   assertEqual(
     response.status,
@@ -138,8 +138,15 @@ async function verifyInvalidCall(
     params: {},
   });
   assertEqual(unknownTool.status, 400, "an unknown tool name is rejected");
+  // A proxied tool carrying the wrong params shape is rejected at the broker
+  // boundary too, not forwarded to the device as opaque JSON.
+  const badParams = await postCall(lease.ticket.url, lease.ticket.token, {
+    tool: "local_read",
+    params: { path: 42 },
+  });
+  assertEqual(badParams.status, 400, "invalid params for a tool are rejected");
   lease.revoke();
-  console.log("ok a call naming an unproxied tool is rejected");
+  console.log("ok a call with an unproxied tool or bad params is rejected");
 }
 
 async function verifyRevoke(

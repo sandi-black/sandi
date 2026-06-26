@@ -154,8 +154,7 @@ export class ToolBroker {
       try {
         const outcome = await this.#registry.dispatch({
           key: binding.key,
-          tool: parsed.data.tool,
-          params: parsed.data.params,
+          call: parsed.data,
           signal: binding.signal,
         });
         sendJson(response, 200, outcome);

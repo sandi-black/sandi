@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { Dirent } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -152,9 +152,20 @@ async function globLocal(
   const parsed = LocalGlobParamsSchema.safeParse(rawParams);
   if (!parsed.success) return refused("invalid local_glob params");
   const base = resolvePath(context, parsed.data.path ?? ".");
+  // A missing or non-directory base is a failed call, not an empty match set, so
+  // refuse rather than return "(no files matched)" for a path that is not there.
+  let baseStat: Stats;
+  try {
+    baseStat = await stat(base);
+  } catch (error) {
+    return refused(`cannot read ${base}: ${errorMessage(error)}`);
+  }
+  if (!baseStat.isDirectory()) return refused(`not a directory: ${base}`);
+
   const matcher = globToRegExp(parsed.data.pattern);
   const matches: string[] = [];
-  for await (const file of walkFiles(base)) {
+  const skipped: string[] = [];
+  for await (const file of walkFiles(base, skipped)) {
     if (signal?.aborted) return refused("cancelled");
     const rel = toPosix(relative(base, file));
     if (matcher.test(rel)) {
@@ -163,8 +174,9 @@ async function globLocal(
     }
   }
   matches.sort((a, b) => a.localeCompare(b));
-  if (matches.length === 0) return ok("(no files matched)");
-  return ok(matches.join("\n"));
+  const note = skippedNote(skipped);
+  if (matches.length === 0) return ok(`(no files matched)${note}`);
+  return ok(`${matches.join("\n")}${note}`);
 }
 
 async function grepLocal(
@@ -184,6 +196,7 @@ async function grepLocal(
   const fileFilter =
     parsed.data.glob !== undefined ? globToRegExp(parsed.data.glob) : undefined;
   const results: string[] = [];
+  const skipped: string[] = [];
 
   const searchFile = async (file: string, label: string): Promise<void> => {
     const content = await readFile(file, "utf8");
@@ -202,7 +215,7 @@ async function grepLocal(
   if (stats.isFile()) {
     await searchFile(base, base);
   } else {
-    for await (const file of walkFiles(base)) {
+    for await (const file of walkFiles(base, skipped)) {
       if (signal?.aborted) return refused("cancelled");
       const rel = toPosix(relative(base, file));
       if (fileFilter && !fileFilter.test(rel)) continue;
@@ -210,8 +223,9 @@ async function grepLocal(
       if (results.length >= MAX_MATCH_RESULTS) break;
     }
   }
-  if (results.length === 0) return ok("(no matches)");
-  return ok(results.join("\n"));
+  const note = skippedNote(skipped);
+  if (results.length === 0) return ok(`(no matches)${note}`);
+  return ok(`${results.join("\n")}${note}`);
 }
 
 function bashLocal(
@@ -236,7 +250,16 @@ function bashLocal(
   return new Promise((resolveRun) => {
     // shell: true runs the command through the platform shell (cmd.exe on
     // Windows, /bin/sh elsewhere), matching what a local operator would get.
-    const child = spawn(parsed.data.command, { shell: true, cwd });
+    // detached on POSIX puts the shell and whatever it forks in their own
+    // process group so a cancel can signal the whole group, not just the shell
+    // wrapper (which would orphan the real command and leave it holding the
+    // output pipe open). Windows has no process groups here; killTree uses
+    // taskkill /t instead, so detached would only spawn a stray console window.
+    const child = spawn(parsed.data.command, {
+      shell: true,
+      cwd,
+      detached: process.platform !== "win32",
+    });
     const out: string[] = [];
     let timedOut = false;
     let cancelled = false;
@@ -270,36 +293,58 @@ function bashLocal(
         resolveRun(refused("cancelled"));
         return;
       }
-      const header = timedOut
-        ? `command timed out after ${timeoutMs}ms (exit ${code ?? "none"})`
-        : `exit code: ${code ?? "none"}`;
       const body = out.join("").trim();
+      if (timedOut) {
+        // A timeout means the command never finished: a failed call, not a
+        // result. Carry any partial output in the error so evidence survives.
+        const detail = `command timed out after ${timeoutMs}ms`;
+        resolveRun(refused(truncate(body ? `${detail}\n\n${body}` : detail)));
+        return;
+      }
+      // A non-zero exit is normal tool evidence (a failing test, grep finding
+      // nothing), not a failed call. The exit code and output are exactly what
+      // the model needs, so the run is ok and the code travels in the output.
+      const header = `exit code: ${code ?? "none"}`;
       resolveRun(ok(body ? `${header}\n\n${body}` : header));
     });
   });
 }
 
 // Kills a shell command and its descendants. `child.kill` signals only the
-// shell wrapper; on Windows that leaves the real process running, so use
-// taskkill with /T to take down the whole tree. Elsewhere a SIGTERM to the
-// process group covers it well enough for a reference client.
+// shell wrapper, which orphans the command it forked (and on Linux leaves it
+// holding the output pipe open, so the child never reports "close"). Take down
+// the whole tree: taskkill /t on Windows, and a SIGTERM to the negative pid (the
+// process group, available because bashLocal spawns detached) on POSIX.
 function killTree(child: ReturnType<typeof spawn>): void {
   if (child.pid === undefined) {
     child.kill("SIGTERM");
     return;
   }
   if (process.platform === "win32") {
-    // Detached so taskkill's own failure (already-exited pid) cannot throw into
-    // the caller; its output is irrelevant to us.
+    // stdio ignored and the error swallowed so taskkill's own failure (an
+    // already-exited pid) cannot throw into the caller.
     spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
       stdio: "ignore",
     }).on("error", () => {});
     return;
   }
-  child.kill("SIGTERM");
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    // The group may already be gone, or the child was never a group leader;
+    // fall back to signaling the process directly.
+    child.kill("SIGTERM");
+  }
 }
 
-async function* walkFiles(base: string): AsyncGenerator<string> {
+// Walks files under `base`. A directory that cannot be read mid-walk is skipped
+// (one unreadable subtree should not abort a whole-tree search) but its path is
+// pushed to `skipped` so the caller can report that results may be partial
+// rather than present an incomplete listing as if it were the whole truth.
+async function* walkFiles(
+  base: string,
+  skipped: string[],
+): AsyncGenerator<string> {
   let visited = 0;
   const stack: string[] = [base];
   while (stack.length > 0) {
@@ -309,7 +354,8 @@ async function* walkFiles(base: string): AsyncGenerator<string> {
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {
-      continue; // unreadable directory: skip rather than abort the whole walk
+      skipped.push(dir);
+      continue;
     }
     for (const entry of entries) {
       const full = join(dir, entry.name);
@@ -354,6 +400,14 @@ function globToRegExp(pattern: string): RegExp {
     }
   }
   return new RegExp(`${out}$`);
+}
+
+// Appended to a glob or grep result when the walk could not read some
+// directories, so a partial listing is never mistaken for the whole truth.
+function skippedNote(skipped: string[]): string {
+  if (skipped.length === 0) return "";
+  const noun = skipped.length === 1 ? "directory" : "directories";
+  return `\n(${skipped.length} unreadable ${noun} skipped)`;
 }
 
 function resolvePath(context: ExecutorContext, path: string): string {

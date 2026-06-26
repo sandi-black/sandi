@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import { createLogger } from "@/lib/logging";
 import {
+  type BrokerCall,
   type DeviceResult,
-  type LocalToolName,
   TOOL_CALL_EVENT,
   TOOL_CANCEL_EVENT,
   type ToolCallOutcome,
@@ -112,8 +112,7 @@ export class DeviceRegistry {
   // backstop fires.
   dispatch(input: {
     key: string;
-    tool: LocalToolName;
-    params: unknown;
+    call: BrokerCall;
     signal?: AbortSignal;
   }): Promise<ToolCallOutcome> {
     const state = this.#connections.get(input.key);
@@ -158,11 +157,7 @@ export class DeviceRegistry {
       });
       input.signal?.addEventListener("abort", onAbort, { once: true });
 
-      const dispatch: ToolDispatch = {
-        id,
-        tool: input.tool,
-        params: input.params,
-      };
+      const dispatch: ToolDispatch = { id, ...input.call };
       try {
         state.write(
           `event: ${TOOL_CALL_EVENT}\ndata: ${JSON.stringify(dispatch)}\n\n`,

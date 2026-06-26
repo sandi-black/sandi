@@ -212,8 +212,8 @@ tools (`local_read`, `local_write`, `local_edit`, `local_ls`, `local_glob`,
 `local_grep`, `local_bash`) under distinct names, so pi's name-based exclusion
 never catches them. The flag is carried by `SandiSurfaceContext.disableBuiltinTools`,
 set on `API_SURFACE_CONTEXT`. Sandi's own extension tools (memory, skills,
-`sandi_js_run`, and the rest) stay server-side and untouched: her brain runs on
-the server, only her hands reach the desktop.
+`sandi_js_run`, and the rest) stay server-side and unchanged; only the proxy
+file and shell tools run on the desktop.
 
 ### Transport: SSE and a loopback broker
 
@@ -241,9 +241,9 @@ pi child  --HTTP-->  loopback broker  --SSE-->  desktop client
 
 SSE (not a WebSocket) carries the server-to-desktop push: it needs no new
 dependency beyond `node:http`, the result channel is a plain POST, and Phase 3
-response streaming reuses the same SSE machinery. Tool-call visibility comes for
-free: the desktop executes every file and shell operation, so it sees each one as
-it happens, without a separate event channel.
+response streaming reuses the same SSE machinery. The desktop sees every file
+and shell operation because it executes them, so no separate event channel is
+needed.
 
 ### Routing, devices, and safety
 
@@ -263,9 +263,9 @@ it happens, without a separate event channel.
   cross-surface flows (ask from Discord, execute on an enrolled workstation).
 - With bypass-all execution the enrollment token is the entire security boundary,
   so per-device tokens and a server bound to a trusted interface carry the weight.
-  The desktop applies output and time caps so one call cannot flood the model or
-  wedge the link, but by design it does not sandbox paths: pairing a desktop
-  grants Sandi the reach the human already has there.
+  The desktop caps output and runtime so one call cannot flood the model or
+  wedge the link. It does not sandbox paths; pairing a desktop grants Sandi the
+  reach the human already has there.
 
 ### Reference client
 
@@ -330,6 +330,7 @@ src/surfaces/api/
     executors.ts                local file and shell implementations
     verify-executors.ts         per-tool executor verify against a temp dir
     credentials.ts              per-device token file (owner-only, not managed state)
+    verify-credentials.ts       owner-only round-trip and ~ config-path expansion
     pairing.ts                  client-side code redemption
     http.ts                     client JSON POST helper
   runtime/

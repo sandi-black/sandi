@@ -162,7 +162,11 @@ function listen(server: Server): Promise<number> {
 
 function timeout(ms: number): Promise<never> {
   return new Promise((_resolve, reject) => {
-    setTimeout(() => reject(new Error("timed out waiting for results")), ms);
+    // unref so this guard timer does not keep the process alive once the results
+    // win the race; otherwise the run lingers for the full timeout after passing.
+    setTimeout(() => {
+      reject(new Error("timed out waiting for results"));
+    }, ms).unref();
   });
 }
 

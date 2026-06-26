@@ -43,7 +43,12 @@ The tokens file (default `data/config/api-tokens.json`, override with
 {
   "version": 1,
   "tokens": [
-    { "tokenSha256": "<sha256 of the raw token>", "identityId": "jess", "deviceId": "workstation", "label": "Jess workstation" }
+    {
+      "tokenSha256": "<sha256 of the raw token>",
+      "identityId": "jess",
+      "deviceId": "workstation",
+      "label": "Jess workstation"
+    }
   ]
 }
 ```
@@ -83,7 +88,7 @@ The server is `node:http` (no added dependency) bound to `SANDI_API_HOST`
 - `GET /v1/health` returns `200 { "ok": true, "surface": "api" }`. No auth.
 - `POST /v1/conversations/:conversationId/turns` requires a bearer token. Body:
   `{ "input": string, "title"?: string }`. On success: `200 { "conversationId",
-  "text" }` where `text` is Sandi's final Markdown reply.
+"text" }` where `text` is Sandi's final Markdown reply.
 
 Error responses are deliberately terse and leak no internal paths: `401`
 (missing or invalid bearer), `403` (`identity_unmapped`), `400` (empty or

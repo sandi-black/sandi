@@ -6,15 +6,22 @@ export type JsonResponse = {
   body: unknown;
 };
 
+// A POST that never returns must not pin a request forever (it would keep the
+// caller's task and any bookkeeping alive). Bound every request by default.
+const DEFAULT_TIMEOUT_MS = 30_000;
+
 // POSTs JSON to a path resolved against the server base URL and returns the
 // status and parsed body. Resolves for any HTTP status; rejects only on a
-// transport error. Picks http or https from the URL scheme so the reference
-// client works against a local server or a TLS-terminated one.
+// transport error, a timeout, or an aborted signal. Picks http or https from the
+// URL scheme so the reference client works against a local server or a
+// TLS-terminated one.
 export function postJson(input: {
   url: string;
   path: string;
   body: unknown;
   token?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<JsonResponse> {
   return new Promise((resolvePost, rejectPost) => {
     let target: URL;
@@ -22,6 +29,10 @@ export function postJson(input: {
       target = new URL(input.path, input.url);
     } catch (error) {
       rejectPost(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    if (input.signal?.aborted) {
+      rejectPost(new Error("request aborted before it started"));
       return;
     }
     const payload = Buffer.from(JSON.stringify(input.body), "utf8");
@@ -41,14 +52,31 @@ export function postJson(input: {
         res.on("data", (chunk: Buffer) => chunks.push(chunk));
         res.on("end", () => {
           const text = Buffer.concat(chunks).toString("utf8");
-          resolvePost({
-            status: res.statusCode ?? 0,
-            body: parseMaybeJson(text),
-          });
+          settle(() =>
+            resolvePost({
+              status: res.statusCode ?? 0,
+              body: parseMaybeJson(text),
+            }),
+          );
         });
       },
     );
-    req.on("error", (error) => rejectPost(error));
+
+    let done = false;
+    const onAbort = (): void => {
+      req.destroy(new Error("request aborted"));
+    };
+    const settle = (run: () => void): void => {
+      if (done) return;
+      done = true;
+      input.signal?.removeEventListener("abort", onAbort);
+      run();
+    };
+    req.setTimeout(input.timeoutMs ?? DEFAULT_TIMEOUT_MS, () => {
+      req.destroy(new Error("request timed out"));
+    });
+    req.on("error", (error) => settle(() => rejectPost(error)));
+    input.signal?.addEventListener("abort", onAbort, { once: true });
     req.end(payload);
   });
 }

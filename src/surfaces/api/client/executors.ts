@@ -41,6 +41,11 @@ export async function executeLocalTool(
   context: ExecutorContext,
   signal?: AbortSignal,
 ): Promise<ToolCallOutcome> {
+  // A cancel that arrives before the call is dequeued skips it entirely. The
+  // long-running tools (glob, grep, bash) also honor the signal mid-flight; the
+  // bounded ones (read, write, edit, ls) are left to finish once started so a
+  // cancel cannot tear a half-written file.
+  if (signal?.aborted) return refused("cancelled");
   try {
     switch (tool) {
       case "local_read":

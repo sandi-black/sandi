@@ -187,7 +187,7 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
 
   const toolParse = LocalToolNameSchema.safeParse(record["tool"]);
   if (!toolParse.success) {
-    await reportResult(conn.options, {
+    await reportResult(conn, {
       id,
       ok: false,
       output: "",
@@ -209,7 +209,7 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
       { rootDir: conn.options.rootDir },
       signal,
     );
-    await reportResult(conn.options, {
+    await reportResult(conn, {
       id,
       ok: outcome.ok,
       output: outcome.output,
@@ -221,20 +221,24 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
 }
 
 async function reportResult(
-  options: DesktopClientOptions,
+  conn: Connection,
   result: { id: string; ok: boolean; output: string; error?: string },
 ): Promise<void> {
   try {
     await postJson({
-      url: options.credentials.url,
+      url: conn.options.credentials.url,
       path: "/v1/devices/result",
-      token: options.credentials.token,
+      token: conn.options.credentials.token,
       body: result,
+      // A settled link aborts a result POST that would otherwise hang and pin
+      // this call's inflight entry. The server's own backstop has already freed
+      // the pending call by then, so the result is moot.
+      signal: conn.signal,
     });
   } catch (error) {
     // The broker's abort and backstop free a call whose result never lands, so a
     // failed POST degrades to a tool error on the server rather than a hang.
-    options.onStatus?.(
+    conn.options.onStatus?.(
       `failed to report a tool result: ${error instanceof Error ? error.message : String(error)}`,
     );
   }

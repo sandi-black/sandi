@@ -1,0 +1,18 @@
+# Bastion reviewer policy: changes here require human review.
+#
+# These paths are the review policy and the engine that enforces it: the reviewer
+# registry, the workflow that runs it, and this CODEOWNERS file. Requiring an owner
+# review on them means loosening a trigger, weakening a prompt, or switching the
+# gate off is a change a human sees. Keep every policy path listed statically;
+# CODEOWNERS only takes effect once merged, so it must already cover a path before a
+# PR can touch it.
+#
+# Based on `bastion github codeowners`, with the reviewer registry path added
+# (`.bastion.yaml` is the live registry; the generator still emits the legacy
+# `/bastion/` location).
+/.bastion.yaml @jssblck
+/.bastion.yml @jssblck
+/bastion/ @jssblck
+/.github/workflows/bastion.yml @jssblck
+/CODEOWNERS @jssblck
+/.github/CODEOWNERS @jssblck

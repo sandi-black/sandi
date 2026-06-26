@@ -289,6 +289,7 @@ export class PiCliClient implements ModelProviderClient {
         this.#agentDir,
         this.#packageDir,
         request.localToolBroker,
+        turnId,
         request.input,
         request.signal,
       );
@@ -355,6 +356,7 @@ export class PiCliClient implements ModelProviderClient {
     agentDir?: string,
     packageDir?: string,
     localToolBroker?: LocalToolBroker,
+    turnId?: string,
     stdin?: string,
     signal?: AbortSignal,
   ): Promise<CommandResult> {
@@ -388,6 +390,7 @@ export class PiCliClient implements ModelProviderClient {
           agentDir,
           packageDir,
           localToolBroker,
+          turnId,
         ),
       });
       child.stdin.on("error", () => {
@@ -621,6 +624,7 @@ function childEnv(
   agentDir: string | undefined,
   packageDir: string | undefined,
   localToolBroker: LocalToolBroker | undefined,
+  turnId: string | undefined,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -645,6 +649,7 @@ function childEnv(
   // environment can never leak into a turn that did not lease one.
   delete env["SANDI_TOOL_BROKER_URL"];
   delete env["SANDI_TOOL_BROKER_TOKEN"];
+  delete env["SANDI_TURN_ID"];
   delete env["PI_CODING_AGENT_DIR"];
   delete env["PI_PACKAGE_DIR"];
   const piAgentDir = account?.agentDir ?? agentDir;
@@ -668,6 +673,13 @@ function childEnv(
   if (localToolBroker) {
     env["SANDI_TOOL_BROKER_URL"] = localToolBroker.url;
     env["SANDI_TOOL_BROKER_TOKEN"] = localToolBroker.token;
+  }
+  // The turn id pairs with the broker for response streaming: the streaming
+  // extension tags each delta with it so the desktop can scope a turn's stream.
+  // It only takes effect when a broker is also leased (the extension needs
+  // both); setting it otherwise is harmless.
+  if (turnId) {
+    env["SANDI_TURN_ID"] = turnId;
   }
   if (memoryContext) {
     env["SANDI_MEMORY_ROOT"] = memoryContext.memoryRoot;

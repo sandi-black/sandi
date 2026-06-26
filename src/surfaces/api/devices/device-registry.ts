@@ -4,6 +4,8 @@ import { createLogger } from "@/lib/logging";
 import {
   type BrokerCall,
   type DeviceResult,
+  RESPONSE_CHUNK_EVENT,
+  type ResponseChunk,
   TOOL_CALL_EVENT,
   TOOL_CANCEL_EVENT,
   type ToolCallOutcome,
@@ -170,6 +172,26 @@ export class DeviceRegistry {
         reject(new DeviceUnavailableError());
       }
     });
+  }
+
+  // Pushes one streamed response delta to the keyed device's stream. Returns
+  // false when no link is present or the stream is dead, so the broker can answer
+  // the child with a 503 (the desktop went away mid-turn). Unlike dispatch there
+  // is no pending call and no reply: a response delta is fire-and-forget, and a
+  // dropped delta only costs the live preview, not the turn (the turn POST still
+  // returns the authoritative final text). A failed write tears the link down.
+  streamResponseChunk(key: string, chunk: ResponseChunk): boolean {
+    const state = this.#connections.get(key);
+    if (!state || state.closed) return false;
+    try {
+      state.write(
+        `event: ${RESPONSE_CHUNK_EVENT}\ndata: ${JSON.stringify(chunk)}\n\n`,
+      );
+      return true;
+    } catch {
+      this.#teardown(state, "device link write failed");
+      return false;
+    }
   }
 
   // Resolves the pending call named by the result. Returns false when the key or

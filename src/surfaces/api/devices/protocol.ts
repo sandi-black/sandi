@@ -151,3 +151,49 @@ export type ToolCancel = z.infer<typeof ToolCancelSchema>;
 // this module (pi loads extensions without the tsconfig path alias).
 export const TOOL_BROKER_URL_ENV = "SANDI_TOOL_BROKER_URL";
 export const TOOL_BROKER_TOKEN_ENV = "SANDI_TOOL_BROKER_TOKEN";
+
+// The turn id the api surface sets on the pi child so a streamed response delta
+// can be tagged with the turn it belongs to. The desktop is one link carrying
+// many turns over its life, so each delta names its turn; the REPL matches them
+// to the turn it is currently awaiting and ignores any stragglers from a turn it
+// has already finished. Read by the streaming extension by string, same reason
+// as the broker env above.
+export const TURN_ID_ENV = "SANDI_TURN_ID";
+
+// Phase 3: streaming the assistant's response back as it is generated. A turn
+// still runs server-side, but the desktop sees the text appear token by token
+// rather than waiting for the final HTTP response. The path reuses the hands-
+// local plumbing:
+//
+//   pi child  --HTTP-->  loopback broker  --SSE-->  desktop client
+//
+// An api-only pi extension subscribes to the model's streaming events inside the
+// child and POSTs each delta to the broker's streaming ingress. The broker
+// relays it to the paired desktop over the same SSE stream as a `response_chunk`
+// event. Unlike a tool call there is no reply: deltas flow one way, and the turn
+// POST's final body remains the authoritative record of the completed response.
+export const RESPONSE_CHUNK_EVENT = "response_chunk";
+
+// One streamed message on the response channel, shared by the child->broker
+// ingress and the broker->desktop SSE data (one schema, both ends, like
+// BrokerCall). A `delta` carries the next slice of generated text; `channel`
+// separates the visible answer from the model's thinking so the desktop can
+// render or suppress each. An `end` marks a turn's stream complete so the REPL
+// can finalize promptly rather than waiting on the turn POST. `seq` is a
+// per-turn monotonic counter: the stream is ordered over one TCP link, but the
+// counter lets the desktop detect a gap and ignore a late duplicate.
+export const ResponseChunkSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("delta"),
+    turnId: z.string().min(1),
+    seq: z.number().int().nonnegative(),
+    channel: z.enum(["text", "thinking"]),
+    delta: z.string(),
+  }),
+  z.object({
+    type: z.literal("end"),
+    turnId: z.string().min(1),
+    seq: z.number().int().nonnegative(),
+  }),
+]);
+export type ResponseChunk = z.infer<typeof ResponseChunkSchema>;

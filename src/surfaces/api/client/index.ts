@@ -1,6 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import { createInterface } from "node:readline";
 
 import {
+  type DesktopCredentials,
   desktopConfigPath,
   loadDesktopCredentials,
   ServerUrlSchema,
@@ -8,11 +11,14 @@ import {
 } from "@/surfaces/api/client/credentials";
 import { runDesktopClient } from "@/surfaces/api/client/desktop-client";
 import { pairDesktop } from "@/surfaces/api/client/pairing";
+import { createResponsePrinter } from "@/surfaces/api/client/response-printer";
+import { sendTurn } from "@/surfaces/api/client/turns";
 
-// Reference desktop client. Two commands:
+// Reference desktop client. Three commands:
 //
 //   pair <CODE> [--url URL] [--label LABEL]   redeem a /sandi auth code, store a token
 //   run [--root DIR] [--url URL]              hold the link and run tool calls locally
+//   chat [--root DIR] [--url URL] [...]       interactive REPL with a streamed response
 //
 // `run` is the default when no command is given. The token and server URL are
 // stored by `pair` under ~/.sandi/desktop.json (override with SANDI_DESKTOP_CONFIG).
@@ -34,6 +40,10 @@ async function main(): Promise<void> {
   }
   if (command === "run") {
     await runCommand(args.slice(1));
+    return;
+  }
+  if (command === "chat") {
+    await chatCommand(args.slice(1));
     return;
   }
   // No recognized command: treat the whole arg list as `run` flags so a bare
@@ -87,31 +97,8 @@ async function pairCommand(args: string[]): Promise<void> {
 
 async function runCommand(args: string[]): Promise<void> {
   const flags = parseFlags(args);
-  const path = desktopConfigPath();
-  const credentials = await loadDesktopCredentials(path);
-  if (!credentials) {
-    console.error(
-      `no saved credentials at ${path}; run \`pair <CODE>\` with a /sandi auth code first`,
-    );
-    process.exitCode = 1;
-    return;
-  }
-  // The --url override is the boundary here, so parse just it. The other fields
-  // came parsed from loadDesktopCredentials and need no second look; only the
-  // raw override has to clear ServerUrlSchema before it joins them.
-  const override = flags.options["url"];
-  let effective = credentials;
-  if (override !== undefined) {
-    const parsedOverride = ServerUrlSchema.safeParse(override);
-    if (!parsedOverride.success) {
-      console.error(
-        `invalid --url override: ${override} (must be an http(s) url)`,
-      );
-      process.exitCode = 1;
-      return;
-    }
-    effective = { ...credentials, url: parsedOverride.data };
-  }
+  const effective = await loadEffectiveCredentials(flags);
+  if (!effective) return;
   const rootDir = resolve(flags.options["root"] ?? process.cwd());
 
   const controller = new AbortController();
@@ -129,6 +116,128 @@ async function runCommand(args: string[]): Promise<void> {
     onStatus: (message) => console.log(`[sandi] ${message}`),
   });
   console.log("client stopped");
+}
+
+// How long the chat REPL waits for the device link to come up before showing
+// the first prompt. The turn still works if the link is slow; it just will not
+// show a live preview until the link is established.
+const LINK_WAIT_MS = 5_000;
+
+async function chatCommand(args: string[]): Promise<void> {
+  const flags = parseFlags(args);
+  const effective = await loadEffectiveCredentials(flags);
+  if (!effective) return;
+  const rootDir = resolve(flags.options["root"] ?? process.cwd());
+  const conversationId =
+    flags.options["conversation"] ?? `desktop-${randomUUID()}`;
+  const showThinking = flags.options["thinking"] !== undefined;
+
+  const controller = new AbortController();
+  const printer = createResponsePrinter({
+    write: (text) => process.stdout.write(text),
+    showThinking,
+  });
+
+  // The link carries both tool calls and the streamed response deltas. Run it in
+  // the background and note when it first comes up so the first turn can stream.
+  let markLinked: (() => void) | undefined;
+  const linked = new Promise<void>((resolveLinked) => {
+    markLinked = resolveLinked;
+  });
+  const link = runDesktopClient({
+    credentials: effective,
+    rootDir,
+    signal: controller.signal,
+    onStatus: (message) => {
+      if (message === "linked") markLinked?.();
+      // Status lines go to stderr so stdout stays the conversation alone.
+      process.stderr.write(`[sandi] ${message}\n`);
+    },
+    onResponseChunk: (chunk) => printer.onChunk(chunk),
+  }).catch((error: unknown) => {
+    process.stderr.write(
+      `[sandi] link error: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+  });
+  await Promise.race([linked, delay(LINK_WAIT_MS)]);
+
+  process.stdout.write(
+    `Chatting with sandi as device ${effective.deviceId} (conversation ${conversationId}).\n` +
+      "Type a message and press enter. Ctrl-D or /exit to quit.\n\n",
+  );
+
+  const rl = createInterface({ input: process.stdin });
+  process.once("SIGINT", () => {
+    controller.abort();
+    rl.close();
+  });
+
+  process.stdout.write("you> ");
+  for await (const rawLine of rl) {
+    const line = rawLine.trim();
+    if (line === "") {
+      process.stdout.write("you> ");
+      continue;
+    }
+    if (line === "/exit" || line === "/quit") break;
+    printer.begin();
+    process.stdout.write("sandi> ");
+    const outcome = await sendTurn({
+      url: effective.url,
+      token: effective.token,
+      conversationId,
+      input: line,
+      signal: controller.signal,
+    });
+    if (outcome.ok) {
+      printer.settle(outcome.text);
+    } else {
+      process.stdout.write("\n");
+      process.stderr.write(`[sandi] ${outcome.error}\n`);
+    }
+    process.stdout.write("\nyou> ");
+  }
+
+  rl.close();
+  controller.abort();
+  await link;
+  process.stdout.write("\nchat ended\n");
+}
+
+// Loads saved credentials and applies a --url override through the same parser
+// as the stored url, so both run and chat share one boundary. Returns undefined
+// (after printing why and setting a failing exit code) when there are no
+// credentials or the override is not an http(s) url.
+async function loadEffectiveCredentials(flags: {
+  options: Record<string, string>;
+}): Promise<DesktopCredentials | undefined> {
+  const path = desktopConfigPath();
+  const credentials = await loadDesktopCredentials(path);
+  if (!credentials) {
+    console.error(
+      `no saved credentials at ${path}; run \`pair <CODE>\` with a /sandi auth code first`,
+    );
+    process.exitCode = 1;
+    return undefined;
+  }
+  const override = flags.options["url"];
+  if (override === undefined) return credentials;
+  const parsedOverride = ServerUrlSchema.safeParse(override);
+  if (!parsedOverride.success) {
+    console.error(
+      `invalid --url override: ${override} (must be an http(s) url)`,
+    );
+    process.exitCode = 1;
+    return undefined;
+  }
+  return { ...credentials, url: parsedOverride.data };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => {
+    const timer = setTimeout(resolveDelay, ms);
+    timer.unref();
+  });
 }
 
 function parseFlags(args: string[]): {
@@ -163,6 +272,8 @@ function printUsage(): void {
       "Commands:",
       "  pair <CODE> [--url URL] [--label LABEL]   redeem a /sandi auth code and store a token",
       "  run [--root DIR] [--url URL]              hold the link and run tool calls locally",
+      "  chat [--root DIR] [--url URL]             interactive REPL; the response streams in live",
+      "       [--conversation ID] [--thinking]",
       "",
       `Credentials are stored at ${desktopConfigPath()}`,
       "(override with the SANDI_DESKTOP_CONFIG environment variable).",

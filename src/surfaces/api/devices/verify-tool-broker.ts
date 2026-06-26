@@ -14,6 +14,8 @@ async function verifyToolBroker(): Promise<void> {
     await verifyAbortRejects(registry, broker);
     await verifyInvalidCall(registry, broker);
     await verifyRevoke(registry, broker);
+    await verifyStreamRelay(registry, broker);
+    await verifyStreamToGoneDevice(broker);
   } finally {
     broker.stop();
     registry.closeAll();
@@ -167,6 +169,76 @@ async function verifyRevoke(
   console.log("ok a revoked lease token stops working");
 }
 
+async function verifyStreamRelay(
+  registry: DeviceRegistry,
+  broker: ToolBroker,
+): Promise<void> {
+  // Capture the device's SSE writes so we can confirm a relayed delta lands as a
+  // response_chunk event on its link.
+  const writes: string[] = [];
+  registry.connect({
+    key: "d-stream",
+    deviceId: "d-stream",
+    identityId: "i",
+    write: (chunk) => writes.push(chunk),
+    end: () => {},
+  });
+  const lease = broker.lease({
+    key: "d-stream",
+    signal: new AbortController().signal,
+  });
+
+  const chunk = {
+    type: "delta",
+    turnId: "turn-1",
+    seq: 0,
+    channel: "text",
+    delta: "hello",
+  };
+  const ok = await postCall(
+    lease.ticket.url,
+    lease.ticket.token,
+    chunk,
+    "/stream",
+  );
+  assertEqual(ok.status, 202, "a relayed delta is accepted with 202");
+  assert(
+    writes.some(
+      (w) => w.includes("event: response_chunk") && w.includes("hello"),
+    ),
+    "the delta reaches the device as a response_chunk event",
+  );
+
+  // A malformed chunk is rejected at the broker boundary, not relayed.
+  const bad = await postCall(
+    lease.ticket.url,
+    lease.ticket.token,
+    { type: "delta", turnId: "turn-1", seq: 0, channel: "sideways" },
+    "/stream",
+  );
+  assertEqual(bad.status, 400, "a malformed chunk is rejected");
+  lease.revoke();
+  console.log("ok a response delta relays to the device as a response_chunk");
+}
+
+async function verifyStreamToGoneDevice(broker: ToolBroker): Promise<void> {
+  // A turn leased for a device that never connected: a streamed delta has
+  // nowhere to land, so the broker answers 503 and the child stops pushing.
+  const lease = broker.lease({
+    key: "d-stream-ghost",
+    signal: new AbortController().signal,
+  });
+  const response = await postCall(
+    lease.ticket.url,
+    lease.ticket.token,
+    { type: "end", turnId: "turn-1", seq: 1 },
+    "/stream",
+  );
+  assertEqual(response.status, 503, "a delta to an absent device returns 503");
+  lease.revoke();
+  console.log("ok a delta to an unconnected device returns 503");
+}
+
 type EchoDispatch = { id: string; tool: string };
 type EchoResult = { id: string; ok: boolean; output: string };
 
@@ -208,9 +280,10 @@ function postCall(
   baseUrl: string,
   token: string,
   body: unknown,
+  path = "/call",
 ): Promise<HttpResult> {
   return new Promise((resolvePost, rejectPost) => {
-    const target = new URL("/call", baseUrl);
+    const target = new URL(path, baseUrl);
     const payload = Buffer.from(JSON.stringify(body), "utf8");
     const req = httpRequest(
       target,

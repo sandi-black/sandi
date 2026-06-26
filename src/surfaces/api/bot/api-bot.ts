@@ -12,11 +12,11 @@ import type {
   ConversationManifest,
   ConversationParticipant,
 } from "@/lib/conversations/types";
+import { loadHumanIdentities } from "@/lib/identity/resolver";
 import type {
   HumanIdentityConfig,
   HumanIdentityRecord,
 } from "@/lib/identity/types";
-import { loadHumanIdentities } from "@/lib/identity/resolver";
 import { createLogger } from "@/lib/logging";
 import {
   type ModelProviderClient,
@@ -32,11 +32,8 @@ import {
   validateApiConversationRef,
 } from "@/surfaces/api/api/conversations";
 import { API_DELIVERY_INSTRUCTIONS } from "@/surfaces/api/api/delivery-instructions";
+import { type ApiTokenEntry, ApiTokenStore } from "@/surfaces/api/auth/tokens";
 import type { ApiAppConfig } from "@/surfaces/api/config";
-import {
-  type ApiTokenEntry,
-  ApiTokenStore,
-} from "@/surfaces/api/auth/tokens";
 import { API_SURFACE_CONTEXT } from "@/surfaces/api/runtime/context";
 
 const log = createLogger("api-bot");
@@ -389,7 +386,9 @@ export class ApiBot {
     entry: ApiTokenEntry,
   ): Promise<ConversationParticipant | undefined> {
     const identities = await this.#loadIdentities();
-    const human = identities.humans.find((item) => item.id === entry.identityId);
+    const human = identities.humans.find(
+      (item) => item.id === entry.identityId,
+    );
     if (!human) return undefined;
     return apiParticipantFromHuman(human);
   }

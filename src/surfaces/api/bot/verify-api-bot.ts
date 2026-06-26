@@ -11,17 +11,18 @@ import type {
   ProviderTurnRequest,
   ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
-import { ApiBot } from "@/surfaces/api/bot/api-bot";
-import type { ApiAppConfig } from "@/surfaces/api/config";
 import { apiConversationStorageId } from "@/surfaces/api/api/conversations";
 import {
   ApiTokenStore,
-  hashApiToken,
   type ApiTokensFile,
+  hashApiToken,
 } from "@/surfaces/api/auth/tokens";
+import { ApiBot } from "@/surfaces/api/bot/api-bot";
+import type { ApiAppConfig } from "@/surfaces/api/config";
 import { API_SURFACE_CONTEXT } from "@/surfaces/api/runtime/context";
 
-const RAW_TOKEN = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const RAW_TOKEN =
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const UNMAPPED_TOKEN =
   "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 const IDENTITY_ID = "tester";
@@ -87,7 +88,9 @@ async function verifyMissingAuthIsRejected(
   });
   assertEqual(response.status, 401, "missing auth status");
   assertEqual(provider.callCount, before, "missing auth provider not called");
-  console.log("ok POST turn without Authorization returns 401, provider untouched");
+  console.log(
+    "ok POST turn without Authorization returns 401, provider untouched",
+  );
 }
 
 async function verifyMalformedSchemeIsRejected(
@@ -106,7 +109,11 @@ async function verifyMalformedSchemeIsRejected(
     body: JSON.stringify({ input: "hello" }),
   });
   assertEqual(response.status, 401, "malformed scheme status");
-  assertEqual(provider.callCount, before, "malformed scheme provider not called");
+  assertEqual(
+    provider.callCount,
+    before,
+    "malformed scheme provider not called",
+  );
   console.log("ok POST turn with malformed Authorization scheme returns 401");
 }
 
@@ -156,7 +163,9 @@ async function verifyUnmappedIdentityIsRejected(
     before,
     "unmapped identity provider not called",
   );
-  console.log("ok POST turn with unmapped identity returns 403, provider untouched");
+  console.log(
+    "ok POST turn with unmapped identity returns 403, provider untouched",
+  );
 }
 
 async function verifyValidTurn(
@@ -218,7 +227,11 @@ async function verifyValidTurn(
   // routing. The surface stays "api" while the participant platform is the
   // reused account.
   assertEqual(participant.platform, "discord", "participant platform");
-  assertEqual(participant.platformUserId, "111", "participant platform user id");
+  assertEqual(
+    participant.platformUserId,
+    "111",
+    "participant platform user id",
+  );
   assertEqual(participant.identityId, IDENTITY_ID, "participant identityId");
   console.log(
     "ok POST valid turn returns 200 reusing the human's Discord identity",
@@ -299,7 +312,9 @@ async function verifyTokenRevocationAndEnrollment(
   // Enroll: the freshly added token now authenticates.
   const enrolled = await store.verify(newToken);
   assertEqual(enrolled?.deviceId, "device-2", "newly enrolled token accepted");
-  console.log("ok token store honors revocation and enrollment without restart");
+  console.log(
+    "ok token store honors revocation and enrollment without restart",
+  );
 }
 
 async function writeTokensFile(

@@ -60,7 +60,10 @@ export function verifyBearer(
     const stored = Buffer.from(entry.tokenSha256, "utf8");
     // Lengths are equal by construction (both are 64-char hex digests), so the
     // comparison runs for every entry and only records the match afterwards.
-    if (stored.length === presented.length && timingSafeEqual(stored, presented)) {
+    if (
+      stored.length === presented.length &&
+      timingSafeEqual(stored, presented)
+    ) {
       matched = entry;
     }
   }

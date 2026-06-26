@@ -2,18 +2,18 @@ import { randomBytes } from "node:crypto";
 
 import { readEnv } from "@/lib/config/env";
 import { loadHumanIdentities } from "@/lib/identity/resolver";
-import { chmodPrivateFile } from "@/lib/state/private-files";
 import {
   atomicWriteInPlace,
   withManagedWrite,
 } from "@/lib/state/managed-write";
-import { loadApiAppConfig } from "@/surfaces/api/config";
+import { chmodPrivateFile } from "@/lib/state/private-files";
 import {
   type ApiTokenEntry,
   type ApiTokensFile,
   hashApiToken,
   loadApiTokens,
 } from "@/surfaces/api/auth/tokens";
+import { loadApiAppConfig } from "@/surfaces/api/config";
 
 const TOKEN_BYTES = 32;
 

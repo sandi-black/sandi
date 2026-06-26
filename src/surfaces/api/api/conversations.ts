@@ -36,7 +36,10 @@ export class InvalidApiSegmentError extends Error {
  * falls outside the allowed alphabet. Returns the value unchanged so callers can
  * inline it; the value is never rewritten, so no two inputs collide.
  */
-export function requireApiSegment(value: string, field: ApiSegmentField): string {
+export function requireApiSegment(
+  value: string,
+  field: ApiSegmentField,
+): string {
   if (!SEGMENT.test(value)) throw new InvalidApiSegmentError(field);
   return value;
 }

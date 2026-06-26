@@ -1,21 +1,7 @@
-import { randomBytes } from "node:crypto";
-
 import { readEnv } from "@/lib/config/env";
 import { loadHumanIdentities } from "@/lib/identity/resolver";
-import {
-  atomicWriteInPlace,
-  withManagedWrite,
-} from "@/lib/state/managed-write";
-import { chmodPrivateFile } from "@/lib/state/private-files";
-import {
-  type ApiTokenEntry,
-  type ApiTokensFile,
-  hashApiToken,
-  loadApiTokens,
-} from "@/surfaces/api/auth/tokens";
+import { mintApiToken } from "@/surfaces/api/auth/tokens";
 import { loadApiAppConfig } from "@/surfaces/api/config";
-
-const TOKEN_BYTES = 32;
 
 await main();
 
@@ -41,15 +27,12 @@ async function main(): Promise<void> {
     );
   }
 
-  const rawToken = randomBytes(TOKEN_BYTES).toString("hex");
-  const entry: ApiTokenEntry = {
-    tokenSha256: hashApiToken(rawToken),
+  const rawToken = await mintApiToken({
+    tokensPath: config.api.tokensPath,
     identityId,
     deviceId,
     label,
-  };
-
-  await appendTokenEntry(config.api.tokensPath, entry);
+  });
 
   console.log("Stored a new API token entry.");
   console.log(`  identityId: ${identityId}`);
@@ -61,21 +44,6 @@ async function main(): Promise<void> {
   console.log("");
   console.log(`  ${rawToken}`);
   console.log("");
-}
-
-async function appendTokenEntry(
-  tokensPath: string,
-  entry: ApiTokenEntry,
-): Promise<void> {
-  await withManagedWrite(tokensPath, async () => {
-    const current = await loadApiTokens(tokensPath);
-    const next = {
-      version: 1,
-      tokens: [...current.tokens, entry],
-    } satisfies ApiTokensFile;
-    await atomicWriteInPlace(tokensPath, `${JSON.stringify(next, null, 2)}\n`);
-    await chmodPrivateFile(tokensPath);
-  });
 }
 
 type ParsedArgs = {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { ContextCompiler } from "@/lib/context/context-compiler";
 import { ConversationStore } from "@/lib/conversations/store";
+import { createPairing } from "@/lib/pairing/pairing-store";
 import type {
   ModelProviderClient,
   ProviderProbe,
@@ -16,6 +17,7 @@ import {
   ApiTokenStore,
   type ApiTokensFile,
   hashApiToken,
+  loadApiTokens,
 } from "@/surfaces/api/auth/tokens";
 import { ApiBot } from "@/surfaces/api/bot/api-bot";
 import type { ApiAppConfig } from "@/surfaces/api/config";
@@ -61,6 +63,7 @@ async function verifyApiBot(): Promise<void> {
     await verifySecondTurnDoesNotDuplicateParticipant(base);
     await verifyManifestPersisted(dataDir);
     await verifyTokenRevocationAndEnrollment(dataDir);
+    await verifyPairing(base, config);
   } finally {
     bot.stop();
     await rm(dataDir, { recursive: true, force: true });
@@ -317,6 +320,124 @@ async function verifyTokenRevocationAndEnrollment(
   );
 }
 
+// Exercises the full Discord-mediated enrollment loop end to end over HTTP: a
+// code issued by the (separate) identity-bearing surface is redeemed here for a
+// per-device token, and every failure path fails closed. The code is created
+// directly through the shared store, exactly as the other surface would.
+async function verifyPairing(
+  base: string,
+  config: ApiAppConfig,
+): Promise<void> {
+  const url = `${base}/v1/auth/pair`;
+
+  // Happy path: a valid code mints a per-device token bound to the identity.
+  const pairing = await createPairing({
+    path: config.api.pairingsPath,
+    identityId: IDENTITY_ID,
+  });
+  const redeemed = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      code: pairing.code,
+      deviceId: "paired-device",
+      label: "Paired laptop",
+    }),
+  });
+  assertEqual(redeemed.status, 200, "pair redeem status");
+  const body = await redeemed.json();
+  if (!isRecord(body)) throw new Error("pair response is not an object");
+  assertEqual(body["identityId"], IDENTITY_ID, "pair identityId");
+  assertEqual(body["deviceId"], "paired-device", "pair deviceId");
+  assertEqual(body["label"], "Paired laptop", "pair label");
+  const token = body["token"];
+  if (typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) {
+    console.error("pair token: expected a 64-char hex token");
+    process.exit(1);
+  }
+
+  // The minted token is persisted and actually authenticates: verify it through
+  // a fresh token store (ttl 0) so the assertion does not depend on the bot's
+  // own cache window.
+  const store = new ApiTokenStore(config.api.tokensPath, 0);
+  const entry = await store.verify(token);
+  assertEqual(entry?.identityId, IDENTITY_ID, "minted token identity");
+  assertEqual(entry?.deviceId, "paired-device", "minted token device");
+
+  // Single-use: the same code cannot be redeemed twice.
+  const reuse = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: pairing.code }),
+  });
+  assertEqual(reuse.status, 401, "pair single-use rejection");
+
+  // An unknown but well-formed code fails closed.
+  const unknown = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: "ZZZZZ-ZZZZZ" }),
+  });
+  assertEqual(unknown.status, 401, "pair unknown code rejection");
+
+  // A body with no code is a 400.
+  const malformed = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ nope: true }),
+  });
+  assertEqual(malformed.status, 400, "pair malformed body rejection");
+
+  // A code bound to an identity that does not map to a platform account fails
+  // closed with 403 and mints nothing.
+  const ghostPairing = await createPairing({
+    path: config.api.pairingsPath,
+    identityId: UNMAPPED_IDENTITY_ID,
+  });
+  const ghost = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: ghostPairing.code }),
+  });
+  assertEqual(ghost.status, 403, "pair unmapped identity rejection");
+
+  // An identity removed after a code was issued fails closed on redemption with
+  // no restart (the bot re-stats humans.json) and mints nothing. This runs last
+  // because it removes the mapped identity from the fixture.
+  const removalPairing = await createPairing({
+    path: config.api.pairingsPath,
+    identityId: IDENTITY_ID,
+  });
+  const tokensBefore = (await loadApiTokens(config.api.tokensPath)).tokens
+    .length;
+  await writeFile(
+    join(config.paths.configDir, "identities", "humans.json"),
+    `${JSON.stringify({ version: 1, humans: [] }, null, 2)}\n`,
+    "utf8",
+  );
+  const afterRemoval = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: removalPairing.code }),
+  });
+  assertEqual(
+    afterRemoval.status,
+    403,
+    "pair after identity removal rejection",
+  );
+  const tokensAfter = (await loadApiTokens(config.api.tokensPath)).tokens
+    .length;
+  assertEqual(
+    tokensAfter,
+    tokensBefore,
+    "no token minted for removed identity",
+  );
+
+  console.log(
+    "ok pairing redeems a single-use code into a per-device token, fails closed otherwise",
+  );
+}
+
 async function writeTokensFile(
   path: string,
   entries: { token: string; identityId: string; deviceId: string }[],
@@ -445,6 +566,7 @@ function testConfig(dataDir: string): ApiAppConfig {
       host: "127.0.0.1",
       port: 0,
       tokensPath: join(dataDir, "config", "api-tokens.json"),
+      pairingsPath: join(dataDir, "config", "api-pairings.json"),
     },
   };
 }

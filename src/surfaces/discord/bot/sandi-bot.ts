@@ -27,10 +27,16 @@ import type {
 } from "@/lib/conversations/types";
 import {
   findHumanIdentity,
+  findHumanIdentityByPlatformId,
   loadHumanIdentities,
 } from "@/lib/identity/resolver";
 import type { HumanIdentityConfig } from "@/lib/identity/types";
 import { createLogger } from "@/lib/logging";
+import {
+  createPairing,
+  defaultApiPairingsPath,
+  PAIRING_TTL_MS,
+} from "@/lib/pairing/pairing-store";
 import type { PiAccountRoutingRequest } from "@/lib/provider/pi-account-routing";
 import {
   type ModelProviderClient,
@@ -625,6 +631,10 @@ export class SandiBot {
       await this.#replyToStatusInteraction(interaction);
       return;
     }
+    if (!group && subcommand === "auth") {
+      await this.#replyToAuthInteraction(interaction);
+      return;
+    }
     if (group === "events" && subcommand === "list") {
       await this.#replyToEventsListInteraction(interaction);
       return;
@@ -644,6 +654,50 @@ export class SandiBot {
       : "No active Sandi turn is running in this conversation.";
     await interaction.reply({
       content,
+      allowedMentions: { parse: [] },
+      ephemeral: true,
+    });
+  }
+
+  async #replyToAuthInteraction(
+    interaction: ChatInputCommandInteraction,
+  ): Promise<void> {
+    // Resolve the invoking user to a known household identity before issuing
+    // anything. This is an auth gate that mints a credential, so match only on
+    // the immutable Discord account id, never the mutable username, and load
+    // identities fresh so a just-removed member cannot still get a code. Fail
+    // closed: a stranger, or a member configured without an immutable id, gets
+    // no code.
+    const identities = await loadHumanIdentities(this.#config.paths.configDirs);
+    const identity = findHumanIdentityByPlatformId({
+      identities,
+      platform: "discord",
+      platformUserId: interaction.user.id,
+    });
+    if (!identity) {
+      await interaction.reply({
+        content:
+          "I can only pair devices for a recognized household member, and I do not have you on file yet. Ask an admin to add you (with your Discord account id) to Sandi's identities first.",
+        allowedMentions: { parse: [] },
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const pairing = await createPairing({
+      path: defaultApiPairingsPath(this.#config.paths.dataDir),
+      identityId: identity.id,
+    });
+    const minutes = Math.round(PAIRING_TTL_MS / 60_000);
+    log.info("issued API pairing code", { identityId: identity.id });
+    await interaction.reply({
+      content: [
+        "Here is your one-time pairing code for connecting a desktop client to Sandi:",
+        "",
+        `\`\`\`\n${pairing.display}\n\`\`\``,
+        `It is valid for ${minutes} minutes and can be used once. In your desktop client, choose to pair a new device and paste this code. It links that device to your Sandi identity (and your GitHub account if one is on file).`,
+        "Running this command again replaces any previous code.",
+      ].join("\n"),
       allowedMentions: { parse: [] },
       ephemeral: true,
     });

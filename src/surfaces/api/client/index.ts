@@ -1,7 +1,6 @@
 import { resolve } from "node:path";
 
 import {
-  DesktopCredentialsSchema,
   desktopConfigPath,
   loadDesktopCredentials,
   ServerUrlSchema,
@@ -97,24 +96,21 @@ async function runCommand(args: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  // A --url override must pass the same parser as the stored url: re-validate
-  // the merged credentials so the override cannot smuggle a non-http value into
-  // a value typed as DesktopCredentials.
+  // The --url override is the boundary here, so parse just it. The other fields
+  // came parsed from loadDesktopCredentials and need no second look; only the
+  // raw override has to clear ServerUrlSchema before it joins them.
   const override = flags.options["url"];
   let effective = credentials;
   if (override !== undefined) {
-    const merged = DesktopCredentialsSchema.safeParse({
-      ...credentials,
-      url: override,
-    });
-    if (!merged.success) {
+    const parsedOverride = ServerUrlSchema.safeParse(override);
+    if (!parsedOverride.success) {
       console.error(
         `invalid --url override: ${override} (must be an http(s) url)`,
       );
       process.exitCode = 1;
       return;
     }
-    effective = merged.data;
+    effective = { ...credentials, url: parsedOverride.data };
   }
   const rootDir = resolve(flags.options["root"] ?? process.cwd());
 

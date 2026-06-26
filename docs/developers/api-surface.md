@@ -205,7 +205,7 @@ agents.
 ### Tool gating
 
 An api-surface turn runs pi with `--no-builtin-tools`, which disables its seven
-native file and shell tools (read, write, edit, bash, grep, find, ls) at once:
+native file and shell tools (read, write, edit, bash, grep, find, ls) because
 those operate on the server's disk, the wrong machine. In their place, an
 api-only extension (`pi-extension/local-exec-tools.ts`) registers seven proxy
 tools (`local_read`, `local_write`, `local_edit`, `local_ls`, `local_glob`,
@@ -240,7 +240,7 @@ pi child  --HTTP-->  loopback broker  --SSE-->  desktop client
   call to the device's SSE stream, then returns the result the device POSTs back
   (`POST /v1/devices/result`) as the loopback HTTP response.
 
-SSE (not a WebSocket) carries the server-to-desktop push: it needs no new
+SSE (not a WebSocket) carries the server-to-desktop push. It needs no new
 dependency beyond `node:http`, the result channel is a plain POST, and Phase 3
 response streaming reuses the same SSE machinery. The desktop sees every file
 and shell operation because it executes them, so no separate event channel is
@@ -254,7 +254,7 @@ needed.
   device that reused another token's `deviceId`. A second desktop for the same
   human never receives another desktop's tool calls. The lease is revoked in the
   turn's `finally`, so a broker token never outlives its turn.
-- An offline device fails closed: with no link registered, the turn leases no
+- An offline device fails closed. With no link registered, the turn leases no
   broker, the proxy extension registers no tools, and the turn runs without file
   or shell access rather than touching the server. A call whose device drops
   mid-turn rejects with a device-unavailable error. An aborted turn rejects its

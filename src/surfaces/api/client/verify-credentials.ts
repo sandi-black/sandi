@@ -74,6 +74,23 @@ async function verifyCredentials(): Promise<void> {
     assert(rejected, "a malformed token is rejected at load");
     console.log("ok a malformed token is rejected at load");
 
+    // A non-http url is rejected the same way: the server origin is parsed at
+    // the boundary, so a relative or non-http value never reaches a request.
+    const badUrlPath = join(dir, "bad-url.json");
+    await writeFile(
+      badUrlPath,
+      JSON.stringify({ ...credentials, url: "ftp://example.com" }),
+      "utf8",
+    );
+    let urlRejected = false;
+    try {
+      await loadDesktopCredentials(badUrlPath);
+    } catch {
+      urlRejected = true;
+    }
+    assert(urlRejected, "a non-http url is rejected at load");
+    console.log("ok a non-http url is rejected at load");
+
     const previous = process.env["SANDI_DESKTOP_CONFIG"];
     process.env["SANDI_DESKTOP_CONFIG"] = "~/.sandi/desktop.json";
     try {

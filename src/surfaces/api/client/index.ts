@@ -1,8 +1,10 @@
 import { resolve } from "node:path";
 
 import {
+  DesktopCredentialsSchema,
   desktopConfigPath,
   loadDesktopCredentials,
+  ServerUrlSchema,
   saveDesktopCredentials,
 } from "@/surfaces/api/client/credentials";
 import { runDesktopClient } from "@/surfaces/api/client/desktop-client";
@@ -54,11 +56,19 @@ async function pairCommand(args: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const url =
+  const rawUrl =
     flags.options["url"] ?? process.env["SANDI_API_URL"] ?? DEFAULT_URL;
+  // Parse the url at this boundary so an invalid --url or SANDI_API_URL is
+  // rejected before it reaches pairing or is written into saved credentials.
+  const parsedUrl = ServerUrlSchema.safeParse(rawUrl);
+  if (!parsedUrl.success) {
+    console.error(`invalid server url: ${rawUrl} (must be an http(s) url)`);
+    process.exitCode = 1;
+    return;
+  }
   const label = flags.options["label"];
   const outcome = await pairDesktop({
-    url,
+    url: parsedUrl.data,
     code,
     ...(label !== undefined ? { label } : {}),
   });
@@ -87,8 +97,25 @@ async function runCommand(args: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const url = flags.options["url"];
-  const effective = url ? { ...credentials, url } : credentials;
+  // A --url override must pass the same parser as the stored url: re-validate
+  // the merged credentials so the override cannot smuggle a non-http value into
+  // a value typed as DesktopCredentials.
+  const override = flags.options["url"];
+  let effective = credentials;
+  if (override !== undefined) {
+    const merged = DesktopCredentialsSchema.safeParse({
+      ...credentials,
+      url: override,
+    });
+    if (!merged.success) {
+      console.error(
+        `invalid --url override: ${override} (must be an http(s) url)`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    effective = merged.data;
+  }
   const rootDir = resolve(flags.options["root"] ?? process.cwd());
 
   const controller = new AbortController();

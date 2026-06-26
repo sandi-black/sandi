@@ -22,12 +22,19 @@ function isHttpUrl(value: string): boolean {
   return parsed.protocol === "http:" || parsed.protocol === "https:";
 }
 
+// The single parser for a server url, shared by the credentials schema and the
+// CLI so a `--url` flag or `SANDI_API_URL` value is validated at its entry point
+// rather than stored raw and failing on the first request.
+export const ServerUrlSchema = z
+  .string()
+  .refine(isHttpUrl, "must be an http(s) url");
+
 // Credentials the desktop client holds after pairing. This file lives on the
 // human's own machine and is NOT Sandi-managed server state, so it is written
 // with plain fs (owner-only mode), never the managed-write lock. The bearer
 // token authenticates both the turn requests and the device link.
-const DesktopCredentialsSchema = z.object({
-  url: z.string().refine(isHttpUrl, "must be an http(s) url"),
+export const DesktopCredentialsSchema = z.object({
+  url: ServerUrlSchema,
   token: z.string().regex(HEX_TOKEN, "must be a 64-character hex token"),
   deviceId: z.string().min(1),
   identityId: z.string().min(1),

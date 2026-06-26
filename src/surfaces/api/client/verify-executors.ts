@@ -128,11 +128,12 @@ async function verifyList(context: ExecutorContext): Promise<void> {
 }
 
 async function verifyGlob(context: ExecutorContext): Promise<void> {
-  for (const [path, content] of [
+  const fixtures: Array<[string, string]> = [
     ["src/x.ts", "x"],
     ["src/nested/y.ts", "y"],
     ["src/z.md", "z"],
-  ] as const) {
+  ];
+  for (const [path, content] of fixtures) {
     await executeLocalTool(
       { tool: "local_write", params: { path, content } },
       context,

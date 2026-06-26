@@ -24,9 +24,8 @@ The work is staged:
 
 - Phase 1 (built): the server-side HTTP surface and authentication. Sandi
   reasons and runs her tools server-side, the caller is a thin client.
-- Phase 2 (designed below, not yet built): hands-local execution, where Sandi's
-  brain stays in the server but file and shell tools run on the caller's
-  machine.
+- Phase 2 (built): hands-local execution, where Sandi's brain stays in the
+  server but file and shell tools run on the caller's machine.
 - Phase 3 (designed below): response streaming.
 - A desktop GUI app is out of scope here; Phase 2 ships a minimal reference
   client instead.
@@ -138,6 +137,23 @@ Error responses are deliberately terse and leak no internal paths: `401`
 malformed body, or an invalid id segment), `413` (body over the size cap), and
 `502`/`503` for provider failures (`503` for rate or quota limits).
 
+### Device link (Phase 2)
+
+A desktop that wants to run a turn's file and shell work locally also holds a
+link open. Both routes require the device's bearer token.
+
+- `GET /v1/devices/link` opens a Server-Sent Events stream. The server pushes one
+  `tool_call` event per proxied tool call (`data` is `{ "id", "tool", "params"
+}`) and sends `: ping` comments as a heartbeat. If a turn aborts (or its
+  backstop fires) while the link is still up, the server pushes a `tool_cancel`
+  event (`data` is `{ "id" }`) so the desktop abandons that call instead of
+  running it to completion. The stream stays open until the client disconnects; a
+  second link for the same token supersedes the first.
+- `POST /v1/devices/result` returns one tool result: `{ "id", "ok", "output",
+"error"? }`. The call is routed back to the pending tool call by the
+  authenticating token's hash, never a field in the body, so a device can only
+  settle its own calls. Unknown call ids answer `404`.
+
 ### Conversation model
 
 The client chooses a stable `conversationId` per session or thread. The
@@ -177,7 +193,7 @@ Discord and GitHub. Two properties keep that safe:
   OS processes sharing one `data/` directory, so this lock, not an in-process
   mutex, is what makes the shared brain safe under load.
 
-## Phase 2: hands-local execution (designed, not built)
+## Phase 2: hands-local execution (built)
 
 Phase 1 runs Sandi's tools server-side. Phase 2 keeps her brain, memory, and
 identity in the server but runs file and shell tools on the caller's machine, so
@@ -186,62 +202,91 @@ chose is that the session's workspace is the whole PC, run in bypass-permissions
 mode (every operation allowed), matching how the household already runs local
 agents.
 
-### Transport and the tool broker
+### Tool gating
 
-Hands-local needs the server to call back into the desktop mid-turn, so the
-transport becomes a WebSocket the desktop opens outbound (no inbound path to the
-desktop, so NAT and firewalls are not in the way). The desktop authenticates
-with its per-device bearer token and registers its session.
+An api-surface turn runs pi with `--no-builtin-tools`, which disables its seven
+native file and shell tools (read, write, edit, bash, grep, find, ls) because
+those operate on the server's disk, the wrong machine. In their place, an
+api-only extension (`pi-extension/local-exec-tools.ts`) registers seven proxy
+tools (`local_read`, `local_write`, `local_edit`, `local_ls`, `local_glob`,
+`local_grep`, `local_bash`) under distinct names, so pi's name-based exclusion
+never catches them. The flag is carried by `SandiSurfaceContext.disableBuiltinTools`,
+set on `API_SURFACE_CONTEXT`. Sandi's own extension tools (memory, skills,
+`sandi_js_run`, and the rest) stay server-side and unchanged; only the proxy
+file and shell tools run on the desktop.
 
-Tool execution reaches the desktop through a per-turn broker, reusing the
-existing coordination pattern. A Sandi turn already runs two process hops from
-the server: the server spawns `pi --print`, and `sandi_js_run` spawns a further
-`tsx` grandchild that imports the surface runtime barrel. Coordination flows down
-through inherited environment variables (the delivery side-effect file and the
-stop sentinel work exactly this way today). Phase 2 adds a loopback broker
-address plus a per-turn token to that environment. The API runtime barrel's
-`fs`, `shell`, and `process` helpers connect to the broker, which routes each
-request to the exact desktop connection that owns the turn and relays the result
-back. The desktop executes against its local machine and returns.
+### Transport: SSE and a loopback broker
 
-Two surface-scoped provider choices follow:
+Hands-local needs the server to call back into the desktop mid-turn. One tool
+call crosses three hops:
 
-- Native Pi file-edit and file-read tools are disabled for this surface, since
-  those operate on the server's disk (the wrong machine). All filesystem and
-  shell work routes through the proxied helpers.
-- Web search and research stay server-side.
+```text
+pi child  --HTTP-->  loopback broker  --SSE-->  desktop client
+          <--HTTP--                   <--HTTP--
+```
 
-Tool-call visibility comes for free: the desktop executes every file and shell
-operation, so it sees each one as it happens, without a separate event channel.
+- The desktop opens an outbound SSE stream (`GET /v1/devices/link`) and holds it,
+  so there is no inbound path to the desktop and NAT or a firewall is not in the
+  way. It authenticates with its per-device bearer token and registers in an
+  in-process `DeviceRegistry` keyed by that token's hash (the opaque routing
+  key), so a turn always reaches the exact token's link.
+- The pi child reaches back through a per-turn loopback broker. A turn already
+  runs as a child process the server spawns, and coordination already flows down
+  through inherited environment variables (the delivery side-effect file and the
+  stop sentinel work this way). Phase 2 adds `SANDI_TOOL_BROKER_URL` and a
+  single-turn `SANDI_TOOL_BROKER_TOKEN` to that environment. The proxy extension
+  POSTs each tool call to the broker; the broker, bound to `127.0.0.1` so the
+  route is never reachable off-box, looks the turn up by its token and relays the
+  call to the device's SSE stream, then returns the result the device POSTs back
+  (`POST /v1/devices/result`) as the loopback HTTP response.
+
+SSE (not a WebSocket) carries the server-to-desktop push. It needs no new
+dependency beyond `node:http`, the result channel is a plain POST, and Phase 3
+response streaming reuses the same SSE machinery. The desktop sees every file
+and shell operation because it executes them, so no separate event channel is
+needed.
 
 ### Routing, devices, and safety
 
-- A turn binds to the specific device connection that owns its session, never to
-  an identity in general, so a second desktop for the same human never receives
-  another desktop's tool calls.
-- An offline device fails closed: a turn whose session lives on a sleeping
-  machine cannot run its tools and aborts through the existing stop path. The
-  same property later enables cross-surface flows (ask from Discord, execute on
-  an enrolled, online workstation).
-- With bypass-all execution the enrollment token is the entire security
-  boundary, so per-device tokens, transport encryption, and a server bound to a
-  trusted interface carry the weight. An optional desktop-side never-touch
-  denylist remains available even though approval prompts are off by default.
+- A turn leases a broker ticket bound to the authenticating token's hash (the
+  opaque routing key) and the turn's abort signal, so a call routes to the exact
+  device that asked for the turn, never to an identity in general, and never to a
+  device that reused another token's `deviceId`. A second desktop for the same
+  human never receives another desktop's tool calls. The lease is revoked in the
+  turn's `finally`, so a broker token never outlives its turn.
+- An offline device fails closed. With no link registered, the turn leases no
+  broker, the proxy extension registers no tools, and the turn runs without file
+  or shell access rather than touching the server. A call whose device drops
+  mid-turn rejects with a device-unavailable error. An aborted turn rejects its
+  in-flight calls and pushes a `tool_cancel` to the desktop, which aborts the
+  matching command (killing the process tree on Windows, where signaling the
+  shell wrapper alone would not). The same routing property later enables
+  cross-surface flows (ask from Discord, execute on an enrolled workstation).
+- With bypass-all execution the enrollment token is the entire security boundary,
+  so per-device tokens and a server bound to a trusted interface carry the weight.
+  The desktop caps output and runtime so one call cannot flood the model or
+  wedge the link. It does not sandbox paths; pairing a desktop grants Sandi the
+  reach the human already has there.
 
 ### Reference client
 
-Phase 2 ships a minimal headless desktop client (connect, register a device,
-execute proxied tool requests) so the surface is usable and verifiable end to
-end. A full desktop GUI app remains a later, separate effort.
+`src/surfaces/api/client/` is a minimal headless desktop client so the surface is
+usable and verifiable end to end. `npm run client -- pair <CODE>` redeems a
+`/sandi auth` code and stores a per-device token at `~/.sandi/desktop.json`
+(owner-only, override with `SANDI_DESKTOP_CONFIG`); `npm run client -- run` holds
+the link open and runs each dispatched tool call locally, reconnecting with
+backoff. The local executors live in `client/executors.ts`. The token file is the
+human's own machine state, written with plain `fs`, never the server's
+managed-write lock. A full desktop GUI app remains a later, separate effort.
 
 ## Phase 3: streaming (designed, not built)
 
 Phase 1 returns the final reply in one response, because the provider collects
 `pi --print` stdout and returns it whole. A live coding-agent feel wants token
 streaming and incremental tool-call narration. That is a change in the provider
-layer (a streaming turn API) surfaced over Server-Sent Events or the Phase 2
-WebSocket, and it is the only part of this vision that reaches outside the
-surface.
+layer (a streaming turn API) surfaced over the same Server-Sent Events transport
+the device link already uses, and it is the only part of this vision that reaches
+outside the surface.
 
 ## Files
 
@@ -266,11 +311,36 @@ src/surfaces/api/
     conversations.ts            canonical ids and manifest builder
     delivery-instructions.ts    API delivery contract
   bot/
-    api-bot.ts                  HTTP server, routing, auth, pairing, turns
+    api-bot.ts                  HTTP server, routing, auth, pairing, turns, device routes
     verify-api-bot.ts           verify harness with an injected provider
+  devices/
+    protocol.ts                 hands-local wire protocol (tool names, schemas, cancel)
+    device-registry.ts          tracks desktop SSE links, dispatches, cancels, settles calls
+    device-routes.ts            HTTP edge: SSE link and result POST controllers
+    tool-broker.ts              loopback broker: per-turn token, /call relay
+    verify-tool-broker.ts       broker + registry round-trip, unavailable, abort + cancel
+  http/
+    respond.ts                  shared sendJson and bearer-token parsing
+    read-json-body.ts           shared bounded JSON body reader
+  pi-extension/
+    local-exec-tools.ts         api-only proxy tools (local_*) routed to the broker
+    verify-local-exec-tools.ts  proxy routing and ok/refused/unavailable mapping
+  client/
+    index.ts                    reference client CLI (pair | run)
+    desktop-client.ts           SSE link loop, dispatch to executors, cancel, reconnect
+    verify-desktop-client.ts    end-to-end link verify: dispatch, cancel, result-report
+    executors.ts                local file and shell implementations
+    verify-executors.ts         per-tool executor verify against a temp dir
+    credentials.ts              per-device token file (owner-only, not managed state)
+    verify-credentials.ts       owner-only round-trip and ~ config-path expansion
+    pairing.ts                  client-side code redemption
+    verify-pairing.ts           client redemption: success, label fallback, errors
+    http.ts                     client JSON POST helper
   runtime/
-    context.ts                  API_SURFACE_CONTEXT
-    index.ts                    runtime barrel (server-side helpers in Phase 1)
+    context.ts                  API_SURFACE_CONTEXT (disableBuiltinTools for hands-local)
+    index.ts                    runtime barrel (server-side helpers)
+src/lib/provider/
+  pi-cli-client.ts              --no-builtin-tools gating + broker env threading
 src/surfaces/discord/bot/
   device-auth.ts                issueDeviceCode: the /sandi auth issuer core
   verify-device-auth.ts         issuer verify (recognized vs declined)
@@ -283,12 +353,22 @@ surface. It binds only an `identityId`, so it stays surface-neutral. Pairing
 timestamps are stored as epoch milliseconds, parsed to numbers at the file
 boundary so nothing reparses a string at use.
 
-Configuration lives in `.env.example` under the `SANDI_API_*` keys. Coverage
-runs as part of `npm run check`: `verify:api-bot` proves health, auth rejection,
-the unmapped-identity 403, identity routing, session reuse, token revocation,
-the full pairing redemption loop, and that a freshly minted token authenticates
-a turn at once; `verify:pairing` covers the store's single-use, expiry,
-supersede, and concurrency properties; `verify:auth-resolver` covers strict
-resolution, identity-store freshness, and duplicate-id rejection;
-`verify:api-rate-limiter` and `verify:discord-auth` cover the limiter and the
-issuer.
+Configuration lives in `.env.example` under the `SANDI_API_*` keys (plus the
+client-side `SANDI_API_URL` and `SANDI_DESKTOP_CONFIG`). Coverage runs as part of
+`npm run check`: `verify:api-bot` proves health, auth rejection, the
+unmapped-identity 403, identity routing, session reuse, token revocation, the
+full pairing redemption loop, that a freshly minted token authenticates a turn at
+once, and the device routes (auth, SSE open, unknown-result 404); `verify:pairing`
+covers the store's single-use, expiry, supersede, and concurrency properties;
+`verify:auth-resolver` covers strict resolution, identity-store freshness, and
+duplicate-id rejection; `verify:api-rate-limiter` and `verify:discord-auth` cover
+the limiter and the issuer. For hands-local, `verify:tool-broker` covers the
+broker-to-device round-trip, device-unavailable, abort (including the
+`tool_cancel` it pushes to a connected device), and token revocation;
+`verify:local-exec-tools` covers the proxy extension's routing and error mapping;
+`verify:client-executors` covers each local file and shell executor, including
+bash cancellation; `verify:desktop-client` drives the reference client against a
+fake api surface to prove it runs a dispatched call, abandons one on
+`tool_cancel`, and reports both outcomes; and `verify:pi-harness` proves an api
+turn disables builtin tools and passes the broker env through while a default
+turn does neither.

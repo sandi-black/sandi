@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { type CoreConfig, loadCoreConfig, readEnv } from "@/lib/config/env";
 import { defaultApiPairingsPath } from "@/lib/pairing/pairing-store";
@@ -32,8 +32,23 @@ export function loadApiAppConfig(): ApiAppConfig {
   const core = loadCoreConfig();
   return {
     ...core,
+    pi: {
+      ...core.pi,
+      // The api surface runs hands-local: load the proxy tools that route file
+      // and shell work to the caller's desktop. Loaded only here, so other
+      // surfaces never carry these tools. The extension self-disables on any
+      // turn that did not lease a tool broker.
+      extensionPaths: [...core.pi.extensionPaths, apiLocalExecExtensionPath()],
+    },
     api: loadApiConfig(core.paths.dataDir),
   };
+}
+
+function apiLocalExecExtensionPath(): string {
+  return resolve(
+    readEnv(["SANDI_PI_LOCAL_EXEC_EXTENSION"]) ??
+      "src/surfaces/api/pi-extension/local-exec-tools.ts",
+  );
 }
 
 function readPortEnv(names: readonly string[], defaultValue: number): number {

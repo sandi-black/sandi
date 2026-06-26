@@ -76,7 +76,7 @@ identity-bearing surface acting as the mediator that proves who they are:
    `POST /v1/auth/pair`.
 3. The server validates and atomically consumes the code, re-checks against a
    freshly reloaded `humans.json` that the bound identity still maps to a
-   platform account (so a member removed after the code was issued fails closed
+   platform account (so a member removed after the code was issued is rejected
    without a server restart), mints a per-device bearer token, and returns it
    once. The client stores the token and uses it for every later turn.
 
@@ -95,10 +95,9 @@ under the managed-write lock, so even two clients racing the same code mint at
 most one token. The unauthenticated `POST /v1/auth/pair` is additionally rate
 limited per client and globally as a flood guard.
 
-Every pairing failure fails closed: a malformed or unknown code is `401`, a body
-with no code is `400`, an identity that no longer maps to a platform account is
-`403`, and exceeding the rate limit is `429`. No token is minted on any of these
-paths.
+Each pairing failure returns a terse status and mints no token: a malformed or
+unknown code is `401`, a body with no code is `400`, an identity that no longer
+maps to a platform account is `403`, and exceeding the rate limit is `429`.
 
 ### Identity reuse
 

@@ -16,9 +16,9 @@ import {
 // code binds the client to the whole identity, not to one surface account. The
 // client exchanges the code for a long-lived per-device bearer token.
 //
-// This store is deliberately platform-neutral: it never knows or records which
-// surface issued a code. The issuing surface resolves the human to an identity
-// first and stores only the resulting `identityId`.
+// This store is platform-neutral: it never knows or records which surface issued
+// a code. The issuing surface resolves the human to an identity first and stores
+// only the resulting `identityId`.
 
 // Codes live just long enough to walk from one app to another, then expire.
 export const PAIRING_TTL_MS = 10 * 60_000;
@@ -73,8 +73,8 @@ export function generatePairingCode(): { code: string; display: string } {
  * Normalizes a user-typed code to its canonical form: upper-cases, drops spaces
  * and grouping dashes, and folds the visually ambiguous letters a human might
  * type (O for zero, I or L for one) back onto the canonical symbols. Returns
- * undefined when the result is not a well-formed code, so a malformed redemption
- * fails closed without leaking why.
+ * undefined for input that is not a well-formed code, so a malformed redemption
+ * is rejected without revealing which part was wrong.
  */
 export function normalizePairingCode(raw: string): string | undefined {
   const stripped = raw
@@ -164,7 +164,7 @@ function generateUniqueCode(live: readonly ApiPairing[]): {
     if (!live.some((pairing) => pairing.codeSha256 === hash)) return candidate;
   }
   // 16 consecutive collisions against a handful of live 50-bit codes is not
-  // reachable with a working RNG. If it somehow happens, fail closed rather than
+  // reachable with a working RNG. If it somehow happens, throw rather than
   // return an unchecked (possibly duplicate) code.
   throw new Error("could not generate a unique pairing code");
 }
@@ -175,7 +175,7 @@ function generateUniqueCode(live: readonly ApiPairing[]): {
  * code is single-use even when two clients race to redeem it: only the process
  * that wins the lock and finds the code still present consumes it. Expired codes
  * are pruned on the way through. Returns undefined for an unknown or expired
- * code so the caller can fail closed.
+ * code so the caller can reject it.
  */
 export async function consumePairing(input: {
   path: string;

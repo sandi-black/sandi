@@ -434,7 +434,7 @@ async function verifyPairing(
   );
 
   console.log(
-    "ok pairing redeems a single-use code into a per-device token, fails closed otherwise",
+    "ok pairing redeems a single-use code into a per-device token and rejects bad input",
   );
 }
 

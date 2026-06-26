@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
@@ -14,12 +13,7 @@ import type {
   ConversationParticipant,
 } from "@/lib/conversations/types";
 import { HumanIdentityStore } from "@/lib/identity/resolver";
-import type { HumanIdentityRecord } from "@/lib/identity/types";
 import { createLogger } from "@/lib/logging";
-import {
-  consumePairing,
-  normalizePairingCode,
-} from "@/lib/pairing/pairing-store";
 import {
   type ModelProviderClient,
   ProviderTurnError,
@@ -31,15 +25,13 @@ import {
   buildApiConversationManifest,
   canonicalApiConversationId,
   InvalidApiSegmentError,
-  requireApiSegment,
   validateApiConversationRef,
 } from "@/surfaces/api/api/conversations";
 import { API_DELIVERY_INSTRUCTIONS } from "@/surfaces/api/api/delivery-instructions";
-import {
-  type ApiTokenEntry,
-  ApiTokenStore,
-  mintApiToken,
-} from "@/surfaces/api/auth/tokens";
+import { redeemPairing } from "@/surfaces/api/auth/pairing";
+import { apiParticipantFromHuman } from "@/surfaces/api/auth/participant";
+import { FixedWindowLimiter } from "@/surfaces/api/auth/rate-limiter";
+import { type ApiTokenEntry, ApiTokenStore } from "@/surfaces/api/auth/tokens";
 import type { ApiAppConfig } from "@/surfaces/api/config";
 import { API_SURFACE_CONTEXT } from "@/surfaces/api/runtime/context";
 
@@ -58,16 +50,14 @@ const SERVER_REQUEST_TIMEOUT_MS = 30_000;
 const TURNS_PATH = /^\/v1\/conversations\/([^/]+)\/turns$/;
 const AUTH_PAIR_PATH = "/v1/auth/pair";
 
-// Defense in depth on the unauthenticated pairing endpoint. A code is a 50-bit
+// Rate limits for the unauthenticated pairing endpoint. A code is a 50-bit
 // single-use secret with a short TTL, so brute force is already infeasible;
-// these windows simply cap how fast any one client or the server as a whole
-// will even consider a redemption, so a flood cannot grind the disk or chase
-// codes. The limits are generous enough that a human mistyping a code a few
-// times is never locked out.
+// these windows cap how fast any one client, or the server as a whole, will
+// consider a redemption, so a flood cannot grind the disk or chase codes. The
+// limits leave plenty of room for a human mistyping a code a few times.
 const PAIR_RATE_WINDOW_MS = 10 * 60_000;
 const PAIR_RATE_MAX_PER_CLIENT = 10;
 const PAIR_RATE_MAX_GLOBAL = 100;
-const MAX_DEVICE_LABEL_LENGTH = 200;
 
 export type ApiBotInput = {
   config: ApiAppConfig;
@@ -324,10 +314,9 @@ export class ApiBot {
   // Redeems a pairing code for a per-device bearer token. The endpoint is
   // unauthenticated because the code itself is the proof: it was issued to a
   // known human identity by an identity-bearing surface and is single-use with a
-  // short TTL. Everything fails closed. A malformed or unknown code is 401, an
-  // identity that no longer maps to a platform account is 403, and the code is
-  // consumed atomically so it can never mint two tokens. The raw token is
-  // returned exactly once and never logged.
+  // short TTL. This method is the HTTP shell (rate limit, read body, map the
+  // result to a status); redeemPairing holds the enrollment logic. The raw token
+  // is logged nowhere, only the identity and device it was minted for.
   async #handlePairRequest(
     request: IncomingMessage,
     response: ServerResponse,
@@ -342,73 +331,28 @@ export class ApiBot {
       sendJson(response, body.status, { error: body.error });
       return;
     }
-    const parsed = parsePairBody(body.value);
-    if (!parsed.ok) {
-      sendJson(response, 400, { error: parsed.error });
-      return;
-    }
 
-    const code = normalizePairingCode(parsed.code);
-    if (!code) {
-      sendJson(response, 401, { error: "invalid_code" });
-      return;
-    }
-
-    // Validate the (client-controlled) device id before consuming the code, so a
-    // client bug that sends a bad device id does not burn the user's code: they
-    // can retry without running `/sandi auth` again.
-    let deviceId: string;
-    if (parsed.deviceId !== undefined) {
-      try {
-        deviceId = requireApiSegment(parsed.deviceId, "deviceId");
-      } catch (error) {
-        if (error instanceof InvalidApiSegmentError) {
-          sendJson(response, 400, { error: "invalid_device_id" });
-          return;
-        }
-        throw error;
-      }
-    } else {
-      deviceId = generateDeviceId();
-    }
-
-    const consumed = await consumePairing({
-      path: this.#config.api.pairingsPath,
-      code,
-    });
-    if (!consumed) {
-      sendJson(response, 401, { error: "invalid_code" });
-      return;
-    }
-
-    // The code bound an identity at issue time, but re-validate it still maps to
-    // a platform account now: a human removed between issue and redemption fails
-    // closed rather than minting a token that could never run a turn.
-    const participant = await this.#participantForIdentityId(
-      consumed.identityId,
-    );
-    if (!participant) {
-      sendJson(response, 403, { error: "identity_unmapped" });
-      return;
-    }
-
-    const label = parsed.label ?? `Device ${deviceId}`;
-    const token = await mintApiToken({
+    const result = await redeemPairing({
+      body: body.value,
+      pairingsPath: this.#config.api.pairingsPath,
       tokensPath: this.#config.api.tokensPath,
-      identityId: consumed.identityId,
-      deviceId,
-      label,
+      identities: this.#identities,
     });
+    if (!result.ok) {
+      sendJson(response, result.status, { error: result.error });
+      return;
+    }
+
     log.info("issued API device token via pairing", {
-      identityId: consumed.identityId,
-      deviceId,
+      identityId: result.identityId,
+      deviceId: result.deviceId,
     });
     sendJson(response, 200, {
       surface: "api",
-      identityId: consumed.identityId,
-      deviceId,
-      label,
-      token,
+      identityId: result.identityId,
+      deviceId: result.deviceId,
+      label: result.label,
+      token: result.token,
     });
   }
 
@@ -509,7 +453,7 @@ export class ApiBot {
   // arena, and account routing: one shared brain across surfaces. The surface is
   // "api" (recorded in surfaceContext and the manifest), which stays distinct
   // from the participant platform. A human with no Discord or GitHub mapping
-  // fails closed, so we never run an unmapped turn.
+  // resolves to undefined so the turn never runs unmapped.
   async #participantForIdentityId(
     identityId: string,
   ): Promise<ConversationParticipant | undefined> {
@@ -525,40 +469,6 @@ class RequestAbortedError extends Error {
     super("request aborted before turn completed");
     this.name = "RequestAbortedError";
   }
-}
-
-// Resolve a human identity to the API participant, reusing the human's primary
-// platform account (Discord first, else GitHub) so the API turn shares that
-// human's existing memory arena and account routing. Returns undefined when the
-// human has no usable platform mapping so the caller can fail closed.
-function apiParticipantFromHuman(
-  human: HumanIdentityRecord,
-): ConversationParticipant | undefined {
-  const discord = human.platforms.discord;
-  if (discord) {
-    const participant: ConversationParticipant = {
-      platform: "discord",
-      platformUserId: discord.id ?? discord.username,
-      username: discord.username,
-      identityId: human.id,
-      joinedAt: new Date().toISOString(),
-    };
-    if (human.displayName) participant.displayName = human.displayName;
-    return participant;
-  }
-  const github = human.platforms.github;
-  if (github) {
-    const participant: ConversationParticipant = {
-      platform: "github",
-      platformUserId: github.id ?? github.login,
-      username: github.login,
-      identityId: human.id,
-      joinedAt: new Date().toISOString(),
-    };
-    if (human.displayName) participant.displayName = human.displayName;
-    return participant;
-  }
-  return undefined;
 }
 
 function apiPlatformContext(input: {
@@ -696,97 +606,11 @@ function parseTurnBody(value: unknown): ParsedTurnBody {
   return { ok: true, input };
 }
 
-type ParsedPairBody =
-  | { ok: true; code: string; deviceId?: string; label?: string }
-  | { ok: false; error: string };
-
-function parsePairBody(value: unknown): ParsedPairBody {
-  if (!isRecord(value)) {
-    return { ok: false, error: "invalid_body" };
-  }
-  const record = value;
-  const code = record["code"];
-  if (typeof code !== "string" || code.trim().length === 0) {
-    return { ok: false, error: "invalid_code" };
-  }
-  const rawDeviceId = record["deviceId"];
-  if (rawDeviceId !== undefined && typeof rawDeviceId !== "string") {
-    return { ok: false, error: "invalid_device_id" };
-  }
-  const rawLabel = record["label"];
-  if (rawLabel !== undefined && typeof rawLabel !== "string") {
-    return { ok: false, error: "invalid_label" };
-  }
-  const deviceId =
-    typeof rawDeviceId === "string" && rawDeviceId.trim().length > 0
-      ? rawDeviceId.trim()
-      : undefined;
-  const label =
-    typeof rawLabel === "string" && rawLabel.trim().length > 0
-      ? rawLabel.trim().slice(0, MAX_DEVICE_LABEL_LENGTH)
-      : undefined;
-  return {
-    ok: true,
-    code,
-    ...(deviceId !== undefined ? { deviceId } : {}),
-    ...(label !== undefined ? { label } : {}),
-  };
-}
-
-// A short, segment-safe device id (matches the conversation segment alphabet) so
-// distinct enrolled devices for one identity never collide in the canonical id.
-function generateDeviceId(): string {
-  return `device-${randomBytes(4).toString("hex")}`;
-}
-
 // Best-effort client key for rate limiting. The API surface is bound to a
 // trusted interface, so the socket address is sufficient to throttle a single
 // misbehaving client without any proxy-header trust.
 function remoteKey(request: IncomingMessage): string {
   return request.socket.remoteAddress ?? "unknown";
-}
-
-// A fixed-window counter with both a per-client and a global cap. In-memory and
-// per-process, which is all this needs: the limits are a coarse flood guard, not
-// an accounting system.
-class FixedWindowLimiter {
-  readonly #windowMs: number;
-  readonly #maxPerClient: number;
-  readonly #maxGlobal: number;
-  readonly #clients = new Map<string, { count: number; resetAt: number }>();
-  #global = { count: 0, resetAt: 0 };
-
-  constructor(windowMs: number, maxPerClient: number, maxGlobal: number) {
-    this.#windowMs = windowMs;
-    this.#maxPerClient = maxPerClient;
-    this.#maxGlobal = maxGlobal;
-  }
-
-  tryConsume(key: string, now: number = Date.now()): boolean {
-    if (now >= this.#global.resetAt) {
-      this.#global = { count: 0, resetAt: now + this.#windowMs };
-      this.#sweep(now);
-    }
-    if (this.#global.count >= this.#maxGlobal) return false;
-
-    const existing = this.#clients.get(key);
-    const client =
-      existing && now < existing.resetAt
-        ? existing
-        : { count: 0, resetAt: now + this.#windowMs };
-    if (client.count >= this.#maxPerClient) return false;
-
-    client.count += 1;
-    this.#global.count += 1;
-    this.#clients.set(key, client);
-    return true;
-  }
-
-  #sweep(now: number): void {
-    for (const [key, entry] of this.#clients) {
-      if (now >= entry.resetAt) this.#clients.delete(key);
-    }
-  }
 }
 
 function providerErrorStatus(error: ProviderTurnError): number {

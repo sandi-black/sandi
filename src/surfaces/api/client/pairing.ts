@@ -1,0 +1,79 @@
+import { hostname } from "node:os";
+
+import { z } from "zod/v4";
+import type { DesktopCredentials } from "@/surfaces/api/client/credentials";
+import { type JsonResponse, postJson } from "@/surfaces/api/client/http";
+
+const PairResponseSchema = z.object({
+  token: z.string().min(1),
+  deviceId: z.string().min(1),
+  identityId: z.string().min(1),
+  label: z.string().optional(),
+});
+
+export type PairOutcome =
+  | { ok: true; credentials: DesktopCredentials; label: string }
+  | { ok: false; error: string };
+
+// Redeems a pairing code from `/sandi auth` for a per-device token by calling
+// the api surface's pairing endpoint, then returns the credentials to store.
+export async function pairDesktop(input: {
+  url: string;
+  code: string;
+  label?: string;
+}): Promise<PairOutcome> {
+  const label = input.label ?? hostname();
+  let response: JsonResponse;
+  try {
+    response = await postJson({
+      url: input.url,
+      path: "/v1/auth/pair",
+      body: { code: input.code, label },
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      error: `could not reach ${input.url}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (response.status !== 200) {
+    return { ok: false, error: describePairError(response) };
+  }
+  const parsed = PairResponseSchema.safeParse(response.body);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: "server returned an unexpected pairing response",
+    };
+  }
+  return {
+    ok: true,
+    label: parsed.data.label ?? label,
+    credentials: {
+      url: input.url,
+      token: parsed.data.token,
+      deviceId: parsed.data.deviceId,
+      identityId: parsed.data.identityId,
+    },
+  };
+}
+
+function describePairError(response: JsonResponse): string {
+  const code =
+    typeof response.body === "object" &&
+    response.body !== null &&
+    "error" in response.body &&
+    typeof response.body.error === "string"
+      ? response.body.error
+      : undefined;
+  if (response.status === 401 || code === "invalid_code") {
+    return "the code is invalid or expired; run /sandi auth again for a fresh code";
+  }
+  if (response.status === 403) {
+    return "your identity is no longer mapped to a Discord or GitHub account";
+  }
+  if (response.status === 429) {
+    return "too many attempts; wait a moment and try again";
+  }
+  return `pairing failed (status ${response.status}${code ? `: ${code}` : ""})`;
+}

@@ -30,6 +30,15 @@ const log = createLogger("provider");
 const SYSTEM_PROMPT_FILE_NOTICE =
   "The authoritative Sandi system instructions are appended from a content-addressed file. Follow the appended instructions exactly.";
 
+// Coordinates for a per-turn loopback tool broker. When present, the turn's pi
+// child receives them in its environment and routes its proxy tool calls there.
+// The api surface mints these per turn for a connected desktop; other surfaces
+// never set them.
+export type LocalToolBroker = {
+  url: string;
+  token: string;
+};
+
 export type ProviderTurnRequest = {
   conversationId: string;
   instructions: string;
@@ -41,6 +50,7 @@ export type ProviderTurnRequest = {
   accountRouting?: PiAccountRoutingRequest;
   surfaceContext?: SandiSurfaceContext;
   memoryContext: MemoryContext;
+  localToolBroker?: LocalToolBroker;
   signal?: AbortSignal;
 };
 
@@ -219,6 +229,12 @@ export class PiCliClient implements ModelProviderClient {
     if (provider) args.push("--provider", provider);
     if (model) args.push("--model", model);
     if (thinking) args.push("--thinking", thinking);
+    // Hands-local surfaces (the api surface) turn off pi's seven built-in file
+    // and shell tools. Sandi-owned proxy tools, loaded as an extension, take
+    // their place and run on the caller's desktop instead of the server.
+    if (request.surfaceContext?.disableBuiltinTools) {
+      args.push("--no-builtin-tools");
+    }
 
     const auditFields = providerAccountAuditFields({
       request,
@@ -264,6 +280,7 @@ export class PiCliClient implements ModelProviderClient {
         account,
         this.#agentDir,
         this.#packageDir,
+        request.localToolBroker,
         request.input,
         request.signal,
       );
@@ -329,6 +346,7 @@ export class PiCliClient implements ModelProviderClient {
     account?: PiExecutionAccount,
     agentDir?: string,
     packageDir?: string,
+    localToolBroker?: LocalToolBroker,
     stdin?: string,
     signal?: AbortSignal,
   ): Promise<CommandResult> {
@@ -361,6 +379,7 @@ export class PiCliClient implements ModelProviderClient {
           account,
           agentDir,
           packageDir,
+          localToolBroker,
         ),
       });
       child.stdin.on("error", () => {
@@ -593,6 +612,7 @@ function childEnv(
   account: PiExecutionAccount | undefined,
   agentDir: string | undefined,
   packageDir: string | undefined,
+  localToolBroker: LocalToolBroker | undefined,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -610,6 +630,13 @@ function childEnv(
   delete env["SANDI_POLICY_ROOT"];
   delete env["SANDI_POLICY_ROOTS"];
   delete env["SANDI_FEEDBACK_ROOT"];
+  // Names are duplicated as string literals on the extension side on purpose:
+  // the pi child loads extensions without the tsconfig path alias, so it cannot
+  // import the shared constant. This and the proxy extension are the two ends of
+  // that env-var contract. Always deleted first so a stale broker from the parent
+  // environment can never leak into a turn that did not lease one.
+  delete env["SANDI_TOOL_BROKER_URL"];
+  delete env["SANDI_TOOL_BROKER_TOKEN"];
   delete env["PI_CODING_AGENT_DIR"];
   delete env["PI_PACKAGE_DIR"];
   const piAgentDir = account?.agentDir ?? agentDir;
@@ -629,6 +656,10 @@ function childEnv(
     if (surfaceContext.attachmentsRoot) {
       env["SANDI_SURFACE_ATTACHMENTS_ROOT"] = surfaceContext.attachmentsRoot;
     }
+  }
+  if (localToolBroker) {
+    env["SANDI_TOOL_BROKER_URL"] = localToolBroker.url;
+    env["SANDI_TOOL_BROKER_TOKEN"] = localToolBroker.token;
   }
   if (memoryContext) {
     env["SANDI_MEMORY_ROOT"] = memoryContext.memoryRoot;

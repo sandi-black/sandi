@@ -63,6 +63,7 @@ async function verifyApiBot(): Promise<void> {
     await verifySecondTurnDoesNotDuplicateParticipant(base);
     await verifyManifestPersisted(dataDir);
     await verifyTokenRevocationAndEnrollment(dataDir);
+    await verifyDeviceRoutes(base);
     await verifyPairing(base, config);
   } finally {
     bot.stop();
@@ -317,6 +318,77 @@ async function verifyTokenRevocationAndEnrollment(
   assertEqual(enrolled?.deviceId, "device-2", "newly enrolled token accepted");
   console.log(
     "ok token store honors revocation and enrollment without restart",
+  );
+}
+
+// Exercises the device link and result routes over HTTP: both require a valid
+// bearer token, the link opens an SSE stream, and a result for an unknown call
+// fails closed. The full dispatch round-trip (broker to device and back) is
+// covered at the unit level in verify-tool-broker.
+async function verifyDeviceRoutes(base: string): Promise<void> {
+  const linkUrl = `${base}/v1/devices/link`;
+  const resultUrl = `${base}/v1/devices/result`;
+
+  const noAuthLink = await fetch(linkUrl);
+  assertEqual(noAuthLink.status, 401, "device link without auth is 401");
+  await noAuthLink.body?.cancel();
+
+  const noAuthResult = await fetch(resultUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id: "x", ok: true, output: "" }),
+  });
+  assertEqual(noAuthResult.status, 401, "device result without auth is 401");
+
+  const wrongMethod = await fetch(linkUrl, {
+    method: "POST",
+    headers: { authorization: `Bearer ${RAW_TOKEN}` },
+  });
+  assertEqual(wrongMethod.status, 405, "POST to the device link is 405");
+  await wrongMethod.body?.cancel();
+
+  // No link is open for this device, so a result references no pending call and
+  // fails closed rather than being silently dropped.
+  const unknownResult = await fetch(resultUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${RAW_TOKEN}`,
+    },
+    body: JSON.stringify({ id: "missing", ok: true, output: "x" }),
+  });
+  assertEqual(unknownResult.status, 404, "result for an unknown call is 404");
+
+  // Opening the link returns a live SSE stream.
+  const controller = new AbortController();
+  try {
+    const link = await fetch(linkUrl, {
+      headers: { authorization: `Bearer ${RAW_TOKEN}` },
+      signal: controller.signal,
+    });
+    assertEqual(link.status, 200, "device link opens with 200");
+    const contentType = link.headers.get("content-type") ?? "";
+    if (!contentType.includes("text/event-stream")) {
+      console.error(
+        `device link content-type: expected text/event-stream, got ${contentType}`,
+      );
+      process.exit(1);
+    }
+    const reader = link.body?.getReader();
+    if (reader) {
+      const first = await reader.read();
+      const text = first.value ? Buffer.from(first.value).toString("utf8") : "";
+      if (!text.includes(": linked")) {
+        console.error("device link: expected an initial ': linked' comment");
+        process.exit(1);
+      }
+      await reader.cancel();
+    }
+  } finally {
+    controller.abort();
+  }
+  console.log(
+    "ok device routes require auth, open an SSE stream, and fail closed on unknown results",
   );
 }
 

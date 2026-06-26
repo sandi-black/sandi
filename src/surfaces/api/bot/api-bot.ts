@@ -33,6 +33,11 @@ import { apiParticipantFromHuman } from "@/surfaces/api/auth/participant";
 import { FixedWindowLimiter } from "@/surfaces/api/auth/rate-limiter";
 import { type ApiTokenEntry, ApiTokenStore } from "@/surfaces/api/auth/tokens";
 import type { ApiAppConfig } from "@/surfaces/api/config";
+import { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
+import { DeviceResultSchema } from "@/surfaces/api/devices/protocol";
+import { ToolBroker } from "@/surfaces/api/devices/tool-broker";
+import { readJsonBody } from "@/surfaces/api/http/read-json-body";
+import { bearerToken, sendJson } from "@/surfaces/api/http/respond";
 import { API_SURFACE_CONTEXT } from "@/surfaces/api/runtime/context";
 
 const log = createLogger("api-bot");
@@ -49,6 +54,16 @@ const SERVER_HEADERS_TIMEOUT_MS = 10_000;
 const SERVER_REQUEST_TIMEOUT_MS = 30_000;
 const TURNS_PATH = /^\/v1\/conversations\/([^/]+)\/turns$/;
 const AUTH_PAIR_PATH = "/v1/auth/pair";
+// A desktop holds the link open (SSE) to receive tool calls and POSTs each
+// result back as it finishes.
+const DEVICE_LINK_PATH = "/v1/devices/link";
+const DEVICE_RESULT_PATH = "/v1/devices/result";
+
+// A tool result body can carry a file's contents or a command's output, so it is
+// allowed to be larger than an ordinary request; the desktop caps these before
+// it sends them.
+const DEVICE_RESULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
+const DEVICE_RESULT_BODY_TIMEOUT_MS = 30_000;
 
 // Rate limits for the unauthenticated pairing endpoint. A code is a 50-bit
 // single-use secret with a short TTL, so brute force is already infeasible;
@@ -79,6 +94,8 @@ export class ApiBot {
     PAIR_RATE_MAX_PER_CLIENT,
     PAIR_RATE_MAX_GLOBAL,
   );
+  readonly #devices = new DeviceRegistry();
+  readonly #broker = new ToolBroker(this.#devices);
   #server: Server | undefined;
 
   constructor(input: ApiBotInput) {
@@ -95,17 +112,22 @@ export class ApiBot {
     this.#identities = new HumanIdentityStore(input.config.paths.configDirs, 0);
   }
 
-  start(): Promise<void> {
-    if (this.#server) return Promise.resolve();
+  async start(): Promise<void> {
+    if (this.#server) return;
+    // The loopback tool broker must be reachable before any turn leases a ticket
+    // for it, so start it before the public listener accepts requests.
+    await this.#broker.start();
     const server = createServer((request, response) => {
       void this.#handleRequest(request, response);
     });
     // Fail closed against slow-header / slow-request attacks at the socket
-    // level, independent of the per-handler body deadline.
+    // level, independent of the per-handler body deadline. These bound how long
+    // a client may take to send a request, not how long a response may stay open,
+    // so a held device-link stream is unaffected.
     server.headersTimeout = SERVER_HEADERS_TIMEOUT_MS;
     server.requestTimeout = SERVER_REQUEST_TIMEOUT_MS;
     this.#server = server;
-    return new Promise((resolveStart, rejectStart) => {
+    await new Promise<void>((resolveStart, rejectStart) => {
       const onError = (error: Error): void => {
         rejectStart(error);
       };
@@ -126,6 +148,8 @@ export class ApiBot {
     if (!server) return;
     this.#server = undefined;
     log.info("stopping API surface");
+    this.#devices.closeAll();
+    this.#broker.stop();
     server.close();
     server.closeAllConnections?.();
   }
@@ -156,6 +180,24 @@ export class ApiBot {
           return;
         }
         await this.#handlePairRequest(request, response);
+        return;
+      }
+
+      if (path === DEVICE_LINK_PATH) {
+        if (method !== "GET") {
+          sendJson(response, 405, { error: "method_not_allowed" });
+          return;
+        }
+        await this.#handleDeviceLink(request, response);
+        return;
+      }
+
+      if (path === DEVICE_RESULT_PATH) {
+        if (method !== "POST") {
+          sendJson(response, 405, { error: "method_not_allowed" });
+          return;
+        }
+        await this.#handleDeviceResult(request, response);
         return;
       }
 
@@ -228,7 +270,10 @@ export class ApiBot {
       return;
     }
 
-    const body = await readJsonBody(request);
+    const body = await readJsonBody(request, {
+      maxBytes: MAX_REQUEST_BODY_BYTES,
+      timeoutMs: BODY_READ_TIMEOUT_MS,
+    });
     if (!body.ok) {
       sendJson(response, body.status, { error: body.error });
       return;
@@ -279,6 +324,7 @@ export class ApiBot {
         canonicalId,
         conversation,
         participant,
+        deviceId: entry.deviceId,
         input: parsed.input,
         requestSignal: abort.signal,
       });
@@ -328,7 +374,10 @@ export class ApiBot {
       return;
     }
 
-    const body = await readJsonBody(request);
+    const body = await readJsonBody(request, {
+      maxBytes: MAX_REQUEST_BODY_BYTES,
+      timeoutMs: BODY_READ_TIMEOUT_MS,
+    });
     if (!body.ok) {
       sendJson(response, body.status, { error: body.error });
       return;
@@ -358,6 +407,84 @@ export class ApiBot {
     });
   }
 
+  // A desktop holds this SSE stream open to receive the tool calls for its turns.
+  // The bearer token authenticates the device, and that same token's deviceId is
+  // what a turn routes its file and shell work to. The stream stays open until
+  // the client goes away; each tool call arrives as a `tool_call` event and each
+  // result comes back on POST /v1/devices/result.
+  async #handleDeviceLink(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    const entry = await this.#authenticate(request);
+    if (!entry) {
+      sendJson(response, 401, { error: "unauthorized" });
+      return;
+    }
+
+    response.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      // Stop intermediaries from buffering the stream so events flush at once.
+      "x-accel-buffering": "no",
+    });
+    response.write(": linked\n\n");
+
+    const handle = this.#devices.connect({
+      deviceId: entry.deviceId,
+      identityId: entry.identityId,
+      write: (chunk) => {
+        response.write(chunk);
+      },
+      end: () => {
+        response.end();
+      },
+    });
+    // An SSE link ends only when the client disconnects: tear it down so the
+    // device frees and any in-flight calls reject.
+    response.on("close", () => {
+      handle.close();
+    });
+  }
+
+  // A desktop POSTs one tool result here as each call finishes. The caller is
+  // routed by the token's deviceId, never a field in the body, so a device can
+  // only ever settle its own calls.
+  async #handleDeviceResult(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    const entry = await this.#authenticate(request);
+    if (!entry) {
+      sendJson(response, 401, { error: "unauthorized" });
+      return;
+    }
+
+    const body = await readJsonBody(request, {
+      maxBytes: DEVICE_RESULT_MAX_BODY_BYTES,
+      timeoutMs: DEVICE_RESULT_BODY_TIMEOUT_MS,
+    });
+    if (!body.ok) {
+      sendJson(response, body.status, { error: body.error });
+      return;
+    }
+    const parsed = DeviceResultSchema.safeParse(body.value);
+    if (!parsed.success) {
+      sendJson(response, 400, { error: "invalid_result" });
+      return;
+    }
+
+    const settled = this.#devices.settleResult(entry.deviceId, parsed.data);
+    if (!settled) {
+      // The call id is unknown for this device: a stale, duplicate, or already
+      // aborted call. Nothing to resolve.
+      sendJson(response, 404, { error: "unknown_call" });
+      return;
+    }
+    sendJson(response, 202, { ok: true });
+  }
+
   // ThreadQueue.enqueue is fire-and-forget returning void, so wrap it: the
   // queued job runs the turn and settles this promise, and the HTTP handler
   // awaits the promise so the response blocks until the turn finishes. The
@@ -368,6 +495,7 @@ export class ApiBot {
     canonicalId: string;
     conversation: ConversationManifest;
     participant: ConversationParticipant;
+    deviceId: string;
     input: string;
     requestSignal: AbortSignal;
   }): Promise<string> {
@@ -389,6 +517,7 @@ export class ApiBot {
               canonicalId: input.canonicalId,
               conversation: input.conversation,
               participant: input.participant,
+              deviceId: input.deviceId,
               input: input.input,
               signal,
             });
@@ -405,6 +534,7 @@ export class ApiBot {
     canonicalId: string;
     conversation: ConversationManifest;
     participant: ConversationParticipant;
+    deviceId: string;
     input: string;
     signal: AbortSignal;
   }): Promise<string> {
@@ -416,29 +546,42 @@ export class ApiBot {
       deliveryInstructions: API_DELIVERY_INSTRUCTIONS,
       skillHintQuery: input.input,
     });
-    const request: ProviderTurnRequest = {
-      conversationId: input.canonicalId,
-      instructions,
-      input: formatApiTurn(input.participant, input.input),
-      sessionMode: "persistent",
-      platformContext: apiPlatformContext(input),
-      accountRouting: input.participant.identityId
-        ? { identityId: input.participant.identityId }
-        : {},
-      surfaceContext: API_SURFACE_CONTEXT,
-      memoryContext: buildMemoryContext({
-        dataDir: this.#config.paths.dataDir,
-        conversation: input.conversation,
-        participants: input.conversation.participants,
-      }),
-      signal: input.signal,
-    };
-    const response = await this.#provider.generateTurn(request);
-    log.info("API provider turn finished", {
-      conversationId: input.canonicalId,
-      responseLength: response.text.length,
-    });
-    return response.text;
+
+    // Hand the turn a tool broker only when the caller's own desktop is holding
+    // a link. With no link, the proxy extension registers no tools and the turn
+    // runs without file or shell access rather than touching the server.
+    const lease = this.#devices.isConnected(input.deviceId)
+      ? this.#broker.lease({ deviceId: input.deviceId, signal: input.signal })
+      : undefined;
+    try {
+      const request: ProviderTurnRequest = {
+        conversationId: input.canonicalId,
+        instructions,
+        input: formatApiTurn(input.participant, input.input),
+        sessionMode: "persistent",
+        platformContext: apiPlatformContext(input),
+        accountRouting: input.participant.identityId
+          ? { identityId: input.participant.identityId }
+          : {},
+        surfaceContext: API_SURFACE_CONTEXT,
+        memoryContext: buildMemoryContext({
+          dataDir: this.#config.paths.dataDir,
+          conversation: input.conversation,
+          participants: input.conversation.participants,
+        }),
+        ...(lease ? { localToolBroker: lease.ticket } : {}),
+        signal: input.signal,
+      };
+      const response = await this.#provider.generateTurn(request);
+      log.info("API provider turn finished", {
+        conversationId: input.canonicalId,
+        responseLength: response.text.length,
+        handsLocal: lease !== undefined,
+      });
+      return response.text;
+    } finally {
+      lease?.revoke();
+    }
   }
 
   async #authenticate(
@@ -521,70 +664,6 @@ function formatApiTurn(
   ].join("\n");
 }
 
-// RFC 7235 `Bearer <token68>`: a single token of the token68 alphabet with no
-// embedded or trailing whitespace and no extra fields. `Bearer abc def` and
-// `Bearer ` are both rejected.
-const BEARER_HEADER = /^Bearer (?<token>[A-Za-z0-9._~+/-]+=*)$/i;
-
-function bearerToken(header: string | undefined): string | undefined {
-  if (!header) return undefined;
-  return BEARER_HEADER.exec(header.trim())?.groups?.["token"];
-}
-
-type JsonBodyResult =
-  | { ok: true; value: unknown }
-  | { ok: false; status: number; error: string };
-
-function readJsonBody(request: IncomingMessage): Promise<JsonBodyResult> {
-  return new Promise((resolveBody) => {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    let settled = false;
-
-    const finish = (result: JsonBodyResult): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolveBody(result);
-    };
-
-    const timer = setTimeout(() => {
-      request.destroy();
-      finish({ ok: false, status: 408, error: "request_timeout" });
-    }, BODY_READ_TIMEOUT_MS);
-
-    request.on("data", (chunk: Buffer) => {
-      total += chunk.length;
-      if (total > MAX_REQUEST_BODY_BYTES) {
-        // Stop buffering and deliberately stop reading so the caller can write
-        // the JSON 413 to the still-open response, instead of destroying the
-        // socket out from under the error. The server `requestTimeout` bounds
-        // any remaining unread body.
-        request.pause();
-        request.removeAllListeners("data");
-        finish({ ok: false, status: 413, error: "payload_too_large" });
-        return;
-      }
-      chunks.push(chunk);
-    });
-    request.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8").trim();
-      if (!raw) {
-        finish({ ok: false, status: 400, error: "empty_body" });
-        return;
-      }
-      try {
-        finish({ ok: true, value: JSON.parse(raw) });
-      } catch {
-        finish({ ok: false, status: 400, error: "invalid_json" });
-      }
-    });
-    request.on("error", () => {
-      finish({ ok: false, status: 400, error: "request_error" });
-    });
-  });
-}
-
 type ParsedTurnBody =
   | { ok: true; input: string; title?: string }
   | { ok: false; error: string };
@@ -628,17 +707,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function snakeCase(value: string): string {
   return value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
-}
-
-function sendJson(
-  response: ServerResponse,
-  status: number,
-  body: unknown,
-): void {
-  const payload = JSON.stringify(body);
-  response.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(payload),
-  });
-  response.end(payload);
 }

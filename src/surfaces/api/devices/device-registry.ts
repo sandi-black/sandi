@@ -5,7 +5,9 @@ import {
   type DeviceResult,
   type LocalToolName,
   TOOL_CALL_EVENT,
+  TOOL_CANCEL_EVENT,
   type ToolCallOutcome,
+  type ToolCancel,
   type ToolDispatch,
 } from "@/surfaces/api/devices/protocol";
 
@@ -131,6 +133,7 @@ export class DeviceRegistry {
         if (!call) return;
         state.pending.delete(id);
         clearTimeout(call.timer);
+        this.#cancel(state, id);
         reject(new Error("turn aborted before the desktop returned a result"));
       };
       const timer = setTimeout(() => {
@@ -138,6 +141,7 @@ export class DeviceRegistry {
         if (!call) return;
         state.pending.delete(id);
         input.signal?.removeEventListener("abort", onAbort);
+        this.#cancel(state, id);
         reject(new Error("desktop did not return a tool result in time"));
       }, DISPATCH_BACKSTOP_MS);
 
@@ -195,6 +199,22 @@ export class DeviceRegistry {
   closeAll(): void {
     for (const state of [...this.#connections.values()]) {
       this.#teardown(state, "server shutting down");
+    }
+  }
+
+  // Best-effort: tell the desktop to abandon a call we have stopped waiting for.
+  // The desktop may still finish and POST a result, which settleResult drops as
+  // unknown; this only saves it the wasted work. A failed write means the link
+  // is already gone, so tear it down.
+  #cancel(state: ConnectionState, id: string): void {
+    if (state.closed) return;
+    const cancel: ToolCancel = { id };
+    try {
+      state.write(
+        `event: ${TOOL_CANCEL_EVENT}\ndata: ${JSON.stringify(cancel)}\n\n`,
+      );
+    } catch {
+      this.#teardown(state, "device link write failed");
     }
   }
 

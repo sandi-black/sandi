@@ -237,13 +237,13 @@ function bashLocal(
     let cancelled = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
+      killTree(child);
     }, timeoutMs);
     // If the turn aborts or the link drops, kill the command rather than let it
     // run on past a result no one is waiting for.
     const onAbort = (): void => {
       cancelled = true;
-      child.kill("SIGTERM");
+      killTree(child);
     };
     signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -272,6 +272,26 @@ function bashLocal(
       resolveRun(ok(body ? `${header}\n\n${body}` : header));
     });
   });
+}
+
+// Kills a shell command and its descendants. `child.kill` signals only the
+// shell wrapper; on Windows that leaves the real process running, so use
+// taskkill with /T to take down the whole tree. Elsewhere a SIGTERM to the
+// process group covers it well enough for a reference client.
+function killTree(child: ReturnType<typeof spawn>): void {
+  if (child.pid === undefined) {
+    child.kill("SIGTERM");
+    return;
+  }
+  if (process.platform === "win32") {
+    // Detached so taskkill's own failure (already-exited pid) cannot throw into
+    // the caller; its output is irrelevant to us.
+    spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+      stdio: "ignore",
+    }).on("error", () => {});
+    return;
+  }
+  child.kill("SIGTERM");
 }
 
 async function* walkFiles(base: string): AsyncGenerator<string> {

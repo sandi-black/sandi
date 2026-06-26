@@ -144,12 +144,15 @@ link open. Both routes require the device's bearer token.
 
 - `GET /v1/devices/link` opens a Server-Sent Events stream. The server pushes one
   `tool_call` event per proxied tool call (`data` is `{ "id", "tool", "params"
-}`) and sends `: ping` comments as a heartbeat. The stream stays open until the
-  client disconnects; a second link for the same device supersedes the first.
+}`) and sends `: ping` comments as a heartbeat. If a turn aborts (or its
+  backstop fires) while the link is still up, the server pushes a `tool_cancel`
+  event (`data` is `{ "id" }`) so the desktop abandons that call instead of
+  running it to completion. The stream stays open until the client disconnects; a
+  second link for the same token supersedes the first.
 - `POST /v1/devices/result` returns one tool result: `{ "id", "ok", "output",
-"error"? }`. The call is routed back to the pending tool call by the token's
-  `deviceId`, never a field in the body, so a device can only settle its own
-  calls. Unknown call ids answer `404`.
+"error"? }`. The call is routed back to the pending tool call by the
+  authenticating token's hash, never a field in the body, so a device can only
+  settle its own calls. Unknown call ids answer `404`.
 
 ### Conversation model
 
@@ -244,16 +247,19 @@ it happens, without a separate event channel.
 
 ### Routing, devices, and safety
 
-- A turn leases a broker ticket bound to the caller's `deviceId` and the turn's
-  abort signal, so a call routes to the exact device that asked for the turn,
-  never to an identity in general; a second desktop for the same human never
-  receives another desktop's tool calls. The lease is revoked in the turn's
-  `finally`, so a broker token never outlives its turn.
+- A turn leases a broker ticket bound to the authenticating token's hash (the
+  opaque routing key) and the turn's abort signal, so a call routes to the exact
+  device that asked for the turn, never to an identity in general, and never to a
+  device that reused another token's `deviceId`. A second desktop for the same
+  human never receives another desktop's tool calls. The lease is revoked in the
+  turn's `finally`, so a broker token never outlives its turn.
 - An offline device fails closed: with no link registered, the turn leases no
   broker, the proxy extension registers no tools, and the turn runs without file
   or shell access rather than touching the server. A call whose device drops
-  mid-turn rejects with a device-unavailable error, and an aborted turn rejects
-  its in-flight calls. The same routing-by-device property later enables
+  mid-turn rejects with a device-unavailable error. An aborted turn rejects its
+  in-flight calls and pushes a `tool_cancel` to the desktop, which aborts the
+  matching command (killing the process tree on Windows, where signaling the
+  shell wrapper alone would not). The same routing property later enables
   cross-surface flows (ask from Discord, execute on an enrolled workstation).
 - With bypass-all execution the enrollment token is the entire security boundary,
   so per-device tokens and a server bound to a trusted interface carry the weight.
@@ -307,10 +313,10 @@ src/surfaces/api/
     api-bot.ts                  HTTP server, routing, auth, pairing, turns, device routes
     verify-api-bot.ts           verify harness with an injected provider
   devices/
-    protocol.ts                 hands-local wire protocol (tool names, schemas)
-    device-registry.ts          tracks desktop SSE links, dispatches and settles calls
+    protocol.ts                 hands-local wire protocol (tool names, schemas, cancel)
+    device-registry.ts          tracks desktop SSE links, dispatches, cancels, settles calls
     tool-broker.ts              loopback broker: per-turn token, /call relay
-    verify-tool-broker.ts       broker + registry round-trip, unavailable, abort
+    verify-tool-broker.ts       broker + registry round-trip, unavailable, abort + cancel
   http/
     respond.ts                  shared sendJson and bearer-token parsing
     read-json-body.ts           shared bounded JSON body reader
@@ -319,7 +325,8 @@ src/surfaces/api/
     verify-local-exec-tools.ts  proxy routing and ok/refused/unavailable mapping
   client/
     index.ts                    reference client CLI (pair | run)
-    desktop-client.ts           SSE link loop, dispatch to executors, reconnect
+    desktop-client.ts           SSE link loop, dispatch to executors, cancel, reconnect
+    verify-desktop-client.ts    end-to-end link verify: dispatch, cancel, result-report
     executors.ts                local file and shell implementations
     verify-executors.ts         per-tool executor verify against a temp dir
     credentials.ts              per-device token file (owner-only, not managed state)
@@ -352,8 +359,12 @@ covers the store's single-use, expiry, supersede, and concurrency properties;
 `verify:auth-resolver` covers strict resolution, identity-store freshness, and
 duplicate-id rejection; `verify:api-rate-limiter` and `verify:discord-auth` cover
 the limiter and the issuer. For hands-local, `verify:tool-broker` covers the
-broker-to-device round-trip, device-unavailable, abort, and token revocation;
+broker-to-device round-trip, device-unavailable, abort (including the
+`tool_cancel` it pushes to a connected device), and token revocation;
 `verify:local-exec-tools` covers the proxy extension's routing and error mapping;
-`verify:client-executors` covers each local file and shell executor; and
-`verify:pi-harness` proves an api turn disables builtin tools and passes the
-broker env through while a default turn does neither.
+`verify:client-executors` covers each local file and shell executor, including
+bash cancellation; `verify:desktop-client` drives the reference client against a
+fake api surface to prove it runs a dispatched call, abandons one on
+`tool_cancel`, and reports both outcomes; and `verify:pi-harness` proves an api
+turn disables builtin tools and passes the broker env through while a default
+turn does neither.

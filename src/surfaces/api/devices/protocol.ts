@@ -124,6 +124,17 @@ export type ToolCallOutcome = {
 // lines (": ping") which carry no event and are ignored by the client parser.
 export const TOOL_CALL_EVENT = "tool_call";
 
+// SSE event name telling the desktop to stop an in-flight call. Sent when a turn
+// aborts (or its backstop fires) while the link is still up: the broker has
+// already stopped waiting, so the desktop should abandon the work rather than
+// run it to completion and POST a result no one is holding a pending call for.
+// Carries the same `id` as the original dispatch.
+export const TOOL_CANCEL_EVENT = "tool_cancel";
+export const ToolCancelSchema = z.object({
+  id: z.string().min(1),
+});
+export type ToolCancel = z.infer<typeof ToolCancelSchema>;
+
 // Environment variables the api surface sets on the pi child so the proxy
 // extension can reach the loopback broker. Defined here as the single source of
 // truth; the extension reads the same names by string since it cannot import

@@ -7,6 +7,8 @@ import { postJson } from "@/surfaces/api/client/http";
 import {
   LocalToolNameSchema,
   TOOL_CALL_EVENT,
+  TOOL_CANCEL_EVENT,
+  ToolCancelSchema,
 } from "@/surfaces/api/devices/protocol";
 
 // Holds an SSE link to the api surface, runs each dispatched tool call against
@@ -22,6 +24,15 @@ export type DesktopClientOptions = {
   rootDir: string;
   signal?: AbortSignal;
   onStatus?: (message: string) => void;
+};
+
+// One live SSE link. `signal` aborts when the link settles (so in-flight tool
+// calls are cancelled with it); `inflight` maps a dispatch id to the controller
+// for its running call so a `tool_cancel` event can stop just that one.
+type Connection = {
+  options: DesktopClientOptions;
+  signal: AbortSignal;
+  inflight: Map<string, AbortController>;
 };
 
 export async function runDesktopClient(
@@ -67,6 +78,11 @@ function connectOnce(options: DesktopClientOptions): Promise<void> {
       connection.abort();
       run();
     };
+    const conn: Connection = {
+      options,
+      signal: connection.signal,
+      inflight: new Map(),
+    };
 
     const requester = target.protocol === "https:" ? httpsRequest : httpRequest;
     const req = requester(
@@ -97,7 +113,7 @@ function connectOnce(options: DesktopClientOptions): Promise<void> {
           while (boundary !== -1) {
             const block = buffer.slice(0, boundary);
             buffer = buffer.slice(boundary + 2);
-            handleEvent(block, options, connection.signal);
+            handleEvent(block, conn);
             boundary = buffer.indexOf("\n\n");
           }
         });
@@ -113,11 +129,7 @@ function connectOnce(options: DesktopClientOptions): Promise<void> {
   });
 }
 
-function handleEvent(
-  block: string,
-  options: DesktopClientOptions,
-  signal: AbortSignal,
-): void {
+function handleEvent(block: string, conn: Connection): void {
   let event = "message";
   const dataLines: string[] = [];
   for (const line of block.split("\n")) {
@@ -128,23 +140,40 @@ function handleEvent(
       dataLines.push(line.slice("data:".length).replace(/^ /, ""));
     }
   }
-  if (event !== TOOL_CALL_EVENT || dataLines.length === 0) return;
+  if (dataLines.length === 0) return;
+  const data = dataLines.join("\n");
+
+  if (event === TOOL_CANCEL_EVENT) {
+    handleCancel(data, conn);
+    return;
+  }
+  if (event !== TOOL_CALL_EVENT) return;
   // Run each call without blocking the read loop so the desktop can handle
   // several at once. The catch is a backstop: runToolCall already reports tool
   // failures, so reaching here means an unexpected internal error, not a tool
   // result, and must not become an unhandled rejection.
-  runToolCall(dataLines.join("\n"), options, signal).catch((error: unknown) => {
-    options.onStatus?.(
+  runToolCall(data, conn).catch((error: unknown) => {
+    conn.options.onStatus?.(
       `tool dispatch error: ${error instanceof Error ? error.message : String(error)}`,
     );
   });
 }
 
-async function runToolCall(
-  data: string,
-  options: DesktopClientOptions,
-  signal: AbortSignal,
-): Promise<void> {
+function handleCancel(data: string, conn: Connection): void {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch {
+    return;
+  }
+  const parsed = ToolCancelSchema.safeParse(raw);
+  if (!parsed.success) return;
+  // The dispatch event is fully processed before the next event block, so a
+  // call's controller is already registered by the time its cancel arrives.
+  conn.inflight.get(parsed.data.id)?.abort();
+}
+
+async function runToolCall(data: string, conn: Connection): Promise<void> {
   let raw: unknown;
   try {
     raw = JSON.parse(data);
@@ -158,7 +187,7 @@ async function runToolCall(
 
   const toolParse = LocalToolNameSchema.safeParse(record["tool"]);
   if (!toolParse.success) {
-    await reportResult(options, {
+    await reportResult(conn.options, {
       id,
       ok: false,
       output: "",
@@ -167,18 +196,28 @@ async function runToolCall(
     return;
   }
 
-  const outcome = await executeLocalTool(
-    toolParse.data,
-    record["params"],
-    { rootDir: options.rootDir },
-    signal,
-  );
-  await reportResult(options, {
-    id,
-    ok: outcome.ok,
-    output: outcome.output,
-    ...(outcome.error !== undefined ? { error: outcome.error } : {}),
-  });
+  // The call aborts when its turn is cancelled (a tool_cancel event aborts this
+  // controller) or when the whole link settles (the connection signal). Register
+  // before the first await so a cancel arriving next is never missed.
+  const call = new AbortController();
+  const signal = AbortSignal.any([conn.signal, call.signal]);
+  conn.inflight.set(id, call);
+  try {
+    const outcome = await executeLocalTool(
+      toolParse.data,
+      record["params"],
+      { rootDir: conn.options.rootDir },
+      signal,
+    );
+    await reportResult(conn.options, {
+      id,
+      ok: outcome.ok,
+      output: outcome.output,
+      ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+    });
+  } finally {
+    conn.inflight.delete(id);
+  }
 }
 
 async function reportResult(

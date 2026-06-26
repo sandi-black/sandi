@@ -89,12 +89,14 @@ async function verifyAbortRejects(
   registry: DeviceRegistry,
   broker: ToolBroker,
 ): Promise<void> {
-  // A silent device that receives the dispatch but never answers.
+  // A silent device that receives the dispatch but never answers. Capture its
+  // SSE writes so we can confirm the abort propagates as a tool_cancel.
+  const writes: string[] = [];
   registry.connect({
     key: "d-silent",
     deviceId: "d-silent",
     identityId: "i",
-    write: () => {},
+    write: (chunk) => writes.push(chunk),
     end: () => {},
   });
   const controller = new AbortController();
@@ -114,8 +116,12 @@ async function verifyAbortRejects(
     504,
     "an aborted call fails the loopback request",
   );
+  assert(
+    writes.some((chunk) => chunk.includes("event: tool_cancel")),
+    "an aborted call tells the still-connected device to cancel",
+  );
   lease.revoke();
-  console.log("ok aborting a turn rejects its in-flight call");
+  console.log("ok aborting a turn rejects its in-flight call and cancels it");
 }
 
 async function verifyInvalidCall(
@@ -239,6 +245,12 @@ function assertEqual(actual: unknown, expected: unknown, label: string): void {
   console.error(
     `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
   );
+  process.exit(1);
+}
+
+function assert(condition: unknown, label: string): asserts condition {
+  if (condition) return;
+  console.error(`assertion failed: ${label}`);
   process.exit(1);
 }
 

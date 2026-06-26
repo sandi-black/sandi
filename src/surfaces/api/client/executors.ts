@@ -28,6 +28,9 @@ const MAX_MATCH_RESULTS = 1_000;
 const MAX_WALK_FILES = 50_000;
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
 const MAX_BASH_TIMEOUT_MS = 1_200_000;
+// Grace between SIGTERM and the escalated SIGKILL for a command that ignores the
+// term. Short: the command is already past its deadline or cancelled.
+const KILL_GRACE_MS = 2_000;
 
 export type ExecutorContext = {
   // Relative paths resolve against this directory; absolute paths are used as
@@ -263,17 +266,30 @@ function bashLocal(
     const out: string[] = [];
     let timedOut = false;
     let cancelled = false;
+    let escalation: ReturnType<typeof setTimeout> | undefined;
+    // Send SIGTERM, then escalate to an unignorable SIGKILL if the command traps
+    // or ignores the term and does not exit within the grace window. Without
+    // this a command can outlive its own timeout or cancel.
+    const terminate = (): void => {
+      killTree(child, "SIGTERM");
+      escalation = setTimeout(() => killTree(child, "SIGKILL"), KILL_GRACE_MS);
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      killTree(child);
+      terminate();
     }, timeoutMs);
     // If the turn aborts or the link drops, kill the command rather than let it
     // run on past a result no one is waiting for.
     const onAbort = (): void => {
       cancelled = true;
-      killTree(child);
+      terminate();
     };
     signal?.addEventListener("abort", onAbort, { once: true });
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      if (escalation) clearTimeout(escalation);
+      signal?.removeEventListener("abort", onAbort);
+    };
 
     child.stdout.on("data", (chunk: Buffer) =>
       out.push(chunk.toString("utf8")),
@@ -282,13 +298,11 @@ function bashLocal(
       out.push(chunk.toString("utf8")),
     );
     child.on("error", (error) => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
+      cleanup();
       resolveRun(refused(errorMessage(error)));
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
+      cleanup();
       if (cancelled) {
         resolveRun(refused("cancelled"));
         return;
@@ -313,27 +327,32 @@ function bashLocal(
 // Kills a shell command and its descendants. `child.kill` signals only the
 // shell wrapper, which orphans the command it forked (and on Linux leaves it
 // holding the output pipe open, so the child never reports "close"). Take down
-// the whole tree: taskkill /t on Windows, and a SIGTERM to the negative pid (the
-// process group, available because bashLocal spawns detached) on POSIX.
-function killTree(child: ReturnType<typeof spawn>): void {
+// the whole tree: taskkill /t /f on Windows, and the given signal to the
+// negative pid (the process group, available because bashLocal spawns detached)
+// on POSIX.
+function killTree(
+  child: ReturnType<typeof spawn>,
+  signal: "SIGTERM" | "SIGKILL",
+): void {
   if (child.pid === undefined) {
-    child.kill("SIGTERM");
+    child.kill(signal);
     return;
   }
   if (process.platform === "win32") {
-    // stdio ignored and the error swallowed so taskkill's own failure (an
-    // already-exited pid) cannot throw into the caller.
+    // taskkill /f is already a forced kill, so it covers both the polite and the
+    // escalated step. stdio ignored and the error swallowed so taskkill's own
+    // failure (an already-exited pid) cannot throw into the caller.
     spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
       stdio: "ignore",
     }).on("error", () => {});
     return;
   }
   try {
-    process.kill(-child.pid, "SIGTERM");
+    process.kill(-child.pid, signal);
   } catch {
     // The group may already be gone, or the child was never a group leader;
     // fall back to signaling the process directly.
-    child.kill("SIGTERM");
+    child.kill(signal);
   }
 }
 

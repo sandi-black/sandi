@@ -228,7 +228,8 @@ pi child  --HTTP-->  loopback broker  --SSE-->  desktop client
 - The desktop opens an outbound SSE stream (`GET /v1/devices/link`) and holds it,
   so there is no inbound path to the desktop and NAT or a firewall is not in the
   way. It authenticates with its per-device bearer token and registers in an
-  in-process `DeviceRegistry` keyed by `deviceId`.
+  in-process `DeviceRegistry` keyed by that token's hash (the opaque routing
+  key), so a turn always reaches the exact token's link.
 - The pi child reaches back through a per-turn loopback broker. A turn already
   runs as a child process the server spawns, and coordination already flows down
   through inherited environment variables (the delivery side-effect file and the
@@ -315,6 +316,7 @@ src/surfaces/api/
   devices/
     protocol.ts                 hands-local wire protocol (tool names, schemas, cancel)
     device-registry.ts          tracks desktop SSE links, dispatches, cancels, settles calls
+    device-routes.ts            HTTP edge: SSE link and result POST controllers
     tool-broker.ts              loopback broker: per-turn token, /call relay
     verify-tool-broker.ts       broker + registry round-trip, unavailable, abort + cancel
   http/
@@ -332,6 +334,7 @@ src/surfaces/api/
     credentials.ts              per-device token file (owner-only, not managed state)
     verify-credentials.ts       owner-only round-trip and ~ config-path expansion
     pairing.ts                  client-side code redemption
+    verify-pairing.ts           client redemption: success, label fallback, errors
     http.ts                     client JSON POST helper
   runtime/
     context.ts                  API_SURFACE_CONTEXT (disableBuiltinTools for hands-local)

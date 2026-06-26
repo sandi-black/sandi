@@ -104,6 +104,11 @@ export const ToolDispatchSchema = z
   .and(BrokerCallSchema);
 export type ToolDispatch = z.infer<typeof ToolDispatchSchema>;
 
+// Just the correlation id of a dispatch. The desktop parses this first so it can
+// answer even a call whose tool or params fail the full ToolDispatchSchema, by
+// reporting a failure against the right id rather than dropping it silently.
+export const ToolDispatchEnvelopeSchema = z.object({ id: z.string().min(1) });
+
 // What the desktop POSTs back once it has run the call. `ok` is the tool's own
 // success (a shell command exiting non-zero is still `ok: true` with the exit
 // code in `output`); `ok: false` is reserved for a call the desktop refused or

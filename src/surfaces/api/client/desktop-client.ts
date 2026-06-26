@@ -5,10 +5,11 @@ import type { DesktopCredentials } from "@/surfaces/api/client/credentials";
 import { executeLocalTool } from "@/surfaces/api/client/executors";
 import { postJson } from "@/surfaces/api/client/http";
 import {
-  BrokerCallSchema,
   TOOL_CALL_EVENT,
   TOOL_CANCEL_EVENT,
   ToolCancelSchema,
+  ToolDispatchEnvelopeSchema,
+  ToolDispatchSchema,
 } from "@/surfaces/api/devices/protocol";
 
 // Holds an SSE link to the api surface, runs each dispatched tool call against
@@ -180,16 +181,16 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
   } catch {
     return; // unparseable dispatch: no id to answer, so nothing to report
   }
-  if (typeof raw !== "object" || raw === null) return;
-  const record: Record<string, unknown> = { ...raw };
-  const id = record["id"];
-  if (typeof id !== "string" || id.length === 0) return;
+  // Read the id first (from its own schema) so even a call whose tool or params
+  // fail validation can be answered against the right id. Then parse the whole
+  // dispatch as the precise discriminated union, so the executor runs typed
+  // params rather than fields reached out of raw JSON.
+  const envelope = ToolDispatchEnvelopeSchema.safeParse(raw);
+  if (!envelope.success) return; // no usable id, so nothing to report
+  const id = envelope.data.id;
 
-  // The id is read first so even a malformed call can be answered. Then validate
-  // the tool name and params together as the precise discriminated union, so the
-  // executor runs typed params, not raw JSON reached out of the event.
-  const callParse = BrokerCallSchema.safeParse(raw);
-  if (!callParse.success) {
+  const dispatch = ToolDispatchSchema.safeParse(raw);
+  if (!dispatch.success) {
     await reportResult(conn, {
       id,
       ok: false,
@@ -207,8 +208,8 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
   conn.inflight.set(id, call);
   try {
     const outcome = await executeLocalTool(
-      callParse.data.tool,
-      callParse.data.params,
+      dispatch.data.tool,
+      dispatch.data.params,
       { rootDir: conn.options.rootDir },
       signal,
     );

@@ -11,6 +11,11 @@ const PairResponseSchema = z.object({
   label: z.string().optional(),
 });
 
+// The api surface answers a failed request with `{ "error": "<code>" }`. Parse
+// that shape rather than reaching into the body, so the error branch reads a
+// validated code, not an ad hoc property probe.
+const ApiErrorResponseSchema = z.object({ error: z.string() });
+
 export type PairOutcome =
   | { ok: true; credentials: DesktopCredentials; label: string }
   | { ok: false; error: string };
@@ -59,13 +64,8 @@ export async function pairDesktop(input: {
 }
 
 function describePairError(response: JsonResponse): string {
-  const code =
-    typeof response.body === "object" &&
-    response.body !== null &&
-    "error" in response.body &&
-    typeof response.body.error === "string"
-      ? response.body.error
-      : undefined;
+  const parsed = ApiErrorResponseSchema.safeParse(response.body);
+  const code = parsed.success ? parsed.data.error : undefined;
   if (response.status === 401 || code === "invalid_code") {
     return "the code is invalid or expired; run /sandi auth again for a fresh code";
   }

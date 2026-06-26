@@ -64,16 +64,30 @@ function verifyReadBroker(): void {
   delete process.env["SANDI_TOOL_BROKER_TOKEN"];
   try {
     assertEqual(readBroker(), undefined, "no broker env yields undefined");
+    const hexToken = "a1b2c3d4e5f60718293a4b5c6d7e8f90".repeat(2);
     process.env["SANDI_TOOL_BROKER_URL"] = "http://127.0.0.1:1";
-    process.env["SANDI_TOOL_BROKER_TOKEN"] = "tok";
+    process.env["SANDI_TOOL_BROKER_TOKEN"] = hexToken;
     const broker = readBroker();
     assertEqual(
       broker?.url,
       "http://127.0.0.1:1",
       "broker url is read from env",
     );
-    assertEqual(broker?.token, "tok", "broker token is read from env");
+    assertEqual(broker?.token, hexToken, "broker token is read from env");
     console.log("ok readBroker reflects the broker env vars");
+
+    // A malformed URL or token disables the tools rather than passing a bad
+    // value to a later tool call.
+    process.env["SANDI_TOOL_BROKER_URL"] = "not a url";
+    assertEqual(readBroker(), undefined, "a malformed broker url is rejected");
+    process.env["SANDI_TOOL_BROKER_URL"] = "http://127.0.0.1:1";
+    process.env["SANDI_TOOL_BROKER_TOKEN"] = "too-short";
+    assertEqual(
+      readBroker(),
+      undefined,
+      "a malformed broker token is rejected",
+    );
+    console.log("ok readBroker rejects malformed broker coordinates");
   } finally {
     restoreEnv("SANDI_TOOL_BROKER_URL", url);
     restoreEnv("SANDI_TOOL_BROKER_TOKEN", token);

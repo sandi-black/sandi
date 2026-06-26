@@ -34,7 +34,7 @@ import { FixedWindowLimiter } from "@/surfaces/api/auth/rate-limiter";
 import { type ApiTokenEntry, ApiTokenStore } from "@/surfaces/api/auth/tokens";
 import type { ApiAppConfig } from "@/surfaces/api/config";
 import { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
-import { DeviceResultSchema } from "@/surfaces/api/devices/protocol";
+import { DeviceRoutes } from "@/surfaces/api/devices/device-routes";
 import { ToolBroker } from "@/surfaces/api/devices/tool-broker";
 import { readJsonBody } from "@/surfaces/api/http/read-json-body";
 import { bearerToken, sendJson } from "@/surfaces/api/http/respond";
@@ -58,12 +58,6 @@ const AUTH_PAIR_PATH = "/v1/auth/pair";
 // result back as it finishes.
 const DEVICE_LINK_PATH = "/v1/devices/link";
 const DEVICE_RESULT_PATH = "/v1/devices/result";
-
-// A tool result body can carry a file's contents or a command's output, so it is
-// allowed to be larger than an ordinary request; the desktop caps these before
-// it sends them.
-const DEVICE_RESULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
-const DEVICE_RESULT_BODY_TIMEOUT_MS = 30_000;
 
 // Rate limits for the unauthenticated pairing endpoint. A code is a 50-bit
 // single-use secret with a short TTL, so brute force is already infeasible;
@@ -96,6 +90,7 @@ export class ApiBot {
   );
   readonly #devices = new DeviceRegistry();
   readonly #broker = new ToolBroker(this.#devices);
+  readonly #deviceRoutes = new DeviceRoutes(this.#devices);
   #server: Server | undefined;
 
   constructor(input: ApiBotInput) {
@@ -188,7 +183,12 @@ export class ApiBot {
           sendJson(response, 405, { error: "method_not_allowed" });
           return;
         }
-        await this.#handleDeviceLink(request, response);
+        const entry = await this.#authenticate(request);
+        if (!entry) {
+          sendJson(response, 401, { error: "unauthorized" });
+          return;
+        }
+        this.#deviceRoutes.handleLink(response, entry);
         return;
       }
 
@@ -197,7 +197,12 @@ export class ApiBot {
           sendJson(response, 405, { error: "method_not_allowed" });
           return;
         }
-        await this.#handleDeviceResult(request, response);
+        const entry = await this.#authenticate(request);
+        if (!entry) {
+          sendJson(response, 401, { error: "unauthorized" });
+          return;
+        }
+        await this.#deviceRoutes.handleResult(request, response, entry);
         return;
       }
 
@@ -405,88 +410,6 @@ export class ApiBot {
       label: result.label,
       token: result.token,
     });
-  }
-
-  // A desktop holds this SSE stream open to receive the tool calls for its turns.
-  // The bearer token authenticates the device, and that same token's deviceId is
-  // what a turn routes its file and shell work to. The stream stays open until
-  // the client goes away; each tool call arrives as a `tool_call` event and each
-  // result comes back on POST /v1/devices/result.
-  async #handleDeviceLink(
-    request: IncomingMessage,
-    response: ServerResponse,
-  ): Promise<void> {
-    const entry = await this.#authenticate(request);
-    if (!entry) {
-      sendJson(response, 401, { error: "unauthorized" });
-      return;
-    }
-
-    response.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-      // Stop intermediaries from buffering the stream so events flush at once.
-      "x-accel-buffering": "no",
-    });
-    response.write(": linked\n\n");
-
-    const handle = this.#devices.connect({
-      // Route by the token hash, not the client-chosen deviceId: it is unique
-      // per token and identical for this device's link and its turns, so a
-      // deviceId reused across tokens can never cross to another's link.
-      key: entry.tokenSha256,
-      deviceId: entry.deviceId,
-      identityId: entry.identityId,
-      write: (chunk) => {
-        response.write(chunk);
-      },
-      end: () => {
-        response.end();
-      },
-    });
-    // An SSE link ends only when the client disconnects: tear it down so the
-    // device frees and any in-flight calls reject.
-    response.on("close", () => {
-      handle.close();
-    });
-  }
-
-  // A desktop POSTs one tool result here as each call finishes. The caller is
-  // routed by the token's deviceId, never a field in the body, so a device can
-  // only ever settle its own calls.
-  async #handleDeviceResult(
-    request: IncomingMessage,
-    response: ServerResponse,
-  ): Promise<void> {
-    const entry = await this.#authenticate(request);
-    if (!entry) {
-      sendJson(response, 401, { error: "unauthorized" });
-      return;
-    }
-
-    const body = await readJsonBody(request, {
-      maxBytes: DEVICE_RESULT_MAX_BODY_BYTES,
-      timeoutMs: DEVICE_RESULT_BODY_TIMEOUT_MS,
-    });
-    if (!body.ok) {
-      sendJson(response, body.status, { error: body.error });
-      return;
-    }
-    const parsed = DeviceResultSchema.safeParse(body.value);
-    if (!parsed.success) {
-      sendJson(response, 400, { error: "invalid_result" });
-      return;
-    }
-
-    const settled = this.#devices.settleResult(entry.tokenSha256, parsed.data);
-    if (!settled) {
-      // The call id is unknown for this device: a stale, duplicate, or already
-      // aborted call. Nothing to resolve.
-      sendJson(response, 404, { error: "unknown_call" });
-      return;
-    }
-    sendJson(response, 202, { ok: true });
   }
 
   // ThreadQueue.enqueue is fire-and-forget returning void, so wrap it: the

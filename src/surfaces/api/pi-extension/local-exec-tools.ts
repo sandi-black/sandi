@@ -175,13 +175,30 @@ export type Broker = {
   token: string;
 };
 
-// Exported for tests: reads the per-turn broker coordinates the api surface set
-// on the pi child, or undefined when none was leased.
+// Exported for tests: reads and validates the per-turn broker coordinates the
+// api surface set on the pi child, or undefined when none was leased or the
+// values are malformed. Validating the URL and token shape at this env boundary
+// means a bad value disables the tools up front rather than failing later inside
+// a tool call's post().
 export function readBroker(): Broker | undefined {
-  const url = process.env[TOOL_BROKER_URL_ENV]?.trim();
-  const token = process.env[TOOL_BROKER_TOKEN_ENV]?.trim();
-  if (!url || !token) return undefined;
-  return { url, token };
+  const rawUrl = process.env[TOOL_BROKER_URL_ENV]?.trim();
+  const rawToken = process.env[TOOL_BROKER_TOKEN_ENV]?.trim();
+  if (!rawUrl || !rawToken) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return undefined;
+  }
+  // The broker is loopback http(s); reject anything else (a file: or data: URL
+  // has no business here).
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return undefined;
+  }
+  // The broker mints a hex secret (32 bytes -> 64 hex chars). Require that shape
+  // so a truncated or non-hex token is rejected here, not as a late broker 401.
+  if (!/^[0-9a-f]{32,}$/i.test(rawToken)) return undefined;
+  return { url: parsed.origin, token: rawToken };
 }
 
 type ToolCallOutcome = {

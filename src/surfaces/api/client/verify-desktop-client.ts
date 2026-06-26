@@ -5,12 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runDesktopClient } from "@/surfaces/api/client/desktop-client";
-import { DeviceResultSchema } from "@/surfaces/api/devices/protocol";
+import {
+  DeviceResultSchema,
+  type ResponseChunk,
+} from "@/surfaces/api/devices/protocol";
 
 // Exercises the desktop client against a fake api surface: it must run a
-// dispatched tool and POST the outcome, and it must abandon a running command
-// when the server sends a tool_cancel for it. This covers the seam the unit
-// tests cannot, the SSE parse plus cancel plus result-report path end to end.
+// dispatched tool and POST the outcome, abandon a running command when the
+// server sends a tool_cancel for it, and surface streamed response_chunk events
+// through onResponseChunk. This covers the seam the unit tests cannot, the SSE
+// parse plus cancel plus result-report plus response-stream path end to end.
 
 type ResultRow = { id: string; ok: boolean; error?: string };
 
@@ -33,12 +37,39 @@ async function verifyDesktopClient(): Promise<void> {
   const echoId = randomUUID();
   let cancelTimer: ReturnType<typeof setTimeout> | undefined;
 
+  const streamed: ResponseChunk[] = [];
+  let markStreamEnd: (() => void) | undefined;
+  const streamEnded = new Promise<void>((resolveEnd) => {
+    markStreamEnd = resolveEnd;
+  });
+
   const server = createServer((req, res) => {
     if (req.url === "/v1/devices/link" && req.method === "GET") {
       res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
         connection: "keep-alive",
+      });
+      // A streamed response arriving as the turn runs: two text deltas then an
+      // end marker. The client must surface each through onResponseChunk.
+      writeEvent(res, "response_chunk", {
+        type: "delta",
+        turnId: "turn-1",
+        seq: 0,
+        channel: "text",
+        delta: "Hel",
+      });
+      writeEvent(res, "response_chunk", {
+        type: "delta",
+        turnId: "turn-1",
+        seq: 1,
+        channel: "text",
+        delta: "lo",
+      });
+      writeEvent(res, "response_chunk", {
+        type: "end",
+        turnId: "turn-1",
+        seq: 2,
       });
       // A long-running command we will cancel, and a quick echo we let finish.
       const sleepCmd =
@@ -86,13 +117,28 @@ async function verifyDesktopClient(): Promise<void> {
     },
     rootDir: dir,
     signal: controller.signal,
+    onResponseChunk: (chunk) => {
+      streamed.push(chunk);
+      if (chunk.type === "end") markStreamEnd?.();
+    },
   });
 
   try {
     await Promise.race([
-      Promise.all([awaitResult(cancelId), awaitResult(echoId)]),
+      Promise.all([awaitResult(cancelId), awaitResult(echoId), streamEnded]),
       timeout(10_000),
     ]);
+
+    const text = streamed
+      .filter((chunk) => chunk.type === "delta" && chunk.channel === "text")
+      .map((chunk) => (chunk.type === "delta" ? chunk.delta : ""))
+      .join("");
+    assertEqual(text, "Hello", "the streamed text deltas arrive in order");
+    assert(
+      streamed.some((chunk) => chunk.type === "end"),
+      "the response stream delivers an end marker",
+    );
+    console.log("ok streamed response_chunk deltas surface through the client");
 
     const cancelled = results.find((row) => row.id === cancelId);
     assert(cancelled !== undefined, "the cancelled call reported a result");
@@ -173,6 +219,14 @@ function timeout(ms: number): Promise<never> {
 function assert(condition: unknown, label: string): asserts condition {
   if (condition) return;
   console.error(`assertion failed: ${label}`);
+  process.exit(1);
+}
+
+function assertEqual(actual: unknown, expected: unknown, label: string): void {
+  if (actual === expected) return;
+  console.error(
+    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
+  );
   process.exit(1);
 }
 

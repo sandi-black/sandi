@@ -43,9 +43,10 @@ export class DeviceRoutes {
       key: entry.tokenSha256,
       deviceId: entry.deviceId,
       identityId: entry.identityId,
-      write: (chunk) => {
-        response.write(chunk);
-      },
+      // Returns Node's write backpressure signal (false when the socket buffer
+      // is full) so the registry can shed a high-rate response stream rather than
+      // buffer it without bound.
+      write: (chunk) => response.write(chunk),
       end: () => {
         response.end();
       },

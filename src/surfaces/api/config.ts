@@ -35,10 +35,15 @@ export function loadApiAppConfig(): ApiAppConfig {
     pi: {
       ...core.pi,
       // The api surface runs hands-local: load the proxy tools that route file
-      // and shell work to the caller's desktop. Loaded only here, so other
-      // surfaces never carry these tools. The extension self-disables on any
-      // turn that did not lease a tool broker.
-      extensionPaths: [...core.pi.extensionPaths, apiLocalExecExtensionPath()],
+      // and shell work to the caller's desktop, plus the response-stream
+      // extension that pushes the answer back token by token. Loaded only here,
+      // so other surfaces never carry them. Each self-disables on any turn that
+      // did not lease a tool broker.
+      extensionPaths: [
+        ...core.pi.extensionPaths,
+        apiLocalExecExtensionPath(),
+        apiResponseStreamExtensionPath(),
+      ],
     },
     api: loadApiConfig(core.paths.dataDir),
   };
@@ -48,6 +53,13 @@ function apiLocalExecExtensionPath(): string {
   return resolve(
     readEnv(["SANDI_PI_LOCAL_EXEC_EXTENSION"]) ??
       "src/surfaces/api/pi-extension/local-exec-tools.ts",
+  );
+}
+
+function apiResponseStreamExtensionPath(): string {
+  return resolve(
+    readEnv(["SANDI_PI_RESPONSE_STREAM_EXTENSION"]) ??
+      "src/surfaces/api/pi-extension/response-stream.ts",
   );
 }
 

@@ -26,9 +26,10 @@ The work is staged:
   reasons and runs her tools server-side, the caller is a thin client.
 - Phase 2 (built): hands-local execution, where Sandi's brain stays in the
   server but file and shell tools run on the caller's machine.
-- Phase 3 (designed below): response streaming.
-- A desktop GUI app is out of scope here; Phase 2 ships a minimal reference
-  client instead.
+- Phase 3 (built): response streaming, where the answer streams back to the
+  desktop token by token as the model generates it.
+- A desktop GUI app is out of scope here; the surface ships a minimal reference
+  client instead (`pair`, `run`, and the streaming `chat` REPL).
 
 ## Identity and authentication
 
@@ -273,20 +274,41 @@ needed.
 `src/surfaces/api/client/` is a minimal headless desktop client so the surface is
 usable and verifiable end to end. `npm run client -- pair <CODE>` redeems a
 `/sandi auth` code and stores a per-device token at `~/.sandi/desktop.json`
-(owner-only, override with `SANDI_DESKTOP_CONFIG`); `npm run client -- run` holds
+(owner-only, override with `SANDI_DESKTOP_CONFIG`). `npm run client -- run` holds
 the link open and runs each dispatched tool call locally, reconnecting with
-backoff. The local executors live in `client/executors.ts`. The token file is the
-human's own machine state, written with plain `fs`, never the server's
-managed-write lock. A full desktop GUI app remains a later, separate effort.
+backoff. `npm run client -- chat` is the interactive REPL: it holds the same link,
+sends each typed line as a turn, and prints the answer as it streams in (see
+Response streaming below). The local executors live in `client/executors.ts`. The
+token file is the human's own machine state, written with plain `fs`, never the
+server's managed-write lock. A full desktop GUI app remains a later, separate
+effort.
 
-## Phase 3: streaming (designed, not built)
+### Response streaming
 
-Phase 1 returns the final reply in one response, because the provider collects
-`pi --print` stdout and returns it whole. A live coding-agent feel wants token
-streaming and incremental tool-call narration. That is a change in the provider
-layer (a streaming turn API) surfaced over the same Server-Sent Events transport
-the device link already uses, and it is the only part of this vision that reaches
-outside the surface.
+The turn POST still returns the final reply in one body (the provider collects
+`pi --print` stdout and returns it whole), but the desktop no longer has to wait
+for it. The answer also streams back token by token over the device link as the
+model generates it, reusing the hands-local plumbing rather than adding a second
+transport.
+
+- An api-only pi extension (`pi-extension/response-stream.ts`) loads into the
+  child alongside the proxy tools. It subscribes to pi's `message_update` events,
+  pulls the text deltas out of each `assistantMessageEvent`, and POSTs them to the
+  broker's streaming ingress (`POST /stream`) using the same per-turn token the
+  tools use. A `SANDI_TURN_ID` on the child tags each delta with its turn.
+- The broker relays each delta to the paired desktop over its SSE link as a
+  `response_chunk` event (`DeviceRegistry.streamResponseChunk`). Unlike a tool
+  call there is no reply; deltas flow one way, best-effort. A delta to a vanished
+  device answers 503 so the child stops pushing, and a lost delta never fails the
+  turn.
+- The streamed text is a live preview; the turn POST's final body stays
+  authoritative. The `chat` REPL prints deltas as they arrive and, when the turn
+  settles, fills in any tail the stream missed (the child can exit before its last
+  deltas flush) without re-printing what already showed. A turn id scopes each
+  stream so a late straggler from a finished turn cannot bleed into the next.
+- Streaming is gated on the same lease as the tools. A turn with no connected
+  device leases no broker, so the extension reads no env and subscribes to
+  nothing, and the response returns only over the turn body, exactly as before.
 
 ## Files
 
@@ -314,23 +336,28 @@ src/surfaces/api/
     api-bot.ts                  HTTP server, routing, auth, pairing, turns, device routes
     verify-api-bot.ts           verify harness with an injected provider
   devices/
-    protocol.ts                 hands-local wire protocol (tool names, schemas, cancel)
-    device-registry.ts          tracks desktop SSE links, dispatches, cancels, settles calls
+    protocol.ts                 hands-local + streaming wire protocol (tools, cancel, response_chunk)
+    device-registry.ts          tracks desktop SSE links; dispatches, cancels, settles, streams
     device-routes.ts            HTTP edge: SSE link and result POST controllers
-    tool-broker.ts              loopback broker: per-turn token, /call relay
-    verify-tool-broker.ts       broker + registry round-trip, unavailable, abort + cancel
+    tool-broker.ts              loopback broker: per-turn token, /call relay, /stream ingress
+    verify-tool-broker.ts       broker + registry round-trip, unavailable, abort + cancel, stream relay
   http/
     respond.ts                  shared sendJson and bearer-token parsing
     read-json-body.ts           shared bounded JSON body reader
   pi-extension/
     local-exec-tools.ts         api-only proxy tools (local_*) routed to the broker
     verify-local-exec-tools.ts  proxy routing and ok/refused/unavailable mapping
+    response-stream.ts          api-only extension: relays response deltas to the broker
+    verify-response-stream.ts   event classification, env parsing, delta POST
   client/
-    index.ts                    reference client CLI (pair | run)
-    desktop-client.ts           SSE link loop, dispatch to executors, cancel, reconnect
-    verify-desktop-client.ts    end-to-end link verify: dispatch, cancel, result-report
+    index.ts                    reference client CLI (pair | run | chat)
+    desktop-client.ts           SSE link loop: tool dispatch, cancel, response deltas, reconnect
+    verify-desktop-client.ts    end-to-end link verify: dispatch, cancel, result-report, stream
     executors.ts                local file and shell implementations
     verify-executors.ts         per-tool executor verify against a temp dir
+    turns.ts                    sendTurn + reconcileSuffix (REPL turn POST and stream reconcile)
+    response-printer.ts         renders a streamed response for the chat REPL
+    verify-turns.ts             reconcile, printer, and sendTurn outcome mapping
     credentials.ts              per-device token file (owner-only, not managed state)
     verify-credentials.ts       owner-only round-trip and ~ config-path expansion
     pairing.ts                  client-side code redemption
@@ -340,7 +367,7 @@ src/surfaces/api/
     context.ts                  API_SURFACE_CONTEXT (disableBuiltinTools for hands-local)
     index.ts                    runtime barrel (server-side helpers)
 src/lib/provider/
-  pi-cli-client.ts              --no-builtin-tools gating + broker env threading
+  pi-cli-client.ts              --no-builtin-tools gating + broker and turn-id env threading
 src/surfaces/discord/bot/
   device-auth.ts                issueDeviceCode: the /sandi auth issuer core
   verify-device-auth.ts         issuer verify (recognized vs declined)

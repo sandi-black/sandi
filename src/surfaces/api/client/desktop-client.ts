@@ -5,6 +5,9 @@ import type { DesktopCredentials } from "@/surfaces/api/client/credentials";
 import { executeLocalTool } from "@/surfaces/api/client/executors";
 import { postJson } from "@/surfaces/api/client/http";
 import {
+  RESPONSE_CHUNK_EVENT,
+  type ResponseChunk,
+  ResponseChunkSchema,
   TOOL_CALL_EVENT,
   TOOL_CANCEL_EVENT,
   ToolCancelSchema,
@@ -25,6 +28,10 @@ export type DesktopClientOptions = {
   rootDir: string;
   signal?: AbortSignal;
   onStatus?: (message: string) => void;
+  // Called for each streamed response delta the server pushes during a turn.
+  // The hands-only `run` command omits it (deltas are ignored); the `chat` REPL
+  // supplies it to print the answer as it arrives.
+  onResponseChunk?: (chunk: ResponseChunk) => void;
 };
 
 // One live SSE link. `signal` aborts when the link settles (so in-flight tool
@@ -148,6 +155,10 @@ function handleEvent(block: string, conn: Connection): void {
     handleCancel(data, conn);
     return;
   }
+  if (event === RESPONSE_CHUNK_EVENT) {
+    handleResponseChunk(data, conn);
+    return;
+  }
   if (event !== TOOL_CALL_EVENT) return;
   // Run each call without blocking the read loop so the desktop can handle
   // several at once. The catch is a backstop: runToolCall already reports tool
@@ -158,6 +169,19 @@ function handleEvent(block: string, conn: Connection): void {
       `tool dispatch error: ${error instanceof Error ? error.message : String(error)}`,
     );
   });
+}
+
+function handleResponseChunk(data: string, conn: Connection): void {
+  if (!conn.options.onResponseChunk) return;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch {
+    return;
+  }
+  const parsed = ResponseChunkSchema.safeParse(raw);
+  if (!parsed.success) return;
+  conn.options.onResponseChunk(parsed.data);
 }
 
 function handleCancel(data: string, conn: Connection): void {

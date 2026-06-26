@@ -11,7 +11,10 @@ import {
   type DeviceRegistry,
   DeviceUnavailableError,
 } from "@/surfaces/api/devices/device-registry";
-import { BrokerCallSchema } from "@/surfaces/api/devices/protocol";
+import {
+  BrokerCallSchema,
+  ResponseChunkSchema,
+} from "@/surfaces/api/devices/protocol";
 import { readJsonBody } from "@/surfaces/api/http/read-json-body";
 import { bearerToken, sendJson } from "@/surfaces/api/http/respond";
 
@@ -22,10 +25,14 @@ const log = createLogger("api-tool-broker");
 // spawns is the only client, and it reaches the broker over 127.0.0.1.
 const LOOPBACK_HOST = "127.0.0.1";
 const CALL_PATH = "/call";
+const STREAM_PATH = "/stream";
 
 // File writes carry their content in the call body, so the cap is generous;
 // reads and shell output are capped on the desktop before they return.
 const BROKER_MAX_BODY_BYTES = 8 * 1024 * 1024;
+// A streamed response delta is one slice of generated text, far smaller than a
+// file write, so its body is capped tighter.
+const STREAM_MAX_BODY_BYTES = 1 * 1024 * 1024;
 const BROKER_BODY_TIMEOUT_MS = 30_000;
 const BROKER_HEADERS_TIMEOUT_MS = 10_000;
 
@@ -37,6 +44,12 @@ const TOKEN_BYTES = 32;
 type TurnBinding = {
   key: string;
   signal: AbortSignal;
+  // The turn id this lease streams under, when the caller supplied one. The
+  // streaming ingress rejects a delta tagged with any other turn id so a relay
+  // is always scoped to the turn that leased the token. Absent for callers that
+  // do not consume the stream (no client turn id), where the env turn id is
+  // generated late and there is nothing to bind against.
+  turnId?: string;
 };
 
 export type TurnBrokerTicket = {
@@ -106,11 +119,19 @@ export class ToolBroker {
   // Leases a per-turn ticket: the loopback URL plus a single-turn token that
   // routes /call to one device link (by its opaque routing key) under one abort
   // signal.
-  lease(input: { key: string; signal: AbortSignal }): TurnBrokerLease {
+  lease(input: {
+    key: string;
+    signal: AbortSignal;
+    turnId?: string;
+  }): TurnBrokerLease {
     const url = this.#url;
     if (!url) throw new Error("tool broker is not started");
     const token = randomBytes(TOKEN_BYTES).toString("hex");
-    this.#turns.set(token, { key: input.key, signal: input.signal });
+    this.#turns.set(token, {
+      key: input.key,
+      signal: input.signal,
+      ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+    });
     return {
       ticket: { url, token },
       revoke: () => {
@@ -126,7 +147,7 @@ export class ToolBroker {
     try {
       const method = request.method ?? "GET";
       const path = (request.url ?? "/").split("?")[0] ?? "/";
-      if (method !== "POST" || path !== CALL_PATH) {
+      if (method !== "POST" || (path !== CALL_PATH && path !== STREAM_PATH)) {
         sendJson(response, 404, { error: "not_found" });
         return;
       }
@@ -134,6 +155,11 @@ export class ToolBroker {
       const binding = this.#authorize(request);
       if (!binding) {
         sendJson(response, 401, { error: "unauthorized" });
+        return;
+      }
+
+      if (path === STREAM_PATH) {
+        await this.#handleStream(request, response, binding);
         return;
       }
 
@@ -176,6 +202,48 @@ export class ToolBroker {
         sendJson(response, 500, { error: "internal_error" });
       }
     }
+  }
+
+  // Relays one streamed response delta from the pi child to the bound device's
+  // SSE link. One way and best-effort: there is no result to await, so a relayed
+  // delta answers 202 and a vanished device answers 503 so the child's streaming
+  // extension can stop pushing. A delta never aborts or fails the turn; the turn
+  // POST's final body is the authoritative response if the live stream is lost.
+  async #handleStream(
+    request: IncomingMessage,
+    response: ServerResponse,
+    binding: TurnBinding,
+  ): Promise<void> {
+    const body = await readJsonBody(request, {
+      maxBytes: STREAM_MAX_BODY_BYTES,
+      timeoutMs: BROKER_BODY_TIMEOUT_MS,
+    });
+    if (!body.ok) {
+      sendJson(response, body.status, { error: body.error });
+      return;
+    }
+    const parsed = ResponseChunkSchema.safeParse(body.value);
+    if (!parsed.success) {
+      sendJson(response, 400, { error: "invalid_chunk" });
+      return;
+    }
+    // A delta must name the turn this lease was issued for. The api surface sets
+    // that turn id on the child, so a mismatch means a misrouted or stale stream;
+    // reject it rather than relay a delta the desktop would attribute to the
+    // wrong turn.
+    if (binding.turnId !== undefined && parsed.data.turnId !== binding.turnId) {
+      sendJson(response, 409, { error: "turn_mismatch" });
+      return;
+    }
+    const relayed = this.#registry.streamResponseChunk(
+      binding.key,
+      parsed.data,
+    );
+    if (!relayed) {
+      sendJson(response, 503, { error: "device_unavailable" });
+      return;
+    }
+    sendJson(response, 202, { ok: true });
   }
 
   #authorize(request: IncomingMessage): TurnBinding | undefined {

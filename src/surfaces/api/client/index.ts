@@ -1,6 +1,12 @@
 import { resolve } from "node:path";
 
 import {
+  resolveBooleanFlag,
+  resolveConversationId,
+  runChatRepl,
+} from "@/surfaces/api/client/chat";
+import {
+  type DesktopCredentials,
   desktopConfigPath,
   loadDesktopCredentials,
   ServerUrlSchema,
@@ -9,10 +15,11 @@ import {
 import { runDesktopClient } from "@/surfaces/api/client/desktop-client";
 import { pairDesktop } from "@/surfaces/api/client/pairing";
 
-// Reference desktop client. Two commands:
+// Reference desktop client. Three commands:
 //
 //   pair <CODE> [--url URL] [--label LABEL]   redeem a /sandi auth code, store a token
 //   run [--root DIR] [--url URL]              hold the link and run tool calls locally
+//   chat [--root DIR] [--url URL] [...]       interactive REPL with a streamed response
 //
 // `run` is the default when no command is given. The token and server URL are
 // stored by `pair` under ~/.sandi/desktop.json (override with SANDI_DESKTOP_CONFIG).
@@ -34,6 +41,10 @@ async function main(): Promise<void> {
   }
   if (command === "run") {
     await runCommand(args.slice(1));
+    return;
+  }
+  if (command === "chat") {
+    await chatCommand(args.slice(1));
     return;
   }
   // No recognized command: treat the whole arg list as `run` flags so a bare
@@ -87,31 +98,8 @@ async function pairCommand(args: string[]): Promise<void> {
 
 async function runCommand(args: string[]): Promise<void> {
   const flags = parseFlags(args);
-  const path = desktopConfigPath();
-  const credentials = await loadDesktopCredentials(path);
-  if (!credentials) {
-    console.error(
-      `no saved credentials at ${path}; run \`pair <CODE>\` with a /sandi auth code first`,
-    );
-    process.exitCode = 1;
-    return;
-  }
-  // The --url override is the boundary here, so parse just it. The other fields
-  // came parsed from loadDesktopCredentials and need no second look; only the
-  // raw override has to clear ServerUrlSchema before it joins them.
-  const override = flags.options["url"];
-  let effective = credentials;
-  if (override !== undefined) {
-    const parsedOverride = ServerUrlSchema.safeParse(override);
-    if (!parsedOverride.success) {
-      console.error(
-        `invalid --url override: ${override} (must be an http(s) url)`,
-      );
-      process.exitCode = 1;
-      return;
-    }
-    effective = { ...credentials, url: parsedOverride.data };
-  }
+  const effective = await loadEffectiveCredentials(flags);
+  if (!effective) return;
   const rootDir = resolve(flags.options["root"] ?? process.cwd());
 
   const controller = new AbortController();
@@ -129,6 +117,59 @@ async function runCommand(args: string[]): Promise<void> {
     onStatus: (message) => console.log(`[sandi] ${message}`),
   });
   console.log("client stopped");
+}
+
+async function chatCommand(args: string[]): Promise<void> {
+  const flags = parseFlags(args);
+  const effective = await loadEffectiveCredentials(flags);
+  if (!effective) return;
+  const rootDir = resolve(flags.options["root"] ?? process.cwd());
+  // Parse the two free-form chat flags at the CLI boundary so a bad value is
+  // rejected here rather than sent to the server or silently misread.
+  const conversationId = resolveConversationId(flags.options["conversation"]);
+  if (conversationId === undefined) {
+    console.error(
+      "invalid --conversation: use letters, digits, '.', '_', or '-' (max 200 chars)",
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const showThinking = resolveBooleanFlag(flags.options["thinking"]);
+  await runChatRepl({
+    credentials: effective,
+    rootDir,
+    conversationId,
+    showThinking,
+  });
+}
+
+// Loads saved credentials and applies a --url override through the same parser
+// as the stored url, so both run and chat share one boundary. Returns undefined
+// (after printing why and setting a failing exit code) when there are no
+// credentials or the override is not an http(s) url.
+async function loadEffectiveCredentials(flags: {
+  options: Record<string, string>;
+}): Promise<DesktopCredentials | undefined> {
+  const path = desktopConfigPath();
+  const credentials = await loadDesktopCredentials(path);
+  if (!credentials) {
+    console.error(
+      `no saved credentials at ${path}; run \`pair <CODE>\` with a /sandi auth code first`,
+    );
+    process.exitCode = 1;
+    return undefined;
+  }
+  const override = flags.options["url"];
+  if (override === undefined) return credentials;
+  const parsedOverride = ServerUrlSchema.safeParse(override);
+  if (!parsedOverride.success) {
+    console.error(
+      `invalid --url override: ${override} (must be an http(s) url)`,
+    );
+    process.exitCode = 1;
+    return undefined;
+  }
+  return { ...credentials, url: parsedOverride.data };
 }
 
 function parseFlags(args: string[]): {
@@ -163,6 +204,8 @@ function printUsage(): void {
       "Commands:",
       "  pair <CODE> [--url URL] [--label LABEL]   redeem a /sandi auth code and store a token",
       "  run [--root DIR] [--url URL]              hold the link and run tool calls locally",
+      "  chat [--root DIR] [--url URL]             interactive REPL; the response streams in live",
+      "       [--conversation ID] [--thinking]",
       "",
       `Credentials are stored at ${desktopConfigPath()}`,
       "(override with the SANDI_DESKTOP_CONFIG environment variable).",

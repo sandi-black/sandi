@@ -35,6 +35,13 @@ export function serializedCommands(): unknown[] {
       .addSubcommand((command) =>
         command.setName("status").setDescription("Show Sandi runtime status"),
       )
+      .addSubcommand((command) =>
+        command
+          .setName("auth")
+          .setDescription(
+            "Get a one-time code to connect a desktop client to Sandi",
+          ),
+      )
       .addSubcommandGroup((group) =>
         group
           .setName("events")

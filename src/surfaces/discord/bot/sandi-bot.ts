@@ -31,6 +31,10 @@ import {
 } from "@/lib/identity/resolver";
 import type { HumanIdentityConfig } from "@/lib/identity/types";
 import { createLogger } from "@/lib/logging";
+import {
+  defaultApiPairingsPath,
+  PAIRING_TTL_MS,
+} from "@/lib/pairing/pairing-store";
 import type { PiAccountRoutingRequest } from "@/lib/provider/pi-account-routing";
 import {
   type ModelProviderClient,
@@ -38,6 +42,7 @@ import {
   type ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
 import { ThreadQueue } from "@/lib/turns/turn-queue";
+import { issueDeviceCode } from "@/surfaces/discord/bot/device-auth";
 import {
   appendIgnoredConversationChannel,
   loadIgnoredConversationChannels,
@@ -95,16 +100,17 @@ const log = createLogger("bot");
 const FAILURE_NOTICE_COOLDOWN_MS = 60_000;
 const HELP_MESSAGE = [
   "**Sandi commands**",
-  "`/sandi help` — show this command guide.",
-  "`/sandi stop` — ask the current Sandi turn in this conversation to stop.",
-  "`/sandi ignore` — stop the current turn and have Sandi ignore this channel or thread unless she is @-mentioned.",
-  "`/sandi listen` — undo `/sandi ignore` so Sandi responds in this channel or thread again.",
-  "`/sandi todo` — create and pin an interactive todo list in this channel.",
-  "`/sandi status` — show runtime status, uptime/memory health, queue state, git revision, token usage, provider limits, and current conversation context size.",
-  "`/sandi events list` — list scheduled events for this conversation.",
-  "`/sandi events list scope: All events` — list every scheduled event Sandi can see.",
-  "`/sandi reminders list` — list interactive human reminders for this conversation.",
-  "`/sandi reminders list scope: All reminders` — list every interactive reminder Sandi can see.",
+  "`/sandi help`: show this command guide.",
+  "`/sandi stop`: ask the current Sandi turn in this conversation to stop.",
+  "`/sandi ignore`: stop the current turn and have Sandi ignore this channel or thread unless she is @-mentioned.",
+  "`/sandi listen`: undo `/sandi ignore` so Sandi responds in this channel or thread again.",
+  "`/sandi todo`: create and pin an interactive todo list in this channel.",
+  "`/sandi status`: show runtime status, uptime/memory health, queue state, git revision, token usage, provider limits, and current conversation context size.",
+  "`/sandi auth`: get a one-time code to connect a desktop client to Sandi (privately, just to you).",
+  "`/sandi events list`: list scheduled events for this conversation.",
+  "`/sandi events list scope: All events`: list every scheduled event Sandi can see.",
+  "`/sandi reminders list`: list interactive human reminders for this conversation.",
+  "`/sandi reminders list scope: All reminders`: list every interactive reminder Sandi can see.",
   "",
   "Sandi reads the channels she can see and chimes in when a message seems meant for her. Mention her or reply to one of her messages to be sure she answers; when she replies in a busy channel she opens a thread to keep things tidy.",
 ].join("\n");
@@ -307,7 +313,16 @@ export class SandiBot {
     });
 
     this.#client.on(Events.InteractionCreate, (interaction) => {
-      void this.#handleInteraction(interaction);
+      // The dispatch is fire-and-forget from the gateway event. Catch here so a
+      // rejection from any handler (filesystem, identity load, or a Discord
+      // reply) is logged and surfaced to the user instead of escaping as an
+      // unhandled rejection.
+      void this.#handleInteraction(interaction).catch((error: unknown) => {
+        log.error("failed to handle Discord interaction", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        void respondToFailedInteraction(interaction);
+      });
     });
 
     await this.#client.login(this.#config.discord.token);
@@ -625,6 +640,10 @@ export class SandiBot {
       await this.#replyToStatusInteraction(interaction);
       return;
     }
+    if (!group && subcommand === "auth") {
+      await this.#replyToAuthInteraction(interaction);
+      return;
+    }
     if (group === "events" && subcommand === "list") {
       await this.#replyToEventsListInteraction(interaction);
       return;
@@ -644,6 +663,44 @@ export class SandiBot {
       : "No active Sandi turn is running in this conversation.";
     await interaction.reply({
       content,
+      allowedMentions: { parse: [] },
+      ephemeral: true,
+    });
+  }
+
+  async #replyToAuthInteraction(
+    interaction: ChatInputCommandInteraction,
+  ): Promise<void> {
+    // Load identities fresh (this gate mints a credential, so it must not serve a
+    // stale cache) and delegate the auth-grade resolution and code issuance to
+    // issueDeviceCode. A stranger, or a member configured without an immutable
+    // Discord account id, gets no code.
+    const identities = await loadHumanIdentities(this.#config.paths.configDirs);
+    const result = await issueDeviceCode({
+      identities,
+      pairingsPath: defaultApiPairingsPath(this.#config.paths.dataDir),
+      discordUserId: interaction.user.id,
+    });
+    if (!result.ok) {
+      await interaction.reply({
+        content:
+          "I can only pair devices for a recognized household member, and I do not have you on file yet. Ask an admin to add you (with your Discord account id) to Sandi's identities first.",
+        allowedMentions: { parse: [] },
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const minutes = Math.round(PAIRING_TTL_MS / 60_000);
+    log.info("issued API pairing code", { identityId: result.identityId });
+    await interaction.reply({
+      content: [
+        "Here is your one-time pairing code for connecting a desktop client to Sandi:",
+        "",
+        `\`\`\`\n${result.display}\n\`\`\``,
+        `It is valid for ${minutes} minutes and can be used once. In your desktop client, choose to pair a new device and paste this code. It links that device to your Sandi identity (and your GitHub account if one is on file).`,
+        "Running this command again replaces any previous code.",
+      ].join("\n"),
       allowedMentions: { parse: [] },
       ephemeral: true,
     });
@@ -1667,6 +1724,26 @@ function reactionEmojiLabel(reaction: MessageReaction): string {
 
 function reactionUsername(user: User): string {
   return user.globalName ?? user.username;
+}
+
+// Best-effort error reply when an interaction handler rejected. Only replies if
+// the interaction can still be answered and has not been already, and swallows
+// its own failure: an expired or already-answered interaction leaves nothing to
+// do but log (which the caller already did).
+async function respondToFailedInteraction(
+  interaction: Interaction,
+): Promise<void> {
+  if (!interaction.isRepliable()) return;
+  if (interaction.replied || interaction.deferred) return;
+  try {
+    await interaction.reply({
+      content: "Something went wrong handling that command. Please try again.",
+      allowedMentions: { parse: [] },
+      ephemeral: true,
+    });
+  } catch {
+    // The interaction may have expired or already been answered.
+  }
 }
 
 function queueKeyFromInteraction(

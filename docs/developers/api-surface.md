@@ -56,10 +56,48 @@ The tokens file (default `data/config/api-tokens.json`, override with
 The server hashes the presented bearer with SHA-256 and compares it against
 every entry in constant time, so neither a match position nor the entry count
 leaks through timing. The raw token is never written to disk by Sandi and never
-logged. `npm run api:enroll` issues a token: it validates that the `identityId`
-exists in `humans.json`, appends a hashed entry under the managed-write lock
-(see [`current-state.md`](current-state.md) for that lock), and prints the raw
-token once.
+logged. `npm run api:enroll` issues a token directly (for an operator): it
+validates that the `identityId` exists in `humans.json`, appends a hashed entry
+under the managed-write lock (see [`current-state.md`](current-state.md) for that
+lock), and prints the raw token once.
+
+### Pairing: self-service enrollment
+
+Household members do not run the CLI. They enroll a device themselves, with an
+identity-bearing surface acting as the mediator that proves who they are:
+
+1. The member runs `/sandi auth` on a surface that already authenticates them
+   (Discord today). Because this gate mints a credential, Sandi resolves them by
+   their immutable platform account id only, never a mutable username, and fails
+   closed if they are not on file (a member configured without an id cannot
+   enroll until an operator adds it). It then issues a one-time pairing code and
+   replies privately (ephemerally) with it.
+2. The member pastes that code into their desktop client, which redeems it at
+   `POST /v1/auth/pair`.
+3. The server validates and atomically consumes the code, re-checks against a
+   freshly reloaded `humans.json` that the bound identity still maps to a
+   platform account (so a member removed after the code was issued is rejected
+   without a server restart), mints a per-device bearer token, and returns it
+   once. The client stores the token and uses it for every later turn.
+
+The pairing store (`src/lib/pairing/pairing-store.ts`) is platform-neutral: it
+records only the resolved `identityId`, never which surface issued the code. Because a token binds to an identity, and that identity already
+carries both the Discord and GitHub mappings, pairing through Discord also
+connects the member's GitHub account when one is on file, with no extra step.
+
+Codes are short-lived (10 minutes), single-use, and stored only as SHA-256
+hashes (default `data/config/api-pairings.json`, override with
+`SANDI_API_PAIRINGS_PATH`). A code is 50 bits of Crockford base32 rendered as
+two readable groups, with the ambiguous letters folded on redemption so a typo
+of `O` for `0` still works. Issuing a new code supersedes the member's previous
+unconsumed one, and expired codes are pruned on every write. Redemption runs
+under the managed-write lock, so even two clients racing the same code mint at
+most one token. The unauthenticated `POST /v1/auth/pair` is additionally rate
+limited per client and globally as a flood guard.
+
+Each pairing failure returns a terse status and mints no token: a malformed or
+unknown code is `401`, a body with no code is `400`, an identity that no longer
+maps to a platform account is `403`, and exceeding the rate limit is `429`.
 
 ### Identity reuse
 
@@ -86,6 +124,11 @@ The server is `node:http` (no added dependency) bound to `SANDI_API_HOST`
 `npm run start:api` (or `npm run dev:api`).
 
 - `GET /v1/health` returns `200 { "ok": true, "surface": "api" }`. No auth.
+- `POST /v1/auth/pair` redeems a pairing code (see above) for a per-device token.
+  No bearer (the code is the proof). Body: `{ "code": string, "deviceId"?:
+string, "label"?: string }`. On success: `200 { "surface": "api", "identityId",
+"deviceId", "label", "token" }`, where `token` is the raw bearer, returned once.
+  An omitted `deviceId` is generated server-side.
 - `POST /v1/conversations/:conversationId/turns` requires a bearer token. Body:
   `{ "input": string, "title"?: string }`. On success: `200 { "conversationId",
 "text" }` where `text` is Sandi's final Markdown reply.
@@ -203,24 +246,49 @@ surface.
 ## Files
 
 ```text
+src/lib/pairing/
+  pairing-store.ts              platform-neutral pairing-code store (issue/redeem)
+  verify-pairing.ts             store-level verify (single-use, expiry, supersede)
+src/lib/identity/
+  resolver.ts                   strict id resolver + reloading HumanIdentityStore
+  verify-auth-resolver.ts       strict resolver, store freshness, duplicate ids
 src/surfaces/api/
   index.ts                      entrypoint and lifecycle
-  config.ts                     loadApiAppConfig (host, port, tokens path)
+  config.ts                     loadApiAppConfig (host, port, tokens, pairings)
   auth/
-    tokens.ts                   token store, hashing, constant-time verify, reload
+    tokens.ts                   token store, hashing, verify, reload, mint
     enroll.ts                   api:enroll CLI
+    pairing.ts                  redeemPairing: the redemption domain logic
+    participant.ts              identity-to-participant mapping (turn + pairing)
+    rate-limiter.ts             FixedWindowLimiter (per-client + global caps)
+    verify-rate-limiter.ts      limiter cap and reset verify
   api/
     conversations.ts            canonical ids and manifest builder
     delivery-instructions.ts    API delivery contract
   bot/
-    api-bot.ts                  HTTP server, routing, auth, turn lifecycle
+    api-bot.ts                  HTTP server, routing, auth, pairing, turns
     verify-api-bot.ts           verify harness with an injected provider
   runtime/
     context.ts                  API_SURFACE_CONTEXT
     index.ts                    runtime barrel (server-side helpers in Phase 1)
+src/surfaces/discord/bot/
+  device-auth.ts                issueDeviceCode: the /sandi auth issuer core
+  verify-device-auth.ts         issuer verify (recognized vs declined)
 ```
 
-Configuration lives in `.env.example` under the `SANDI_API_*` keys. The
-`verify:api-bot` script proves health, auth rejection, unmapped-identity
-fail-closed, identity routing, session reuse, and token revocation, and runs as
-part of `npm run check`.
+The pairing store lives under `src/lib/` (not the API surface) because the
+issuing surface (Discord's `/sandi auth` handler) and the redeeming API surface
+are separate processes that both write it, and shared core must not import a
+surface. It binds only an `identityId`, so it stays surface-neutral. Pairing
+timestamps are stored as epoch milliseconds, parsed to numbers at the file
+boundary so nothing reparses a string at use.
+
+Configuration lives in `.env.example` under the `SANDI_API_*` keys. Coverage
+runs as part of `npm run check`: `verify:api-bot` proves health, auth rejection,
+the unmapped-identity 403, identity routing, session reuse, token revocation,
+the full pairing redemption loop, and that a freshly minted token authenticates
+a turn at once; `verify:pairing` covers the store's single-use, expiry,
+supersede, and concurrency properties; `verify:auth-resolver` covers strict
+resolution, identity-store freshness, and duplicate-id rejection;
+`verify:api-rate-limiter` and `verify:discord-auth` cover the limiter and the
+issuer.

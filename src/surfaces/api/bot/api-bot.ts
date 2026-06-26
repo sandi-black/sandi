@@ -12,11 +12,7 @@ import type {
   ConversationManifest,
   ConversationParticipant,
 } from "@/lib/conversations/types";
-import { loadHumanIdentities } from "@/lib/identity/resolver";
-import type {
-  HumanIdentityConfig,
-  HumanIdentityRecord,
-} from "@/lib/identity/types";
+import { HumanIdentityStore } from "@/lib/identity/resolver";
 import { createLogger } from "@/lib/logging";
 import {
   type ModelProviderClient,
@@ -32,6 +28,9 @@ import {
   validateApiConversationRef,
 } from "@/surfaces/api/api/conversations";
 import { API_DELIVERY_INSTRUCTIONS } from "@/surfaces/api/api/delivery-instructions";
+import { redeemPairing } from "@/surfaces/api/auth/pairing";
+import { apiParticipantFromHuman } from "@/surfaces/api/auth/participant";
+import { FixedWindowLimiter } from "@/surfaces/api/auth/rate-limiter";
 import { type ApiTokenEntry, ApiTokenStore } from "@/surfaces/api/auth/tokens";
 import type { ApiAppConfig } from "@/surfaces/api/config";
 import { API_SURFACE_CONTEXT } from "@/surfaces/api/runtime/context";
@@ -49,6 +48,16 @@ const BODY_READ_TIMEOUT_MS = 15_000;
 const SERVER_HEADERS_TIMEOUT_MS = 10_000;
 const SERVER_REQUEST_TIMEOUT_MS = 30_000;
 const TURNS_PATH = /^\/v1\/conversations\/([^/]+)\/turns$/;
+const AUTH_PAIR_PATH = "/v1/auth/pair";
+
+// Rate limits for the unauthenticated pairing endpoint. A code is a 50-bit
+// single-use secret with a short TTL, so brute force is already infeasible;
+// these windows cap how fast any one client, or the server as a whole, will
+// consider a redemption, so a flood cannot grind the disk or chase codes. The
+// limits leave plenty of room for a human mistyping a code a few times.
+const PAIR_RATE_WINDOW_MS = 10 * 60_000;
+const PAIR_RATE_MAX_PER_CLIENT = 10;
+const PAIR_RATE_MAX_GLOBAL = 100;
 
 export type ApiBotInput = {
   config: ApiAppConfig;
@@ -64,7 +73,12 @@ export class ApiBot {
   readonly #provider: ModelProviderClient;
   readonly #queue = new ThreadQueue();
   readonly #tokens: ApiTokenStore;
-  #identities: Promise<HumanIdentityConfig> | undefined;
+  readonly #identities: HumanIdentityStore;
+  readonly #pairLimiter = new FixedWindowLimiter(
+    PAIR_RATE_WINDOW_MS,
+    PAIR_RATE_MAX_PER_CLIENT,
+    PAIR_RATE_MAX_GLOBAL,
+  );
   #server: Server | undefined;
 
   constructor(input: ApiBotInput) {
@@ -72,7 +86,13 @@ export class ApiBot {
     this.#conversations = input.conversations;
     this.#contextCompiler = input.contextCompiler;
     this.#provider = input.provider;
-    this.#tokens = new ApiTokenStore(input.config.api.tokensPath);
+    // ttlMs 0 on both auth stores: re-stat on every check so a token minted by
+    // the pairing endpoint authenticates immediately (no cache-window 401), a
+    // revoked token stops working at once, and a removed or unmapped identity
+    // stops authenticating with no restart. Both files are tiny and only re-read
+    // when they actually change.
+    this.#tokens = new ApiTokenStore(input.config.api.tokensPath, 0);
+    this.#identities = new HumanIdentityStore(input.config.paths.configDirs, 0);
   }
 
   start(): Promise<void> {
@@ -127,6 +147,15 @@ export class ApiBot {
     try {
       if (method === "GET" && path === "/v1/health") {
         sendJson(response, 200, { ok: true, surface: "api" });
+        return;
+      }
+
+      if (path === AUTH_PAIR_PATH) {
+        if (method !== "POST") {
+          sendJson(response, 405, { error: "method_not_allowed" });
+          return;
+        }
+        await this.#handlePairRequest(request, response);
         return;
       }
 
@@ -191,7 +220,7 @@ export class ApiBot {
 
     // Resolve the caller's identity before reading the body so an unmapped
     // identity fails closed without us spending work parsing the request.
-    const participant = await this.#participantForIdentity(entry);
+    const participant = await this.#participantForIdentityId(entry.identityId);
     if (!participant) {
       // Fail closed: the token authenticated, but no such human identity is
       // configured, so we never run an unmapped turn against the provider.
@@ -282,6 +311,51 @@ export class ApiBot {
     } finally {
       response.removeListener("close", onClose);
     }
+  }
+
+  // Redeems a pairing code for a per-device bearer token. The endpoint is
+  // unauthenticated because the code itself is the proof: it was issued to a
+  // known human identity by an identity-bearing surface and is single-use with a
+  // short TTL. This method is the HTTP shell (rate limit, read body, map the
+  // result to a status); redeemPairing holds the enrollment logic. The raw token
+  // is logged nowhere, only the identity and device it was minted for.
+  async #handlePairRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    if (!this.#pairLimiter.tryConsume(remoteKey(request))) {
+      sendJson(response, 429, { error: "rate_limited" });
+      return;
+    }
+
+    const body = await readJsonBody(request);
+    if (!body.ok) {
+      sendJson(response, body.status, { error: body.error });
+      return;
+    }
+
+    const result = await redeemPairing({
+      body: body.value,
+      pairingsPath: this.#config.api.pairingsPath,
+      tokensPath: this.#config.api.tokensPath,
+      identities: this.#identities,
+    });
+    if (!result.ok) {
+      sendJson(response, result.status, { error: result.error });
+      return;
+    }
+
+    log.info("issued API device token via pairing", {
+      identityId: result.identityId,
+      deviceId: result.deviceId,
+    });
+    sendJson(response, 200, {
+      surface: "api",
+      identityId: result.identityId,
+      deviceId: result.deviceId,
+      label: result.label,
+      token: result.token,
+    });
   }
 
   // ThreadQueue.enqueue is fire-and-forget returning void, so wrap it: the
@@ -381,21 +455,14 @@ export class ApiBot {
   // arena, and account routing: one shared brain across surfaces. The surface is
   // "api" (recorded in surfaceContext and the manifest), which stays distinct
   // from the participant platform. A human with no Discord or GitHub mapping
-  // fails closed, so we never run an unmapped turn.
-  async #participantForIdentity(
-    entry: ApiTokenEntry,
+  // resolves to undefined so the turn never runs unmapped.
+  async #participantForIdentityId(
+    identityId: string,
   ): Promise<ConversationParticipant | undefined> {
-    const identities = await this.#loadIdentities();
-    const human = identities.humans.find(
-      (item) => item.id === entry.identityId,
-    );
+    const identities = await this.#identities.load();
+    const human = identities.humans.find((item) => item.id === identityId);
     if (!human) return undefined;
     return apiParticipantFromHuman(human);
-  }
-
-  #loadIdentities(): Promise<HumanIdentityConfig> {
-    this.#identities ??= loadHumanIdentities(this.#config.paths.configDirs);
-    return this.#identities;
   }
 }
 
@@ -404,40 +471,6 @@ class RequestAbortedError extends Error {
     super("request aborted before turn completed");
     this.name = "RequestAbortedError";
   }
-}
-
-// Resolve a human identity to the API participant, reusing the human's primary
-// platform account (Discord first, else GitHub) so the API turn shares that
-// human's existing memory arena and account routing. Returns undefined when the
-// human has no usable platform mapping so the caller can fail closed.
-function apiParticipantFromHuman(
-  human: HumanIdentityRecord,
-): ConversationParticipant | undefined {
-  const discord = human.platforms.discord;
-  if (discord) {
-    const participant: ConversationParticipant = {
-      platform: "discord",
-      platformUserId: discord.id ?? discord.username,
-      username: discord.username,
-      identityId: human.id,
-      joinedAt: new Date().toISOString(),
-    };
-    if (human.displayName) participant.displayName = human.displayName;
-    return participant;
-  }
-  const github = human.platforms.github;
-  if (github) {
-    const participant: ConversationParticipant = {
-      platform: "github",
-      platformUserId: github.id ?? github.login,
-      username: github.login,
-      identityId: human.id,
-      joinedAt: new Date().toISOString(),
-    };
-    if (human.displayName) participant.displayName = human.displayName;
-    return participant;
-  }
-  return undefined;
 }
 
 function apiPlatformContext(input: {
@@ -573,6 +606,13 @@ function parseTurnBody(value: unknown): ParsedTurnBody {
     return { ok: true, input, title };
   }
   return { ok: true, input };
+}
+
+// Best-effort client key for rate limiting. The API surface is bound to a
+// trusted interface, so the socket address is sufficient to throttle a single
+// misbehaving client without any proxy-header trust.
+function remoteKey(request: IncomingMessage): string {
+  return request.socket.remoteAddress ?? "unknown";
 }
 
 function providerErrorStatus(error: ProviderTurnError): number {

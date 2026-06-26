@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
 import { type CoreConfig, loadCoreConfig, readEnv } from "@/lib/config/env";
+import { defaultApiPairingsPath } from "@/lib/pairing/pairing-store";
 
 const DEFAULT_API_HOST = "127.0.0.1";
 const DEFAULT_API_PORT = 8787;
@@ -9,6 +10,7 @@ export type ApiConfig = {
   host: string;
   port: number;
   tokensPath: string;
+  pairingsPath: string;
 };
 
 export type ApiAppConfig = CoreConfig & {
@@ -22,6 +24,7 @@ export function loadApiConfig(dataDir: string): ApiConfig {
     tokensPath:
       readEnv(["SANDI_API_TOKENS_PATH"]) ??
       join(dataDir, "config", "api-tokens.json"),
+    pairingsPath: defaultApiPairingsPath(dataDir),
   };
 }
 

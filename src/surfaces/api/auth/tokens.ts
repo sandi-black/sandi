@@ -1,7 +1,11 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 
 import { z } from "zod/v4";
+import {
+  atomicWriteInPlace,
+  withManagedWrite,
+} from "@/lib/state/managed-write";
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
@@ -39,6 +43,53 @@ export async function loadApiTokens(path: string): Promise<ApiTokensFile> {
 
 export function hashApiToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
+}
+
+// A raw bearer token is 32 random bytes rendered as 64 hex characters. Only its
+// SHA-256 hash is ever written to disk; the raw value is returned to the caller
+// exactly once and must never be logged.
+const TOKEN_BYTES = 32;
+
+/**
+ * Appends a token entry to the tokens file under the managed-write lock, so a
+ * concurrent enrollment (from the CLI or the pairing endpoint, possibly in
+ * another process) cannot clobber an entry. The file is written with private
+ * permissions because it gates authentication.
+ */
+export async function appendApiTokenEntry(
+  tokensPath: string,
+  entry: ApiTokenEntry,
+): Promise<void> {
+  await withManagedWrite(tokensPath, async () => {
+    const current = await loadApiTokens(tokensPath);
+    const next: ApiTokensFile = {
+      version: 1,
+      tokens: [...current.tokens, entry],
+    };
+    await atomicWriteInPlace(tokensPath, `${JSON.stringify(next, null, 2)}\n`);
+  });
+}
+
+/**
+ * Mints a new per-device bearer token bound to an identity, persists only its
+ * hash, and returns the raw token once. The caller is responsible for having
+ * already validated that the identity exists and is mappable.
+ */
+export async function mintApiToken(input: {
+  tokensPath: string;
+  identityId: string;
+  deviceId: string;
+  label: string;
+}): Promise<string> {
+  const rawToken = randomBytes(TOKEN_BYTES).toString("hex");
+  const entry: ApiTokenEntry = {
+    tokenSha256: hashApiToken(rawToken),
+    identityId: input.identityId,
+    deviceId: input.deviceId,
+    label: input.label,
+  };
+  await appendApiTokenEntry(input.tokensPath, entry);
+  return rawToken;
 }
 
 /**

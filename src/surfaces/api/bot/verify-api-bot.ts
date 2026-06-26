@@ -364,6 +364,26 @@ async function verifyPairing(
   assertEqual(entry?.identityId, IDENTITY_ID, "minted token identity");
   assertEqual(entry?.deviceId, "paired-device", "minted token device");
 
+  // The freshly minted token authenticates a turn against the same running bot
+  // immediately, with no cache-window 401 (the bot's token store re-stats on
+  // every check).
+  const pairedTurn = await fetch(
+    `${base}/v1/conversations/${encodeURIComponent("paired-session")}/turns`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ input: "hello from the paired device" }),
+    },
+  );
+  assertEqual(
+    pairedTurn.status,
+    200,
+    "freshly minted token authenticates a turn at once",
+  );
+
   // Single-use: the same code cannot be redeemed twice.
   const reuse = await fetch(url, {
     method: "POST",

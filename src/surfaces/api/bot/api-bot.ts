@@ -86,10 +86,12 @@ export class ApiBot {
     this.#conversations = input.conversations;
     this.#contextCompiler = input.contextCompiler;
     this.#provider = input.provider;
-    this.#tokens = new ApiTokenStore(input.config.api.tokensPath);
-    // ttlMs 0: re-stat humans.json on every resolution so a removed or unmapped
-    // identity stops authenticating immediately, with no restart and no stale
-    // window. humans.json is tiny and only re-read when it actually changes.
+    // ttlMs 0 on both auth stores: re-stat on every check so a token minted by
+    // the pairing endpoint authenticates immediately (no cache-window 401), a
+    // revoked token stops working at once, and a removed or unmapped identity
+    // stops authenticating with no restart. Both files are tiny and only re-read
+    // when they actually change.
+    this.#tokens = new ApiTokenStore(input.config.api.tokensPath, 0);
     this.#identities = new HumanIdentityStore(input.config.paths.configDirs, 0);
   }
 

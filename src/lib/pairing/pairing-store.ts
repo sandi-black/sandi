@@ -29,11 +29,13 @@ const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const CODE_LENGTH = 10;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
+// Timestamps are epoch milliseconds, parsed to a number at the boundary so the
+// rest of the code compares them directly and never reparses a string at use.
 const ApiPairingSchema = z.object({
   codeSha256: z.string().regex(SHA256_HEX, "codeSha256 must be 64 hex chars"),
   identityId: z.string().min(1),
-  createdAt: z.string().min(1),
-  expiresAt: z.string().min(1),
+  createdAtMs: z.number().int().nonnegative(),
+  expiresAtMs: z.number().int().nonnegative(),
 });
 
 const ApiPairingsFileSchema = z.object({
@@ -118,11 +120,9 @@ export async function createPairing(input: {
   identityId: string;
   now?: number;
   ttlMs?: number;
-}): Promise<{ code: string; display: string; expiresAt: string }> {
+}): Promise<{ code: string; display: string }> {
   const now = input.now ?? Date.now();
   const ttlMs = input.ttlMs ?? PAIRING_TTL_MS;
-  const createdAt = new Date(now).toISOString();
-  const expiresAt = new Date(now + ttlMs).toISOString();
 
   let issued: { code: string; display: string } | undefined;
   await withManagedWrite(input.path, async () => {
@@ -137,8 +137,8 @@ export async function createPairing(input: {
     const record: ApiPairing = {
       codeSha256: hashPairingCode(candidate.code),
       identityId: input.identityId,
-      createdAt,
-      expiresAt,
+      createdAtMs: now,
+      expiresAtMs: now + ttlMs,
     };
     const kept = live.filter(
       (pairing) => pairing.identityId !== input.identityId,
@@ -151,7 +151,7 @@ export async function createPairing(input: {
   });
 
   if (!issued) throw new Error("pairing code generation failed");
-  return { code: issued.code, display: issued.display, expiresAt };
+  return { code: issued.code, display: issued.display };
 }
 
 function generateUniqueCode(live: readonly ApiPairing[]): {
@@ -213,9 +213,7 @@ export async function consumePairing(input: {
 }
 
 function isExpired(pairing: ApiPairing, now: number): boolean {
-  const expiresAtMs = Date.parse(pairing.expiresAt);
-  if (Number.isNaN(expiresAtMs)) return true;
-  return expiresAtMs <= now;
+  return pairing.expiresAtMs <= now;
 }
 
 // Constant-time comparison over the hex digests of equal length. The stored and

@@ -27,13 +27,11 @@ import type {
 } from "@/lib/conversations/types";
 import {
   findHumanIdentity,
-  findHumanIdentityByPlatformId,
   loadHumanIdentities,
 } from "@/lib/identity/resolver";
 import type { HumanIdentityConfig } from "@/lib/identity/types";
 import { createLogger } from "@/lib/logging";
 import {
-  createPairing,
   defaultApiPairingsPath,
   PAIRING_TTL_MS,
 } from "@/lib/pairing/pairing-store";
@@ -44,6 +42,7 @@ import {
   type ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
 import { ThreadQueue } from "@/lib/turns/turn-queue";
+import { issueDeviceCode } from "@/surfaces/discord/bot/device-auth";
 import {
   appendIgnoredConversationChannel,
   loadIgnoredConversationChannels,
@@ -314,7 +313,16 @@ export class SandiBot {
     });
 
     this.#client.on(Events.InteractionCreate, (interaction) => {
-      void this.#handleInteraction(interaction);
+      // The dispatch is fire-and-forget from the gateway event. Catch here so a
+      // rejection from any handler (filesystem, identity load, or a Discord
+      // reply) is logged and surfaced to the user instead of escaping as an
+      // unhandled rejection.
+      void this.#handleInteraction(interaction).catch((error: unknown) => {
+        log.error("failed to handle Discord interaction", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        void respondToFailedInteraction(interaction);
+      });
     });
 
     await this.#client.login(this.#config.discord.token);
@@ -663,19 +671,17 @@ export class SandiBot {
   async #replyToAuthInteraction(
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
-    // Resolve the invoking user to a known household identity before issuing
-    // anything. This is an auth gate that mints a credential, so match only on
-    // the immutable Discord account id, never the mutable username, and load
-    // identities fresh so a just-removed member cannot still get a code. Fail
-    // closed: a stranger, or a member configured without an immutable id, gets
-    // no code.
+    // Load identities fresh (this gate mints a credential, so it must not serve a
+    // stale cache) and delegate the auth-grade resolution and code issuance to
+    // issueDeviceCode. A stranger, or a member configured without an immutable
+    // Discord account id, gets no code.
     const identities = await loadHumanIdentities(this.#config.paths.configDirs);
-    const identity = findHumanIdentityByPlatformId({
+    const result = await issueDeviceCode({
       identities,
-      platform: "discord",
-      platformUserId: interaction.user.id,
+      pairingsPath: defaultApiPairingsPath(this.#config.paths.dataDir),
+      discordUserId: interaction.user.id,
     });
-    if (!identity) {
+    if (!result.ok) {
       await interaction.reply({
         content:
           "I can only pair devices for a recognized household member, and I do not have you on file yet. Ask an admin to add you (with your Discord account id) to Sandi's identities first.",
@@ -685,17 +691,13 @@ export class SandiBot {
       return;
     }
 
-    const pairing = await createPairing({
-      path: defaultApiPairingsPath(this.#config.paths.dataDir),
-      identityId: identity.id,
-    });
     const minutes = Math.round(PAIRING_TTL_MS / 60_000);
-    log.info("issued API pairing code", { identityId: identity.id });
+    log.info("issued API pairing code", { identityId: result.identityId });
     await interaction.reply({
       content: [
         "Here is your one-time pairing code for connecting a desktop client to Sandi:",
         "",
-        `\`\`\`\n${pairing.display}\n\`\`\``,
+        `\`\`\`\n${result.display}\n\`\`\``,
         `It is valid for ${minutes} minutes and can be used once. In your desktop client, choose to pair a new device and paste this code. It links that device to your Sandi identity (and your GitHub account if one is on file).`,
         "Running this command again replaces any previous code.",
       ].join("\n"),
@@ -1722,6 +1724,26 @@ function reactionEmojiLabel(reaction: MessageReaction): string {
 
 function reactionUsername(user: User): string {
   return user.globalName ?? user.username;
+}
+
+// Best-effort error reply when an interaction handler rejected. Only replies if
+// the interaction can still be answered and has not been already, and swallows
+// its own failure: an expired or already-answered interaction leaves nothing to
+// do but log (which the caller already did).
+async function respondToFailedInteraction(
+  interaction: Interaction,
+): Promise<void> {
+  if (!interaction.isRepliable()) return;
+  if (interaction.replied || interaction.deferred) return;
+  try {
+    await interaction.reply({
+      content: "Something went wrong handling that command. Please try again.",
+      allowedMentions: { parse: [] },
+      ephemeral: true,
+    });
+  } catch {
+    // The interaction may have expired or already been answered.
+  }
 }
 
 function queueKeyFromInteraction(

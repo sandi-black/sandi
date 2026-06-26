@@ -249,12 +249,19 @@ surface.
 src/lib/pairing/
   pairing-store.ts              platform-neutral pairing-code store (issue/redeem)
   verify-pairing.ts             store-level verify (single-use, expiry, supersede)
+src/lib/identity/
+  resolver.ts                   strict id resolver + reloading HumanIdentityStore
+  verify-auth-resolver.ts       strict resolver, store freshness, duplicate ids
 src/surfaces/api/
   index.ts                      entrypoint and lifecycle
   config.ts                     loadApiAppConfig (host, port, tokens, pairings)
   auth/
     tokens.ts                   token store, hashing, verify, reload, mint
     enroll.ts                   api:enroll CLI
+    pairing.ts                  redeemPairing: the redemption domain logic
+    participant.ts              identity-to-participant mapping (turn + pairing)
+    rate-limiter.ts             FixedWindowLimiter (per-client + global caps)
+    verify-rate-limiter.ts      limiter cap and reset verify
   api/
     conversations.ts            canonical ids and manifest builder
     delivery-instructions.ts    API delivery contract
@@ -264,16 +271,24 @@ src/surfaces/api/
   runtime/
     context.ts                  API_SURFACE_CONTEXT
     index.ts                    runtime barrel (server-side helpers in Phase 1)
+src/surfaces/discord/bot/
+  device-auth.ts                issueDeviceCode: the /sandi auth issuer core
+  verify-device-auth.ts         issuer verify (recognized vs declined)
 ```
 
 The pairing store lives under `src/lib/` (not the API surface) because the
 issuing surface (Discord's `/sandi auth` handler) and the redeeming API surface
 are separate processes that both write it, and shared core must not import a
-surface. It binds only an `identityId`, so it stays surface-neutral.
+surface. It binds only an `identityId`, so it stays surface-neutral. Pairing
+timestamps are stored as epoch milliseconds, parsed to numbers at the file
+boundary so nothing reparses a string at use.
 
-Configuration lives in `.env.example` under the `SANDI_API_*` keys. The
-`verify:api-bot` script proves health, auth rejection, unmapped-identity
-fail-closed, identity routing, session reuse, token revocation, and the full
-pairing redemption loop; `verify:pairing` proves the store's single-use,
-expiry, supersede, and concurrency properties. Both run as part of `npm run
-check`.
+Configuration lives in `.env.example` under the `SANDI_API_*` keys. Coverage
+runs as part of `npm run check`: `verify:api-bot` proves health, auth rejection,
+the unmapped-identity 403, identity routing, session reuse, token revocation,
+the full pairing redemption loop, and that a freshly minted token authenticates
+a turn at once; `verify:pairing` covers the store's single-use, expiry,
+supersede, and concurrency properties; `verify:auth-resolver` covers strict
+resolution, identity-store freshness, and duplicate-id rejection;
+`verify:api-rate-limiter` and `verify:discord-auth` cover the limiter and the
+issuer.

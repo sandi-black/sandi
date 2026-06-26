@@ -76,6 +76,18 @@ export function postJson(input: {
       req.destroy(new Error("request timed out"));
     });
     req.on("error", (error) => settle(() => rejectPost(error)));
+    // The request always emits "close" once it is done, success or failure. A
+    // server that aborts the response mid-body can close the socket without a
+    // "error" event and after the timeout is moot, so this is the backstop that
+    // guarantees the promise settles rather than pinning the caller forever. It
+    // is a no-op after a normal "end" resolve (settle is idempotent).
+    req.on("close", () =>
+      settle(() =>
+        rejectPost(
+          new Error("connection closed before the response completed"),
+        ),
+      ),
+    );
     input.signal?.addEventListener("abort", onAbort, { once: true });
     req.end(payload);
   });

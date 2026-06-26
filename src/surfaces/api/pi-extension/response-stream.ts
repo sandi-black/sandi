@@ -43,10 +43,21 @@ export default function responseStreamExtension(pi: ExtensionAPI): void {
   const relay = createChunkRelay(target);
   pi.on("message_update", (event) => {
     const chunk = intentToChunk(
-      classifyAssistantEvent(event.assistantMessageEvent),
+      classifyAssistantEvent(readAssistantMessageEvent(event)),
     );
     if (chunk) relay.relay(chunk);
   });
+}
+
+// Reads the `assistantMessageEvent` field out of pi's message_update payload,
+// returning it as unknown for the classifier, or undefined when the payload is
+// not the shape we expect. pi's event is third-party JSON-shaped data crossing
+// into this extension, so it is narrowed at the boundary rather than reached into
+// directly. The classifier validates the inner event in turn.
+export function readAssistantMessageEvent(event: unknown): unknown {
+  if (typeof event !== "object" || event === null) return undefined;
+  const record: Record<string, unknown> = { ...event };
+  return record["assistantMessageEvent"];
 }
 
 export type OutChunk =

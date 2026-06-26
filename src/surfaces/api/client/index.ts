@@ -1,7 +1,10 @@
-import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
-import { runChatRepl } from "@/surfaces/api/client/chat";
+import {
+  resolveBooleanFlag,
+  resolveConversationId,
+  runChatRepl,
+} from "@/surfaces/api/client/chat";
 import {
   type DesktopCredentials,
   desktopConfigPath,
@@ -121,9 +124,17 @@ async function chatCommand(args: string[]): Promise<void> {
   const effective = await loadEffectiveCredentials(flags);
   if (!effective) return;
   const rootDir = resolve(flags.options["root"] ?? process.cwd());
-  const conversationId =
-    flags.options["conversation"] ?? `desktop-${randomUUID()}`;
-  const showThinking = flags.options["thinking"] !== undefined;
+  // Parse the two free-form chat flags at the CLI boundary so a bad value is
+  // rejected here rather than sent to the server or silently misread.
+  const conversationId = resolveConversationId(flags.options["conversation"]);
+  if (conversationId === undefined) {
+    console.error(
+      "invalid --conversation: use letters, digits, '.', '_', or '-' (max 200 chars)",
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const showThinking = resolveBooleanFlag(flags.options["thinking"]);
   await runChatRepl({
     credentials: effective,
     rootDir,

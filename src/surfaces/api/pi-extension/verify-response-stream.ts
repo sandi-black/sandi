@@ -5,6 +5,7 @@ import {
   createChunkRelay,
   intentToChunk,
   postChunk,
+  readAssistantMessageEvent,
   readStreamTarget,
   type StreamTarget,
 } from "./response-stream";
@@ -17,12 +18,34 @@ import {
 const HEX_TOKEN = "a1b2c3d4e5f60718293a4b5c6d7e8f90".repeat(2);
 
 async function verifyResponseStream(): Promise<void> {
+  verifyReadAssistantMessageEvent();
   verifyClassify();
   verifyIntentToChunk();
   verifyReadStreamTarget();
   await verifyChunkRelay();
   await verifyPostChunk();
   console.log("response stream verification passed");
+}
+
+function verifyReadAssistantMessageEvent(): void {
+  assertEqual(
+    readAssistantMessageEvent({
+      assistantMessageEvent: { type: "text_delta", delta: "a" },
+    }),
+    { type: "text_delta", delta: "a" },
+    "the inner event is read from the message_update envelope",
+  );
+  assertEqual(
+    readAssistantMessageEvent(null),
+    undefined,
+    "a non-object envelope yields undefined",
+  );
+  assertEqual(
+    readAssistantMessageEvent({}),
+    undefined,
+    "an envelope without the field yields undefined",
+  );
+  console.log("ok readAssistantMessageEvent narrows the pi event boundary");
 }
 
 function verifyIntentToChunk(): void {

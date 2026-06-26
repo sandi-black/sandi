@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 
+import {
+  InvalidApiSegmentError,
+  requireApiSegment,
+} from "@/surfaces/api/api/conversations";
 import type { DesktopCredentials } from "@/surfaces/api/client/credentials";
 import { runDesktopClient } from "@/surfaces/api/client/desktop-client";
 import { createResponsePrinter } from "@/surfaces/api/client/response-printer";
@@ -111,4 +115,29 @@ function delay(ms: number): Promise<void> {
     const timer = setTimeout(resolveDelay, ms);
     timer.unref();
   });
+}
+
+// Resolves the --conversation flag to a valid API conversation segment, or mints
+// a fresh per-session id when the flag is absent. Returns undefined when a value
+// is present but not a valid segment (the same alphabet the server enforces), so
+// the caller can reject it at the CLI boundary instead of sending an id the
+// server would refuse mid-turn.
+export function resolveConversationId(
+  value: string | undefined,
+): string | undefined {
+  if (value === undefined) return `desktop-${randomUUID()}`;
+  try {
+    return requireApiSegment(value, "conversationId");
+  } catch (error) {
+    if (error instanceof InvalidApiSegmentError) return undefined;
+    throw error;
+  }
+}
+
+// Resolves a presence-or-value boolean CLI flag. Absent is false. A bare
+// `--thinking` (which parseFlags records as the string "true") is true; an
+// explicit `--thinking false|0|no|off` is false; any other value is true.
+export function resolveBooleanFlag(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return !/^(false|0|no|off)$/i.test(value.trim());
 }

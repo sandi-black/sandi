@@ -1,12 +1,16 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 
+import {
+  resolveBooleanFlag,
+  resolveConversationId,
+} from "@/surfaces/api/client/chat";
 import { createResponsePrinter } from "@/surfaces/api/client/response-printer";
 import { reconcileSuffix, sendTurn } from "@/surfaces/api/client/turns";
 import type { ResponseChunk } from "@/surfaces/api/devices/protocol";
 
-// Covers the chat REPL's building blocks: how a settled turn reconciles against
-// the live stream, how the printer renders deltas, and how sendTurn maps server
-// responses to outcomes.
+// Covers the chat REPL's building blocks: how the CLI flags resolve, how a
+// settled turn reconciles against the live stream, how the printer renders
+// deltas, and how sendTurn maps server responses to outcomes.
 
 const TOKEN =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -14,10 +18,54 @@ const TOKEN =
 type Reply = { status: number; body: unknown };
 
 async function verifyTurns(): Promise<void> {
+  verifyChatFlags();
   verifyReconcile();
   verifyPrinter();
   await verifySendTurn();
   console.log("turns verification passed");
+}
+
+function verifyChatFlags(): void {
+  // An absent --conversation mints a fresh, valid segment id.
+  const minted = resolveConversationId(undefined);
+  assert(
+    typeof minted === "string" && minted.startsWith("desktop-"),
+    "an absent --conversation mints a desktop-* id",
+  );
+  assertEqual(
+    resolveConversationId("project-x"),
+    "project-x",
+    "a valid --conversation passes through unchanged",
+  );
+  assertEqual(
+    resolveConversationId("has spaces"),
+    undefined,
+    "a --conversation outside the segment alphabet is rejected",
+  );
+  assertEqual(
+    resolveConversationId("a/b"),
+    undefined,
+    "a --conversation with a path separator is rejected",
+  );
+
+  assertEqual(
+    resolveBooleanFlag(undefined),
+    false,
+    "an absent boolean flag is false",
+  );
+  assertEqual(
+    resolveBooleanFlag("true"),
+    true,
+    "a bare flag (recorded as 'true') is true",
+  );
+  assertEqual(
+    resolveBooleanFlag("false"),
+    false,
+    "an explicit false value is false",
+  );
+  assertEqual(resolveBooleanFlag("off"), false, "off is false");
+  assertEqual(resolveBooleanFlag("1"), true, "any other value is true");
+  console.log("ok the chat flags resolve to a valid id and a boolean");
 }
 
 function verifyReconcile(): void {

@@ -4,6 +4,8 @@ import { dirname } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { withManagedWrite } from "../state/managed-write";
+
 const PRIVATE_FILE_MODE = 0o600;
 
 export default function (pi: ExtensionAPI): void {
@@ -42,9 +44,11 @@ async function appendUsageRecord(
       cost: usage.cost.total,
     },
   };
-  await appendFile(path, `${JSON.stringify(record)}\n`, {
-    encoding: "utf8",
-    mode: PRIVATE_FILE_MODE,
+  await withManagedWrite(path, async () => {
+    await appendFile(path, `${JSON.stringify(record)}\n`, {
+      encoding: "utf8",
+      mode: PRIVATE_FILE_MODE,
+    });
+    if (process.platform !== "win32") await chmod(path, PRIVATE_FILE_MODE);
   });
-  if (process.platform !== "win32") await chmod(path, PRIVATE_FILE_MODE);
 }

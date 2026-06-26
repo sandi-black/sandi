@@ -1,10 +1,10 @@
-import { mkdir, readdir, readFile, rename, rm } from "node:fs/promises";
+import { readdir, readFile, rm } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 
 import {
-  chmodPrivateFile,
-  writePrivateTextFile,
-} from "@/lib/state/private-files";
+  atomicWriteManaged,
+  withManagedWrite,
+} from "@/lib/state/managed-write";
 import {
   type Reminder,
   ReminderSchema,
@@ -52,15 +52,14 @@ export async function writeReminder(
 ): Promise<void> {
   const parsed = ReminderSchema.parse(reminder);
   const filePath = resolveReminderPath(root, id);
-  await mkdir(resolve(root), { recursive: true });
-  const tempPath = `${filePath}.tmp`;
-  await writePrivateTextFile(tempPath, `${JSON.stringify(parsed, null, 2)}\n`);
-  await rename(tempPath, filePath);
-  await chmodPrivateFile(filePath);
+  await atomicWriteManaged(filePath, `${JSON.stringify(parsed, null, 2)}\n`);
 }
 
 export async function deleteReminder(root: string, id: string): Promise<void> {
-  await rm(resolveReminderPath(root, id), { force: true });
+  const filePath = resolveReminderPath(root, id);
+  await withManagedWrite(filePath, async () => {
+    await rm(filePath, { force: true });
+  });
 }
 
 export function resolveReminderPath(root: string, id: string): string {

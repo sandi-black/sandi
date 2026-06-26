@@ -263,18 +263,24 @@ async function updateStoredList(
   channelId: string,
   mutator: (list: ChannelTodoState) => Promise<ChannelTodoState>,
 ): Promise<TodoListResult> {
-  const todoStore = store();
-  const state = await todoStore.read(EMPTY_STATE);
-  const current = state.guilds[guildId] ?? emptyGuildState();
-  const existing =
-    listForChannel(current, channelId) ?? emptyChannelList(channelId);
-  const next = await upsertRenderedList(await mutator(existing));
-  await todoStore.write({
-    guilds: {
-      ...state.guilds,
-      [guildId]: updateGuildList(current, next),
-    },
-  });
+  // Read, mutate, render, and write run inside one cross-process lock so a
+  // concurrent todo turn in another process cannot lose this update. The
+  // render performs Discord I/O while the lock is held; the heartbeat keeps the
+  // lock alive for the duration, so no waiter steals it.
+  let next: ChannelTodoState | undefined;
+  await store().updateManaged(async (state) => {
+    const current = state.guilds[guildId] ?? emptyGuildState();
+    const existing =
+      listForChannel(current, channelId) ?? emptyChannelList(channelId);
+    next = await upsertRenderedList(await mutator(existing));
+    return {
+      guilds: {
+        ...state.guilds,
+        [guildId]: updateGuildList(current, next),
+      },
+    };
+  }, EMPTY_STATE);
+  if (!next) throw new Error("todo update produced no list");
   return todoListResult(next);
 }
 

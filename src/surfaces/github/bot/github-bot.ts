@@ -216,9 +216,14 @@ export class GitHubBot {
     bot: GitHubUser;
   }): Promise<void> {
     if (this.#pendingTriggerKeys.has(input.trigger.key)) return;
-    if (await this.#state.hasProcessed(input.trigger.key)) return;
+    // Atomically claim the trigger across processes. Two bot processes can
+    // otherwise both read "not processed" and both run the same trigger; the
+    // claim closes that check-then-act gap so only one wins.
+    const claim = await this.#state.tryClaim(input.trigger.key);
+    if (claim !== "claimed") return;
     this.#pendingTriggerKeys.add(input.trigger.key);
 
+    let enqueued = false;
     try {
       const actor = await this.#participantFromUser(input.trigger.actor);
       const conversation = await this.#loadConversation(input.trigger, actor);
@@ -245,19 +250,31 @@ export class GitHubBot {
                 repository: input.trigger.repository.full_name,
                 subject: `${input.trigger.thread.kind}:${input.trigger.thread.number}`,
               });
+            } else {
+              // The turn did not complete: release the claim so a later retry
+              // can re-claim it rather than leaving it wedged until the claim
+              // ages out.
+              await this.#state.releaseClaim(input.trigger.key);
             }
             this.#pendingTriggerKeys.delete(input.trigger.key);
           }
         },
       );
+      enqueued = true;
     } catch (error) {
-      this.#pendingTriggerKeys.delete(input.trigger.key);
       log.error("failed to enqueue GitHub trigger", {
         key: input.trigger.key,
         repository: input.trigger.repository.full_name,
         thread: `${input.trigger.thread.kind}:${input.trigger.thread.number}`,
         error: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      if (!enqueued) {
+        // We claimed but never handed work to the queue, so the queued callback
+        // that would release the claim never runs. Release it here.
+        this.#pendingTriggerKeys.delete(input.trigger.key);
+        await this.#state.releaseClaim(input.trigger.key);
+      }
     }
   }
 

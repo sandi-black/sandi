@@ -1,7 +1,7 @@
-import { access, mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { access, readdir, readFile, rm } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 
-import { writePrivateTextFile } from "../state/private-files";
+import { atomicWriteInPlace, withManagedWrite } from "../state/managed-write";
 
 export type SkillKind = "custom" | "builtin";
 export type SkillScope = "core" | "surface";
@@ -147,22 +147,23 @@ export async function writeCustomSkill(input: {
     input.scope === "surface" ? requireSurface(input.surface) : null;
   const root = customLayerRoot(input.root, input.scope, surface);
   const filePath = skillFilePath(root, name);
-  const content =
-    input.mode === "append"
-      ? appendContent(
-          await readEffectiveOrCustom({
-            root: input.root,
-            surface,
-            scope: input.scope,
-            name,
-            customPath: filePath,
-          }),
-          input.content,
-        )
-      : `${input.content.trim()}\n`;
-  validateSkillContent(name, content);
-  await mkdir(dirname(filePath), { recursive: true });
-  await writePrivateTextFile(filePath, content);
+  await withManagedWrite(filePath, async () => {
+    const content =
+      input.mode === "append"
+        ? appendContent(
+            await readEffectiveOrCustom({
+              root: input.root,
+              surface,
+              scope: input.scope,
+              name,
+              customPath: filePath,
+            }),
+            input.content,
+          )
+        : `${input.content.trim()}\n`;
+    validateSkillContent(name, content);
+    await atomicWriteInPlace(filePath, content);
+  });
   return {
     name,
     filePath,
@@ -197,7 +198,9 @@ export async function deleteCustomSkill(input: {
   });
   const root = customLayerRoot(input.root, input.scope, surface);
   const customPath = skillFilePath(root, skillName);
-  await rm(dirname(customPath), { force: true, recursive: true });
+  await withManagedWrite(customPath, async () => {
+    await rm(dirname(customPath), { force: true, recursive: true });
+  });
   const after = await resolveSkillOrNull({
     root: input.root,
     surface: effectiveSurface,

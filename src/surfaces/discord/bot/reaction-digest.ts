@@ -45,7 +45,6 @@ export type CaptureReactionInput = {
 
 export class ReactionDigestStore {
   readonly #store: JsonFileStore<ReactionDigestState>;
-  #lastUpdate: Promise<void> = Promise.resolve();
 
   constructor(dataDir: string) {
     this.#store = new JsonFileStore(
@@ -55,51 +54,44 @@ export class ReactionDigestStore {
   }
 
   async capture(input: CaptureReactionInput): Promise<void> {
-    await this.#withState(async (state) => {
+    const event: PendingReactionEvent = {
+      kind: input.kind,
+      emoji: input.emoji,
+      userId: input.userId,
+      username: input.username,
+      messageId: input.messageId,
+      messageUrl: input.messageUrl,
+      messageSnippet: messageSnippet(input.messageContent),
+      at: input.at,
+    };
+    // Read, append, and write run inside one cross-process lock so a concurrent
+    // capture or drain in another process cannot lose this event.
+    await this.#store.updateManaged((state) => {
       const current = state.conversations[input.conversationId] ?? [];
-      const event: PendingReactionEvent = {
-        kind: input.kind,
-        emoji: input.emoji,
-        userId: input.userId,
-        username: input.username,
-        messageId: input.messageId,
-        messageUrl: input.messageUrl,
-        messageSnippet: messageSnippet(input.messageContent),
-        at: input.at,
-      };
-      await this.#store.write({
+      return {
         conversations: {
           ...state.conversations,
           [input.conversationId]: [...current, event].slice(
             -MAX_EVENTS_PER_CONVERSATION,
           ),
         },
-      });
-    });
+      };
+    }, EMPTY_STATE);
   }
 
   async drain(conversationId: string): Promise<string | undefined> {
-    return this.#withState(async (state) => {
-      const events = state.conversations[conversationId] ?? [];
-      if (events.length === 0) return undefined;
-
+    // Capture the drained events from inside the same critical section that
+    // clears them, so a concurrent capture cannot be silently dropped.
+    let drained: PendingReactionEvent[] = [];
+    await this.#store.updateManaged((state) => {
+      drained = state.conversations[conversationId] ?? [];
+      if (drained.length === 0) return state;
       const nextConversations = { ...state.conversations };
       delete nextConversations[conversationId];
-      await this.#store.write({ conversations: nextConversations });
-      return formatReactionDigest(events);
-    });
-  }
-
-  async #withState<T>(operation: (state: ReactionDigestState) => Promise<T>) {
-    const run = this.#lastUpdate.then(async () => {
-      const state = await this.#store.read(EMPTY_STATE);
-      return operation(state);
-    });
-    this.#lastUpdate = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
+      return { conversations: nextConversations };
+    }, EMPTY_STATE);
+    if (drained.length === 0) return undefined;
+    return formatReactionDigest(drained);
   }
 }
 

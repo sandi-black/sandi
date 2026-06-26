@@ -79,7 +79,7 @@ export class ConversationStore {
   }): Promise<ConversationManifest> {
     const store = this.#storeFor(input.storageId);
     const now = new Date().toISOString();
-    const updated = await store.update((current) => {
+    const updated = await store.updateManaged((current) => {
       const exists = current.participants.some(
         (item) => participantRef(item) === participantRef(input.participant),
       );
@@ -103,8 +103,22 @@ export class ConversationStore {
     return updated;
   }
 
-  async save(storageId: string, manifest: ConversationManifest): Promise<void> {
-    await this.#storeFor(storageId).write(manifest);
+  /**
+   * Reads the current manifest, applies the mutator, and writes the result all
+   * inside one cross-process lock. Use this instead of read-then-save so a
+   * concurrent addParticipant in another process is not clobbered: the mutator
+   * sees the freshest on-disk manifest, not one read earlier outside the lock.
+   */
+  async applyManaged(input: {
+    storageId: string;
+    fallback: ConversationManifest;
+    mutate: (current: ConversationManifest) => ConversationManifest;
+  }): Promise<ConversationManifest> {
+    const fallback = ConversationManifestSchema.parse(input.fallback);
+    return this.#storeFor(input.storageId).updateManaged(
+      (current) => input.mutate(current),
+      fallback,
+    );
   }
 
   #storeFor(targetId: string): JsonFileStore<ConversationManifest> {

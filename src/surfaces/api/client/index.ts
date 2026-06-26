@@ -180,13 +180,17 @@ async function chatCommand(args: string[]): Promise<void> {
       continue;
     }
     if (line === "/exit" || line === "/quit") break;
-    printer.begin();
+    // Mint the turn id here so the printer can bind its live preview to this
+    // exact turn and ignore any straggling delta from the previous one.
+    const turnId = randomUUID();
+    printer.begin(turnId);
     process.stdout.write("sandi> ");
     const outcome = await sendTurn({
       url: effective.url,
       token: effective.token,
       conversationId,
       input: line,
+      turnId,
       signal: controller.signal,
     });
     if (outcome.ok) {

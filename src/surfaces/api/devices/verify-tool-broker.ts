@@ -16,6 +16,7 @@ async function verifyToolBroker(): Promise<void> {
     await verifyRevoke(registry, broker);
     await verifyStreamRelay(registry, broker);
     await verifyStreamToGoneDevice(broker);
+    await verifyStreamTurnMismatch(registry, broker);
   } finally {
     broker.stop();
     registry.closeAll();
@@ -98,7 +99,10 @@ async function verifyAbortRejects(
     key: "d-silent",
     deviceId: "d-silent",
     identityId: "i",
-    write: (chunk) => writes.push(chunk),
+    write: (chunk) => {
+      writes.push(chunk);
+      return true;
+    },
     end: () => {},
   });
   const controller = new AbortController();
@@ -180,7 +184,10 @@ async function verifyStreamRelay(
     key: "d-stream",
     deviceId: "d-stream",
     identityId: "i",
-    write: (chunk) => writes.push(chunk),
+    write: (chunk) => {
+      writes.push(chunk);
+      return true;
+    },
     end: () => {},
   });
   const lease = broker.lease({
@@ -219,6 +226,52 @@ async function verifyStreamRelay(
   assertEqual(bad.status, 400, "a malformed chunk is rejected");
   lease.revoke();
   console.log("ok a response delta relays to the device as a response_chunk");
+}
+
+async function verifyStreamTurnMismatch(
+  registry: DeviceRegistry,
+  broker: ToolBroker,
+): Promise<void> {
+  // A lease bound to a turn id relays only that turn's deltas; a delta tagged
+  // with another turn is rejected so it cannot be attributed to the wrong turn.
+  const writes: string[] = [];
+  registry.connect({
+    key: "d-turn",
+    deviceId: "d-turn",
+    identityId: "i",
+    write: (chunk) => {
+      writes.push(chunk);
+      return true;
+    },
+    end: () => {},
+  });
+  const lease = broker.lease({
+    key: "d-turn",
+    signal: new AbortController().signal,
+    turnId: "turn-A",
+  });
+
+  const wrong = await postCall(
+    lease.ticket.url,
+    lease.ticket.token,
+    { type: "delta", turnId: "turn-B", seq: 0, channel: "text", delta: "x" },
+    "/stream",
+  );
+  assertEqual(wrong.status, 409, "a delta for another turn is rejected");
+  assert(
+    !writes.some((w) => w.includes("response_chunk")),
+    "a mismatched delta never reaches the device",
+  );
+
+  const right = await postCall(
+    lease.ticket.url,
+    lease.ticket.token,
+    { type: "delta", turnId: "turn-A", seq: 0, channel: "text", delta: "ok" },
+    "/stream",
+  );
+  assertEqual(right.status, 202, "a delta for the leased turn is relayed");
+  lease.revoke();
+  console.log("ok a stream delta must match the leased turn id");
 }
 
 async function verifyStreamToGoneDevice(broker: ToolBroker): Promise<void> {
@@ -260,15 +313,16 @@ function connectEchoDevice(
     identityId: "i",
     write: (chunk) => {
       const match = /event: tool_call\ndata: (.*)\n\n/s.exec(chunk);
-      if (!match || match[1] === undefined) return;
+      if (!match || match[1] === undefined) return true;
       const dispatch: unknown = JSON.parse(match[1]);
       const record = asRecord(dispatch);
       const id = record?.["id"];
       const tool = record?.["tool"];
-      if (typeof id !== "string" || typeof tool !== "string") return;
+      if (typeof id !== "string" || typeof tool !== "string") return true;
       queueMicrotask(() => {
         registry.settleResult(key, respond({ id, tool }));
       });
+      return true;
     },
     end: () => {},
   });

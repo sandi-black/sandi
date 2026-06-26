@@ -28,6 +28,10 @@ export async function sendTurn(input: {
   token: string;
   conversationId: string;
   input: string;
+  // A client-generated id correlating this turn's streamed deltas. Sent so the
+  // server tags the stream with it and the REPL can bind its live preview to the
+  // right turn, ignoring a straggler from a prior one.
+  turnId?: string;
   signal?: AbortSignal;
 }): Promise<TurnOutcome> {
   let response: JsonResponse;
@@ -36,7 +40,10 @@ export async function sendTurn(input: {
       url: input.url,
       path: `/v1/conversations/${encodeURIComponent(input.conversationId)}/turns`,
       token: input.token,
-      body: { input: input.input },
+      body: {
+        input: input.input,
+        ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+      },
       timeoutMs: TURN_TIMEOUT_MS,
       ...(input.signal ? { signal: input.signal } : {}),
     });

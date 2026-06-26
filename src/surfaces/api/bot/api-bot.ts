@@ -331,6 +331,7 @@ export class ApiBot {
         participant,
         deviceKey: entry.tokenSha256,
         input: parsed.input,
+        ...(parsed.turnId !== undefined ? { turnId: parsed.turnId } : {}),
         requestSignal: abort.signal,
       });
       if (response.destroyed) return;
@@ -424,6 +425,7 @@ export class ApiBot {
     participant: ConversationParticipant;
     deviceKey: string;
     input: string;
+    turnId?: string;
     requestSignal: AbortSignal;
   }): Promise<string> {
     return new Promise((resolveTurn, rejectTurn) => {
@@ -446,6 +448,7 @@ export class ApiBot {
               participant: input.participant,
               deviceKey: input.deviceKey,
               input: input.input,
+              ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
               signal,
             });
             resolveTurn(text);
@@ -463,6 +466,7 @@ export class ApiBot {
     participant: ConversationParticipant;
     deviceKey: string;
     input: string;
+    turnId?: string;
     signal: AbortSignal;
   }): Promise<string> {
     log.info("starting API conversation turn", {
@@ -478,7 +482,11 @@ export class ApiBot {
     // a link. With no link, the proxy extension registers no tools and the turn
     // runs without file or shell access rather than touching the server.
     const lease = this.#devices.isConnected(input.deviceKey)
-      ? this.#broker.lease({ key: input.deviceKey, signal: input.signal })
+      ? this.#broker.lease({
+          key: input.deviceKey,
+          signal: input.signal,
+          ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+        })
       : undefined;
     try {
       const request: ProviderTurnRequest = {
@@ -497,6 +505,7 @@ export class ApiBot {
           participants: input.conversation.participants,
         }),
         ...(lease ? { localToolBroker: lease.ticket } : {}),
+        ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
         signal: input.signal,
       };
       const response = await this.#provider.generateTurn(request);
@@ -592,7 +601,7 @@ function formatApiTurn(
 }
 
 type ParsedTurnBody =
-  | { ok: true; input: string; title?: string }
+  | { ok: true; input: string; title?: string; turnId?: string }
   | { ok: false; error: string };
 
 function parseTurnBody(value: unknown): ParsedTurnBody {
@@ -608,10 +617,23 @@ function parseTurnBody(value: unknown): ParsedTurnBody {
   if (title !== undefined && typeof title !== "string") {
     return { ok: false, error: "invalid_title" };
   }
-  if (typeof title === "string" && title.trim().length > 0) {
-    return { ok: true, input, title };
+  // An optional client-supplied id correlating this turn's streamed response.
+  // The desktop generates it so it can bind its live preview to the right turn;
+  // a caller that does not stream omits it and the server uses an internal id.
+  const turnId = record["turnId"];
+  if (
+    turnId !== undefined &&
+    (typeof turnId !== "string" || turnId.trim().length === 0)
+  ) {
+    return { ok: false, error: "invalid_turn_id" };
   }
-  return { ok: true, input };
+  const base: { ok: true; input: string; title?: string; turnId?: string } = {
+    ok: true,
+    input,
+    ...(typeof title === "string" && title.trim().length > 0 ? { title } : {}),
+    ...(typeof turnId === "string" ? { turnId } : {}),
+  };
+  return base;
 }
 
 // Best-effort client key for rate limiting. The API surface is bound to a

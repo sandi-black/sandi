@@ -58,9 +58,9 @@ function verifyPrinter(): void {
   // A normal stream: deltas print, the settle adds nothing but the newline.
   assertEqual(
     render((printer) => {
-      printer.begin();
-      printer.onChunk(delta("t1", "text", "Hel"));
-      printer.onChunk(delta("t1", "text", "lo"));
+      printer.begin("t1");
+      printer.onChunk(delta("t1", 0, "text", "Hel"));
+      printer.onChunk(delta("t1", 1, "text", "lo"));
       printer.settle("Hello");
     }),
     "Hello\n",
@@ -70,7 +70,7 @@ function verifyPrinter(): void {
   // Streaming missing entirely: the settle prints the whole final text.
   assertEqual(
     render((printer) => {
-      printer.begin();
+      printer.begin("t1");
       printer.settle("Hi there");
     }),
     "Hi there\n",
@@ -80,32 +80,57 @@ function verifyPrinter(): void {
   // The child exited before its last delta: settle fills the tail.
   assertEqual(
     render((printer) => {
-      printer.begin();
-      printer.onChunk(delta("t1", "text", "Hel"));
+      printer.begin("t1");
+      printer.onChunk(delta("t1", 0, "text", "Hel"));
       printer.settle("Hello");
     }),
     "Hello\n",
     "a missing tail is filled from the final text",
   );
 
-  // A straggler from another turn is ignored.
+  // A straggler from another turn is ignored, even as the first delta seen.
   assertEqual(
     render((printer) => {
-      printer.begin();
-      printer.onChunk(delta("t1", "text", "A"));
-      printer.onChunk(delta("t2", "text", "B"));
+      printer.begin("t1");
+      printer.onChunk(delta("t2", 0, "text", "OLD"));
+      printer.onChunk(delta("t1", 0, "text", "A"));
       printer.settle("A");
     }),
     "A\n",
     "a delta from a different turn does not bleed in",
   );
 
+  // A lost delta (a seq gap) abandons the live preview; settle prints the full
+  // authoritative final on a fresh line rather than a corrupted partial.
+  assertEqual(
+    render((printer) => {
+      printer.begin("t1");
+      printer.onChunk(delta("t1", 0, "text", "Hel"));
+      printer.onChunk(delta("t1", 2, "text", "!!")); // seq 1 was lost
+      printer.settle("Hello");
+    }),
+    "Hel\nHello\n",
+    "a seq gap falls back to the authoritative final",
+  );
+
+  // A duplicated delta is rendered once.
+  assertEqual(
+    render((printer) => {
+      printer.begin("t1");
+      printer.onChunk(delta("t1", 0, "text", "A"));
+      printer.onChunk(delta("t1", 0, "text", "A"));
+      printer.settle("A");
+    }),
+    "A\n",
+    "a duplicate delta is not rendered twice",
+  );
+
   // Thinking is suppressed by default and shown (dimmed) when asked.
   assertEqual(
     render((printer) => {
-      printer.begin();
-      printer.onChunk(delta("t1", "thinking", "psst"));
-      printer.onChunk(delta("t1", "text", "Hi"));
+      printer.begin("t1");
+      printer.onChunk(delta("t1", 0, "thinking", "psst"));
+      printer.onChunk(delta("t1", 1, "text", "Hi"));
       printer.settle("Hi");
     }),
     "Hi\n",
@@ -113,9 +138,9 @@ function verifyPrinter(): void {
   );
   const withThinking = render(
     (printer) => {
-      printer.begin();
-      printer.onChunk(delta("t1", "thinking", "psst"));
-      printer.onChunk(delta("t1", "text", "Hi"));
+      printer.begin("t1");
+      printer.onChunk(delta("t1", 0, "thinking", "psst"));
+      printer.onChunk(delta("t1", 1, "text", "Hi"));
       printer.settle("Hi");
     },
     { showThinking: true },
@@ -173,10 +198,11 @@ async function verifySendTurn(): Promise<void> {
 
 function delta(
   turnId: string,
+  seq: number,
   channel: "text" | "thinking",
   text: string,
 ): ResponseChunk {
-  return { type: "delta", turnId, seq: 0, channel, delta: text };
+  return { type: "delta", turnId, seq, channel, delta: text };
 }
 
 function render(

@@ -44,6 +44,12 @@ const TOKEN_BYTES = 32;
 type TurnBinding = {
   key: string;
   signal: AbortSignal;
+  // The turn id this lease streams under, when the caller supplied one. The
+  // streaming ingress rejects a delta tagged with any other turn id so a relay
+  // is always scoped to the turn that leased the token. Absent for callers that
+  // do not consume the stream (no client turn id), where the env turn id is
+  // generated late and there is nothing to bind against.
+  turnId?: string;
 };
 
 export type TurnBrokerTicket = {
@@ -113,11 +119,19 @@ export class ToolBroker {
   // Leases a per-turn ticket: the loopback URL plus a single-turn token that
   // routes /call to one device link (by its opaque routing key) under one abort
   // signal.
-  lease(input: { key: string; signal: AbortSignal }): TurnBrokerLease {
+  lease(input: {
+    key: string;
+    signal: AbortSignal;
+    turnId?: string;
+  }): TurnBrokerLease {
     const url = this.#url;
     if (!url) throw new Error("tool broker is not started");
     const token = randomBytes(TOKEN_BYTES).toString("hex");
-    this.#turns.set(token, { key: input.key, signal: input.signal });
+    this.#turns.set(token, {
+      key: input.key,
+      signal: input.signal,
+      ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+    });
     return {
       ticket: { url, token },
       revoke: () => {
@@ -211,6 +225,14 @@ export class ToolBroker {
     const parsed = ResponseChunkSchema.safeParse(body.value);
     if (!parsed.success) {
       sendJson(response, 400, { error: "invalid_chunk" });
+      return;
+    }
+    // A delta must name the turn this lease was issued for. The api surface sets
+    // that turn id on the child, so a mismatch means a misrouted or stale stream;
+    // reject it rather than relay a delta the desktop would attribute to the
+    // wrong turn.
+    if (binding.turnId !== undefined && parsed.data.turnId !== binding.turnId) {
+      sendJson(response, 409, { error: "turn_mismatch" });
       return;
     }
     const relayed = this.#registry.streamResponseChunk(

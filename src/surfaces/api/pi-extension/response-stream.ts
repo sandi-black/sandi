@@ -53,12 +53,15 @@ export default function responseStreamExtension(pi: ExtensionAPI): void {
       if (stopped) return;
       try {
         const status = await postChunk(target, chunk);
-        // The desktop dropped its link mid-turn. Stop pushing: further deltas
-        // have nowhere to go, and the turn's final HTTP body still lands.
-        if (status === 503) stopped = true;
+        // Anything but 202 is terminal for this turn's stream: 503 (desktop
+        // gone), 401 (token revoked), 409 (turn mismatch), or a broker error.
+        // Stop pushing rather than hammer a dead channel; the turn's final HTTP
+        // body still carries the complete answer.
+        if (status !== 202) stopped = true;
       } catch {
-        // Best-effort: a failed delta costs only the live preview, never the
-        // turn. The authoritative response is the turn POST's final body.
+        // A transport error is terminal too. Best-effort: a lost stream costs
+        // only the live preview, never the turn (the final body is authoritative).
+        stopped = true;
       }
     });
   };

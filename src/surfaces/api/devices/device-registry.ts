@@ -49,7 +49,10 @@ type ConnectionState = {
   key: string;
   deviceId: string;
   identityId: string;
-  write: (chunk: string) => void;
+  // Returns Node's write backpressure signal: false when the socket buffer is
+  // full. Tool calls and cancels ignore it (they are infrequent and must not be
+  // dropped); the response stream uses it to shed load.
+  write: (chunk: string) => boolean;
   end: () => void;
   pending: Map<string, PendingCall>;
   heartbeat: ReturnType<typeof setInterval>;
@@ -73,7 +76,7 @@ export class DeviceRegistry {
     key: string;
     deviceId: string;
     identityId: string;
-    write: (chunk: string) => void;
+    write: (chunk: string) => boolean;
     end: () => void;
   }): DeviceConnectionHandle {
     const existing = this.#connections.get(input.key);
@@ -175,19 +178,20 @@ export class DeviceRegistry {
   }
 
   // Pushes one streamed response delta to the keyed device's stream. Returns
-  // false when no link is present or the stream is dead, so the broker can answer
-  // the child with a 503 (the desktop went away mid-turn). Unlike dispatch there
-  // is no pending call and no reply: a response delta is fire-and-forget, and a
-  // dropped delta only costs the live preview, not the turn (the turn POST still
-  // returns the authoritative final text). A failed write tears the link down.
+  // false when no link is present, the stream is dead, or the socket is
+  // backpressured, so the broker answers the child with a 503 and it stops
+  // pushing. Unlike dispatch there is no pending call and no reply: a response
+  // delta is fire-and-forget, and a dropped delta only costs the live preview,
+  // not the turn (the turn POST still returns the authoritative final text). A
+  // failed write tears the link down; a full socket buffer just sheds the stream
+  // so a slow desktop cannot make the server buffer deltas without bound.
   streamResponseChunk(key: string, chunk: ResponseChunk): boolean {
     const state = this.#connections.get(key);
     if (!state || state.closed) return false;
     try {
-      state.write(
+      return state.write(
         `event: ${RESPONSE_CHUNK_EVENT}\ndata: ${JSON.stringify(chunk)}\n\n`,
       );
-      return true;
     } catch {
       this.#teardown(state, "device link write failed");
       return false;

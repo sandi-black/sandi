@@ -51,6 +51,11 @@ export type ProviderTurnRequest = {
   surfaceContext?: SandiSurfaceContext;
   memoryContext: MemoryContext;
   localToolBroker?: LocalToolBroker;
+  // A caller-supplied id correlating this turn's streamed response deltas. The
+  // api surface sets it on the child (SANDI_TURN_ID) so the streaming extension
+  // tags each delta with it and the desktop can scope a turn's stream. When
+  // absent, the child falls back to an internally generated id.
+  turnId?: string;
   signal?: AbortSignal;
 };
 
@@ -289,7 +294,9 @@ export class PiCliClient implements ModelProviderClient {
         this.#agentDir,
         this.#packageDir,
         request.localToolBroker,
-        turnId,
+        // Prefer the caller's turn id so the desktop can scope this turn's
+        // stream; fall back to the internal id when none was supplied.
+        request.turnId ?? turnId,
         request.input,
         request.signal,
       );

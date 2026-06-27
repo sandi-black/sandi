@@ -1,5 +1,5 @@
 [Unit]
-Description=Sandi Discord AI bot
+Description=Sandi household agent (merged host: API device surface + Discord)
 Wants=network-online.target
 After=network-online.target
 
@@ -10,7 +10,15 @@ WorkingDirectory=/srv/sandi/app
 Environment=NODE_ENV=production
 Environment=PATH=/root/.volta/bin:/root/.volta/tools/image/node/24.15.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=/srv/sandi/app/.env
-ExecStart=/srv/sandi/app/node_modules/.bin/tsx src/surfaces/discord/index.ts
+# The merged host (src/host/index.ts) composes every enabled surface into one
+# process so a turn from any surface shares the same conversation store,
+# provider, and device links. It serves the API device surface on
+# SANDI_API_HOST:SANDI_API_PORT (default 127.0.0.1:8787) and the Discord bot
+# together. Do NOT add a separate API service: a standalone `npm run start:api`
+# would bind the same port, and the host's resulting EADDRINUSE would take
+# Discord down with it. Toggle surfaces with SANDI_API_ENABLED and
+# SANDI_GITHUB_ENABLED in .env.
+ExecStart=/srv/sandi/app/node_modules/.bin/tsx src/host/index.ts
 Restart=always
 RestartSec=10
 TimeoutStopSec=30

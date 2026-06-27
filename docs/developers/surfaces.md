@@ -7,10 +7,9 @@ instead of adapting one surface's harness to impersonate another.
 
 Surfaces are distinct harnesses, but they are not isolated processes. The host
 (`src/host/index.ts`) composes every configured surface into one process so they
-share a single conversation store, provider, and device registry. That shared
-process is what lets Sandi carry the same tools and context across surfaces: a
-desktop turn can post to Discord, and a Discord turn can run shell commands on a
-linked desktop. See [Process Topology](#process-topology) and
+share a single conversation store, provider, and device registry. Because
+surfaces share one process, a desktop turn can post to Discord and a Discord turn
+can run shell commands on a linked desktop. See [Process Topology](#process-topology) and
 [Tool Reach Across Surfaces](#tool-reach-across-surfaces).
 
 ## Terminology
@@ -48,10 +47,10 @@ its own standalone entrypoint (`npm run dev:discord`, `dev:api`, `dev:github`)
 for isolated development, where no other surface and no shared device links
 exist.
 
-A surface exposes a uniform `start()`/`stop()` lifecycle. The host owns the
-process: it starts the shared broker before any surface, starts each surface in
-sequence, and on shutdown stops every surface before closing the shared registry
-and broker once.
+A surface exposes a uniform `start()`/`stop()` lifecycle. The host owns process
+startup and shutdown. It starts the shared broker before any surface, starts each
+surface in sequence, and on shutdown stops every surface before closing the shared
+registry and broker once.
 
 ## Shared Core Owns
 
@@ -122,16 +121,16 @@ connected so she can pick the right one.
   tools run file and shell work on that desktop. This works from Discord and
   GitHub turns, not only desktop turns.
 
-The deployment is treated as one trusted environment: `sandi_js_run` (server-side
-code execution) is enabled on every surface, the same trust a Discord turn has
-always run under. The desktop surface keeps pi's built-in file and shell tools
-off so file and shell work flows to the desktop through `local_*` rather than the
-server, leaving a single unambiguous filesystem for those operations.
+The deployment treats every surface as one trusted environment. `sandi_js_run`
+(server-side code execution) is enabled on every surface, the same trust a Discord
+turn has always run under. The desktop surface keeps pi's built-in file and shell
+tools off so file and shell work flows to the desktop through `local_*` rather
+than the server, leaving a single unambiguous filesystem for those operations.
 
-The capability is wired without coupling surfaces to each other: the bots depend
-on the core `DesktopHands` interface (`src/lib/provider/desktop-hands.ts`), and
-the API surface provides the `BrokerDesktopHands` implementation over the shared
-registry and broker.
+The capability stays decoupled across surfaces. The bots depend on the core
+`DesktopHands` interface (`src/lib/provider/desktop-hands.ts`), and the API
+surface provides the `BrokerDesktopHands` implementation over the shared registry
+and broker.
 
 ## Identity And Memory Boundaries
 

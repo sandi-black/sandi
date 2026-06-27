@@ -207,7 +207,7 @@ function currentDiscordCreator(): EventCreator {
   const raw = readDiscordPlatformContext();
   if (!raw) {
     throw new Error(
-      "createEvent is Discord-origin only: a scheduled event fires as a Discord delivery charged to its creator's Discord-mapped account, so it must be created from a Discord turn. Ask the human to schedule it from Discord.",
+      "createEvent can only run from a Discord turn, because a scheduled event fires as a Discord delivery charged to its creator's Discord-mapped account. Ask the human to schedule it from Discord.",
     );
   }
   const parsed = JSON.parse(raw);

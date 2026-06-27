@@ -21,6 +21,12 @@ import {
 } from "@/lib/provider/side-effects";
 import { readDiscordPlatformContext } from "@/surfaces/discord/runtime/context";
 import { resolveGuildId as resolveGuildIdFor } from "@/surfaces/discord/runtime/guild";
+import {
+  DeleteMessageInputSchema,
+  DiscordMessageIdSchema,
+  GetMessageInputSchema,
+  parseChannelTarget,
+} from "@/surfaces/discord/runtime/targets";
 
 const MAX_DISCORD_FILE_BYTES = 24 * 1024 * 1024;
 const GIT_BINARY_CHECK_BYTES = 8_000;
@@ -351,14 +357,15 @@ function normalizeSearchText(text: string, caseSensitive: boolean): string {
 export async function getMessage(
   input: { channel?: string; messageId?: string } = {},
 ): Promise<DiscordMessage> {
+  const parsed = GetMessageInputSchema.parse(input);
   const rest = createRest();
   const context = optionalContext();
   const channelId = await resolveChannelId(
-    input.channel ?? "current",
+    parsed.channel ?? "current",
     context,
     rest,
   );
-  const messageId = input.messageId ?? context?.messageId;
+  const messageId = parsed.messageId ?? context?.messageId;
   if (!messageId) {
     throw new Error(
       "There is no current Discord message on this turn; pass an explicit messageId.",
@@ -387,7 +394,7 @@ export async function sendMessage(
   };
   if (input.replyToMessageId) {
     body["message_reference"] = {
-      message_id: input.replyToMessageId,
+      message_id: DiscordMessageIdSchema.parse(input.replyToMessageId),
       channel_id: channelId,
       fail_if_not_exists: false,
     };
@@ -406,21 +413,22 @@ export async function deleteMessage(input: DeleteMessageInput = {}): Promise<{
   channelId: string;
   messageId: string;
 }> {
+  const parsed = DeleteMessageInputSchema.parse(input);
   const rest = createRest();
   const context = optionalContext();
   const channelId = await resolveChannelId(
-    input.channel ?? "current",
+    parsed.channel ?? "current",
     context,
     rest,
   );
-  const messageId = input.messageId ?? context?.messageId;
+  const messageId = parsed.messageId ?? context?.messageId;
   if (!messageId) {
     throw new Error(
       "There is no current Discord message on this turn; pass an explicit messageId.",
     );
   }
   await rest.delete(Routes.channelMessage(channelId, messageId), {
-    reason: input.reason,
+    reason: parsed.reason,
   });
   return { channelId, messageId };
 }
@@ -545,24 +553,22 @@ async function resolveChannelId(
   context: DiscordContext | undefined,
   rest: REST,
 ): Promise<string> {
-  const raw = rawChannel.trim();
-  if (raw === "current" || raw === "parent") {
+  const target = parseChannelTarget(rawChannel);
+  if (target.kind === "current" || target.kind === "parent") {
     if (!context) {
       throw new Error(
-        `There is no current Discord channel on this turn; pass an explicit channel id instead of "${raw}".`,
+        `There is no current Discord channel on this turn; pass an explicit channel id instead of "${target.kind}".`,
       );
     }
-    if (raw === "current") return context.threadId ?? context.channelId;
+    if (target.kind === "current") return context.threadId ?? context.channelId;
     return context.parentChannelId ?? context.channelId;
   }
 
-  const id = snowflakeFrom(raw);
-  if (id) return id;
+  if (target.kind === "id") return target.id;
 
   const channels = await listChannelsForContext(context, rest);
-  const wanted = raw.replace(/^#/, "");
-  const match = channels.find((channel) => channel.name === wanted);
-  if (!match) throw new Error(`Could not find channel named ${raw}`);
+  const match = channels.find((channel) => channel.name === target.name);
+  if (!match) throw new Error(`Could not find channel named ${target.name}`);
   return match.id;
 }
 
@@ -937,11 +943,6 @@ function mimeFromPath(path: string): string {
   if (ext === ".webp") return "image/webp";
   if (ext === ".yaml" || ext === ".yml") return "application/yaml";
   return "application/octet-stream";
-}
-
-function snowflakeFrom(raw: string): string | undefined {
-  const match = raw.match(/\d{15,25}/);
-  return match?.[0];
 }
 
 function clamp(

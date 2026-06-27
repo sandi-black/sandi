@@ -34,7 +34,7 @@ The host composition root (`src/host/index.ts`) is the production entrypoint
 starts every surface that is configured:
 
 - a single `ConversationStore`, `PiCliClient`, and embedding-index maintainer, so
-  a human's conversations and account routing are one brain across surfaces;
+  a human's conversations and account routing stay unified across surfaces;
 - a single `DeviceRegistry` and `ToolBroker`, so a desktop holds one link and a
   turn from any surface can reach it;
 - one `BrokerDesktopHands` (the shared desktop-hands capability) injected into the
@@ -121,16 +121,14 @@ connected so she can pick the right one.
   tools run file and shell work on that desktop. This works from Discord and
   GitHub turns, not only desktop turns.
 
-The deployment treats every surface as one trusted environment. `sandi_js_run`
-(server-side code execution) is enabled on every surface, the same trust a Discord
-turn has always run under. The desktop surface keeps pi's built-in file and shell
-tools off so file and shell work flows to the desktop through `local_*` rather
-than the server, leaving a single unambiguous filesystem for those operations.
+`sandi_js_run` (server-side code execution) is enabled on every surface, matching
+Discord turns in the same deployment. The desktop surface keeps pi's built-in file
+and shell tools off so file and shell work flows to the desktop through `local_*`
+rather than the server, leaving a single filesystem for those operations.
 
-The capability stays decoupled across surfaces. The bots depend on the core
-`DesktopHands` interface (`src/lib/provider/desktop-hands.ts`), and the API
-surface provides the `BrokerDesktopHands` implementation over the shared registry
-and broker.
+The bots depend on the core `DesktopHands` interface
+(`src/lib/provider/desktop-hands.ts`), and the API surface provides the
+`BrokerDesktopHands` implementation over the shared registry and broker.
 
 ## Identity And Memory Boundaries
 

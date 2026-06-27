@@ -5,7 +5,6 @@ import { REST, Routes } from "discord.js";
 
 import { z } from "zod/v4";
 import { JsonFileStore } from "@/lib/state/file-store";
-import { discordChannelIdFromRef } from "@/surfaces/discord/discord/ids";
 import {
   nextRecurrenceRun,
   nextReminderRecurrenceRun,
@@ -25,6 +24,7 @@ import {
 } from "@/surfaces/discord/reminders/store";
 import { readDiscordPlatformContext } from "@/surfaces/discord/runtime/context";
 import { resolveGuildId } from "@/surfaces/discord/runtime/guild";
+import { explicitChannelId } from "@/surfaces/discord/runtime/targets";
 
 const TODO_STATE_PATH = "todo-list/state.json";
 const DISCORD_MESSAGE_LIMIT = 2_000;
@@ -881,7 +881,7 @@ function currentTodoTarget(channelRef: string | undefined): {
   const context = optionalContext();
   const guildId = resolveGuildId(context?.guildId);
   const channelId = channelRef
-    ? discordChannelIdFromRef(channelRef)
+    ? explicitChannelId(channelRef)
     : (context?.threadId ?? context?.channelId);
   if (!channelId) {
     throw new Error(

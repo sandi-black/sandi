@@ -24,7 +24,7 @@ The production entrypoint is the host (`src/host/index.ts`, run with
 the shared singletons once:
 
 - `ConversationStore`, `PiCliClient`, and the embedding-index maintainer, shared
-  by every surface so a human is one brain across surfaces;
+  by every surface so each human's conversations and account routing stay unified;
 - `DeviceRegistry` and `ToolBroker`, shared so a desktop holds one device link
   and a turn from any surface can reach it by identity;
 - a `SandiBot`, `GitHubBot`, and `ApiBot`, each with its own `ContextCompiler`

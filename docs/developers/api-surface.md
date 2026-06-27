@@ -219,14 +219,12 @@ set on `API_SURFACE_CONTEXT`. Sandi's own extension tools (memory, skills,
 `sandi_js_run`, and the rest) stay server-side and unchanged; only the proxy
 file and shell tools run on the desktop.
 
-Disabling the builtin file and shell tools is the only thing held back on a
-desktop turn. `sandi_js_run` is enabled (the deployment is one trusted
-environment, the same trust a Discord turn runs under), and the desktop surface
-points its runtime entry at the unified runtime, so a desktop turn can compose
-Discord, GitHub, and the other server-side helpers in addition to its desktop
-`local_*` tools. File and shell work still flows only to the desktop, because the
-builtin tools that would touch the server's disk stay off and the `local_*`
-proxies take their place.
+Only the builtin file and shell tools are disabled on a desktop turn.
+`sandi_js_run` stays enabled and the desktop surface points its runtime entry at
+the unified runtime, so a desktop turn can compose Discord, GitHub, and the other
+server-side helpers in addition to its desktop `local_*` tools. File and shell
+work still flows only to the desktop, because the builtin tools that would touch
+the server's disk stay off and the `local_*` proxies take their place.
 
 ### Transport: SSE and a loopback broker
 

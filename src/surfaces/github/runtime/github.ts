@@ -3,6 +3,13 @@ import { recordDeliverySideEffect } from "@/lib/provider/side-effects";
 import { GitHubApi } from "@/surfaces/github/github/api";
 import { GhCli } from "@/surfaces/github/github/gh-cli";
 import { readGitHubPlatformContext } from "@/surfaces/github/runtime/context";
+import {
+  CommentInputSchema,
+  CreatePullRequestReviewInputSchema,
+  type GitHubRepoIssueTarget,
+  ReplyToReviewCommentInputSchema,
+  resolveRepoIssueTarget,
+} from "@/surfaces/github/runtime/targets";
 
 const GitHubContextSchema = z.object({
   platform: z.literal("github"),
@@ -124,16 +131,18 @@ export async function getPullRequestDiff(
 }
 
 export async function comment(input: CommentInput) {
+  const parsed = CommentInputSchema.parse(input);
   const created = await api().createIssueComment({
     ...resolveRepoIssue(input),
-    body: input.body,
+    body: parsed.body,
   });
   await recordDeliverySideEffect("github:comment");
   return created;
 }
 
 export async function replyToReviewComment(input: ReplyToReviewCommentInput) {
-  const commentId = input.commentId ?? currentReviewCommentId();
+  const parsed = ReplyToReviewCommentInputSchema.parse(input);
+  const commentId = parsed.commentId ?? currentReviewCommentId();
   if (commentId === undefined) {
     throw new Error(
       "replyToReviewComment needs commentId unless the current trigger is a review comment.",
@@ -142,7 +151,7 @@ export async function replyToReviewComment(input: ReplyToReviewCommentInput) {
   const created = await api().replyToReviewComment({
     ...resolveRepoIssue(input),
     commentId,
-    body: input.body,
+    body: parsed.body,
   });
   await recordDeliverySideEffect("github:review-comment-reply");
   return created;
@@ -151,10 +160,11 @@ export async function replyToReviewComment(input: ReplyToReviewCommentInput) {
 export async function createPullRequestReview(
   input: CreatePullRequestReviewInput,
 ) {
+  const parsed = CreatePullRequestReviewInputSchema.parse(input);
   const created = await api().createPullRequestReview({
     ...resolveRepoIssue(input),
-    body: input.body,
-    event: input.event ?? "COMMENT",
+    body: parsed.body,
+    event: parsed.event ?? "COMMENT",
   });
   await recordDeliverySideEffect("github:pull-request-review");
   return created;
@@ -191,17 +201,18 @@ function api(): GitHubApi {
   return new GitHubApi(new GhCli({ command }));
 }
 
-function resolveRepoIssue(input: RepoIssueInput) {
+function resolveRepoIssue(input: RepoIssueInput): GitHubRepoIssueTarget {
   const context = optionalContext();
-  const owner = input.owner ?? context?.repository.owner;
-  const repo = input.repo ?? context?.repository.repo;
-  const number = input.number ?? context?.thread.number;
-  if (!owner || !repo || number === undefined) {
-    throw new Error(
-      "Provide owner, repo, and number to target a GitHub thread from a turn that did not originate on GitHub.",
-    );
-  }
-  return { owner, repo, number };
+  return resolveRepoIssueTarget(
+    input,
+    context
+      ? {
+          owner: context.repository.owner,
+          repo: context.repository.repo,
+          number: context.thread.number,
+        }
+      : undefined,
+  );
 }
 
 function currentReviewCommentId(): number | undefined {

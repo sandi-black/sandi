@@ -1,9 +1,18 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import {
+  access,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import { z } from "zod/v4";
+import { projectDirs } from "@/lib/config/platform-dirs";
 
 // A per-device bearer token is the api surface's hex secret: 32 bytes rendered
 // as 64 lowercase hex chars. Pinning the exact shape here means a truncated or
@@ -41,10 +50,62 @@ export const DesktopCredentialsSchema = z.object({
 });
 export type DesktopCredentials = z.infer<typeof DesktopCredentialsSchema>;
 
+export type ParseLoginResult =
+  | { ok: true; credentials: DesktopCredentials }
+  | { ok: false; field: string; message: string };
+
+// Validates a `login` command's raw inputs into stored credentials in one pass.
+// The url and token are checked by DesktopCredentialsSchema (the same boundary
+// the file is read back through), so they are parsed once here rather than
+// pre-validated and then revalidated by the schema. On failure it reports which
+// field was at fault so the CLI can print a precise message.
+export function parseLoginCredentials(input: {
+  url: string;
+  token: string;
+  identityId: string;
+  deviceId: string;
+}): ParseLoginResult {
+  const parsed = DesktopCredentialsSchema.safeParse(input);
+  if (parsed.success) return { ok: true, credentials: parsed.data };
+  const issue = parsed.error.issues[0];
+  const field = typeof issue?.path[0] === "string" ? issue.path[0] : "input";
+  return { ok: false, field, message: issue?.message ?? "invalid credentials" };
+}
+
 export function desktopConfigPath(): string {
   const explicit = process.env["SANDI_DESKTOP_CONFIG"]?.trim();
   if (explicit) return resolve(expandHome(explicit));
+  return join(projectDirs("sandi").configDir, "desktop.json");
+}
+
+// Where the credentials file lived before it moved to the OS config dir. Kept so
+// an existing install is migrated forward (see migrateLegacyDesktopConfig)
+// rather than silently appearing unpaired.
+export function legacyDesktopConfigPath(): string {
   return join(homedir(), ".sandi", "desktop.json");
+}
+
+// Moves a pre-existing ~/.sandi/desktop.json to the OS config dir the first time
+// the client runs after the move, then returns the new path; returns undefined
+// when there is nothing to migrate. A no-op when SANDI_DESKTOP_CONFIG pins the
+// location explicitly (the operator owns the path then), when the destination
+// already exists, or when no legacy file is present. The rename preserves the
+// file's owner-only mode, so the token is never copied through a wider one. The
+// paths are injectable so the move can be tested against temp dirs rather than
+// the real home directory.
+export async function migrateLegacyDesktopConfig(
+  paths: { legacy?: string; target?: string } = {},
+): Promise<string | undefined> {
+  if (!paths.target && process.env["SANDI_DESKTOP_CONFIG"]?.trim()) {
+    return undefined;
+  }
+  const target = paths.target ?? desktopConfigPath();
+  if (await pathExists(target)) return undefined;
+  const legacy = paths.legacy ?? legacyDesktopConfigPath();
+  if (!(await pathExists(legacy))) return undefined;
+  await mkdir(dirname(target), { recursive: true });
+  await rename(legacy, target);
+  return target;
 }
 
 // A leading ~ is not shell-expanded inside a .env value, so expand it here.
@@ -91,6 +152,19 @@ export async function saveDesktopCredentials(
     await rename(temp, path);
   } catch (error) {
     await rm(temp, { force: true });
+    throw error;
+  }
+}
+
+// True when the path exists, false only when it is genuinely absent. A
+// permission or other filesystem error is rethrown rather than read as "absent",
+// so the migration surfaces a real failure instead of silently skipping.
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.F_OK);
+    return true;
+  } catch (error) {
+    if (isMissingFileError(error)) return false;
     throw error;
   }
 }

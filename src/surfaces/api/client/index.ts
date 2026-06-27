@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { resolve } from "node:path";
 
 import {
@@ -9,20 +10,26 @@ import {
   type DesktopCredentials,
   desktopConfigPath,
   loadDesktopCredentials,
+  migrateLegacyDesktopConfig,
+  parseLoginCredentials,
   ServerUrlSchema,
   saveDesktopCredentials,
 } from "@/surfaces/api/client/credentials";
 import { runDesktopClient } from "@/surfaces/api/client/desktop-client";
 import { pairDesktop } from "@/surfaces/api/client/pairing";
 
-// Reference desktop client. Three commands:
+// Reference desktop client. Four commands:
 //
 //   pair <CODE> [--url URL] [--label LABEL]   redeem a /sandi auth code, store a token
+//   login --token T [--url URL] [...]         store a token issued by `api:enroll`
 //   run [--root DIR] [--url URL]              hold the link and run tool calls locally
 //   chat [--root DIR] [--url URL] [...]       interactive REPL with a streamed response
 //
-// `run` is the default when no command is given. The token and server URL are
-// stored by `pair` under ~/.sandi/desktop.json (override with SANDI_DESKTOP_CONFIG).
+// `run` is the default when no command is given. `pair` and `login` both write
+// the credentials file: `pair` for the Discord self-service flow, `login` for an
+// operator-minted token. The file lives in the OS config dir (%APPDATA%\sandi on
+// Windows, ~/Library/Application Support/sandi on macOS, ~/.config/sandi on
+// Linux); override the whole path with SANDI_DESKTOP_CONFIG.
 
 const DEFAULT_URL = "http://127.0.0.1:8787";
 
@@ -35,8 +42,16 @@ async function main(): Promise<void> {
     printUsage();
     return;
   }
+  // Carry an existing ~/.sandi/desktop.json forward to the OS config dir before
+  // any command reads or writes it, so the move is invisible to a paired user.
+  const moved = await migrateLegacyDesktopConfig();
+  if (moved) console.log(`Moved your saved credentials to ${moved}.`);
   if (command === "pair") {
     await pairCommand(args.slice(1));
+    return;
+  }
+  if (command === "login") {
+    await loginCommand(args.slice(1));
     return;
   }
   if (command === "run") {
@@ -94,6 +109,57 @@ async function pairCommand(args: string[]): Promise<void> {
   );
   console.log(`Saved credentials to ${path}.`);
   console.log("Start the client with: npm run client -- run");
+}
+
+// Stores a token minted out of band by `npm run api:enroll` (the operator path),
+// so a self-hosted user does not have to hand-write the credentials file. The
+// server derives the identity and device from the token, so --identity and
+// --device here are only labels the client shows; they default sensibly.
+async function loginCommand(args: string[]): Promise<void> {
+  const flags = parseFlags(args);
+  const token = flags.options["token"]?.trim();
+  if (!token) {
+    console.error(
+      "usage: login --token <TOKEN> [--url URL] [--identity ID] [--device ID]",
+    );
+    process.exitCode = 1;
+    return;
+  }
+  // Validate the whole credential set in one pass through the same schema the
+  // file is read back with, so a mistyped token or url is rejected here (not as a
+  // late 401) without revalidating the url twice.
+  const parsed = parseLoginCredentials({
+    url: flags.options["url"] ?? process.env["SANDI_API_URL"] ?? DEFAULT_URL,
+    token,
+    identityId: flags.options["identity"] ?? "self",
+    deviceId: flags.options["device"] ?? defaultDeviceLabel(),
+  });
+  if (!parsed.ok) {
+    console.error(
+      `could not store credentials (${parsed.field}): ${parsed.message}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const { credentials } = parsed;
+  const path = desktopConfigPath();
+  await saveDesktopCredentials(path, credentials);
+  console.log(`Saved credentials to ${path}.`);
+  console.log(
+    `Linked to ${credentials.url} as device ${credentials.deviceId} (identity ${credentials.identityId}).`,
+  );
+  console.log("Start chatting with: npm run client -- chat");
+}
+
+// A readable default for the stored device label: the machine's hostname,
+// reduced to the credential segment alphabet, or "desktop" when the host name
+// yields nothing usable.
+function defaultDeviceLabel(): string {
+  const sanitized = hostname()
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return sanitized || "desktop";
 }
 
 async function runCommand(args: string[]): Promise<void> {
@@ -203,6 +269,8 @@ function printUsage(): void {
       "",
       "Commands:",
       "  pair <CODE> [--url URL] [--label LABEL]   redeem a /sandi auth code and store a token",
+      "  login --token T [--url URL]               store an api:enroll token directly",
+      "        [--identity ID] [--device ID]",
       "  run [--root DIR] [--url URL]              hold the link and run tool calls locally",
       "  chat [--root DIR] [--url URL]             interactive REPL; the response streams in live",
       "       [--conversation ID] [--thinking]",

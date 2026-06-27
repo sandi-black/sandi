@@ -12,6 +12,7 @@ import {
   loadDesktopCredentials,
   migrateLegacyDesktopConfig,
   parseLoginCredentials,
+  resolveServerUrl,
   ServerUrlSchema,
   saveDesktopCredentials,
 } from "@/surfaces/api/client/credentials";
@@ -30,8 +31,6 @@ import { pairDesktop } from "@/surfaces/api/client/pairing";
 // operator-minted token. The file lives in the OS config dir (%APPDATA%\sandi on
 // Windows, ~/Library/Application Support/sandi on macOS, ~/.config/sandi on
 // Linux); override the whole path with SANDI_DESKTOP_CONFIG.
-
-const DEFAULT_URL = "http://127.0.0.1:8787";
 
 await main();
 
@@ -81,8 +80,10 @@ async function pairCommand(args: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const rawUrl =
-    flags.options["url"] ?? process.env["SANDI_API_URL"] ?? DEFAULT_URL;
+  const rawUrl = resolveServerUrl(
+    flags.options["url"],
+    process.env["SANDI_API_URL"],
+  );
   // Parse the url at this boundary so an invalid --url or SANDI_API_URL is
   // rejected before it reaches pairing or is written into saved credentials.
   const parsedUrl = ServerUrlSchema.safeParse(rawUrl);
@@ -129,7 +130,7 @@ async function loginCommand(args: string[]): Promise<void> {
   // file is read back with, so a mistyped token or url is rejected here (not as a
   // late 401) without revalidating the url twice.
   const parsed = parseLoginCredentials({
-    url: flags.options["url"] ?? process.env["SANDI_API_URL"] ?? DEFAULT_URL,
+    url: resolveServerUrl(flags.options["url"], process.env["SANDI_API_URL"]),
     token,
     identityId: flags.options["identity"] ?? "self",
     deviceId: flags.options["device"] ?? defaultDeviceLabel(),

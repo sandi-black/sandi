@@ -38,6 +38,22 @@ export const ServerUrlSchema = z
   .string()
   .refine(isHttpUrl, "must be an http(s) url");
 
+// The hosted API surface the client connects to when neither a --url flag nor
+// SANDI_API_URL is set, so an unconfigured desktop reaches the deployed Sandi
+// instead of a loopback port that is only up during local development.
+export const DEFAULT_SERVER_URL = "https://api.sandi.jessica.black";
+
+// Resolves the server url a command should use from its optional --url flag and
+// the SANDI_API_URL environment value, falling back to the hosted default. The
+// returned string is still parsed by ServerUrlSchema (or the credentials schema)
+// at the call site, so an invalid override is rejected there, not trusted here.
+export function resolveServerUrl(
+  option: string | undefined,
+  env: string | undefined,
+): string {
+  return option ?? env ?? DEFAULT_SERVER_URL;
+}
+
 // Credentials the desktop client holds after pairing. This file lives on the
 // human's own machine and is NOT Sandi-managed server state, so it is written
 // with plain fs (owner-only mode), never the managed-write lock. The bearer

@@ -4,10 +4,12 @@ import { join } from "node:path";
 
 import { projectDirs } from "@/lib/config/platform-dirs";
 import {
+  DEFAULT_SERVER_URL,
   desktopConfigPath,
   loadDesktopCredentials,
   migrateLegacyDesktopConfig,
   parseLoginCredentials,
+  resolveServerUrl,
   saveDesktopCredentials,
 } from "@/surfaces/api/client/credentials";
 
@@ -125,6 +127,7 @@ async function verifyCredentials(): Promise<void> {
     }
 
     verifyLoginParse();
+    verifyServerUrlResolution();
     await verifyLegacyMigration(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -169,6 +172,32 @@ function verifyLoginParse(): void {
     "a non-http url is rejected on the url field",
   );
   console.log("ok parseLoginCredentials validates the login payload once");
+}
+
+// The server url falls back to the hosted surface when nothing is configured, so
+// an unconfigured desktop reaches the deployed Sandi. A --url flag wins over the
+// environment, which wins over the default, matching the `?? ?? ` precedence the
+// pair and login commands rely on.
+function verifyServerUrlResolution(): void {
+  assert(
+    resolveServerUrl(undefined, undefined) === DEFAULT_SERVER_URL,
+    "an unset url defaults to the hosted api surface",
+  );
+  assert(
+    DEFAULT_SERVER_URL === "https://api.sandi.jessica.black",
+    "the hosted default is the production api host",
+  );
+  assert(
+    resolveServerUrl(undefined, "https://env.example") ===
+      "https://env.example",
+    "SANDI_API_URL is used when no flag is given",
+  );
+  assert(
+    resolveServerUrl("https://flag.example", "https://env.example") ===
+      "https://flag.example",
+    "the --url flag wins over SANDI_API_URL",
+  );
+  console.log("ok resolveServerUrl honors flag, env, then the hosted default");
 }
 
 // A user paired before the file moved has a ~/.sandi/desktop.json; the first run

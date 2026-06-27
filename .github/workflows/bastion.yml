@@ -123,6 +123,10 @@ jobs:
           # Quote bracketed bot logins; unquoted, case reads [bot] as a glob class.
           case "$author" in
             jssblck) cred="$CODEX_AUTH_JSSBLCK" ;;
+            # sandi-witch is Sandi's own bot account and has no subscription of
+            # its own, so its PRs bill to the maintainer who sponsors it, the
+            # same way bot authors below do.
+            sandi-witch) cred="$CODEX_AUTH_JSSBLCK" ;;
             'dependabot[bot]') cred="$CODEX_AUTH_JSSBLCK" ;;
             *)
               echo "::error::No Codex subscription is mapped for PR author '$AUTHOR'. Add a CODEX_AUTH_<LOGIN> secret and a case arm in .github/workflows/bastion.yml." >&2

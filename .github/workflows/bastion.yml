@@ -204,3 +204,38 @@ jobs:
           name: bastion-run
           path: ${{ github.workspace }}/.bastion/runs/**
           if-no-files-found: warn
+
+      - name: Export agent sessions to AgentsView
+        # Ship this run's Codex sessions to the central AgentsView database
+        # (db.sandi.jessica.black) so CI token usage, cost, and activity show up
+        # in the dashboard next to every machine's own sessions. The bastion
+        # review runs through the Codex CLI, which writes its sessions under
+        # $HOME/.codex/sessions; this pushes them once, at the end of the job.
+        #
+        # Runs on always() so a blocked (and therefore failed) review still
+        # reports its session, and continue-on-error so a transient push failure
+        # can never turn a passing review into a failing required check.
+        #
+        # The DSN is a repository secret, never a literal in YAML or the logs.
+        # It must be set in BOTH the Actions and the Dependabot secret stores,
+        # because Dependabot-triggered runs read only their own store: an empty
+        # value there would silently no-op the push for Dependabot PRs.
+        if: always()
+        continue-on-error: true
+        env:
+          AGENTSVIEW_PG_URL: ${{ secrets.AGENTSVIEW_PG_URL }}
+          # One stable CI identity per repo; concurrent runs push distinct
+          # session ids and Postgres deduplicates by fingerprint.
+          AGENTSVIEW_PG_MACHINE: ci-${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AGENTSVIEW_PG_URL:-}" ]; then
+            echo "::notice::AGENTSVIEW_PG_URL is not set for this run (check the Actions and Dependabot secret stores); skipping the AgentsView push."
+            exit 0
+          fi
+          docker run --rm \
+            -e AGENTSVIEW_PG_URL -e AGENTSVIEW_PG_MACHINE \
+            -e AGENTSVIEW_TELEMETRY_ENABLED=0 \
+            -e CODEX_SESSIONS_DIR=/agents/codex \
+            -v "$HOME/.codex/sessions:/agents/codex:ro" \
+            ghcr.io/kenn-io/agentsview:latest pg push

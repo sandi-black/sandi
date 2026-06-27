@@ -59,7 +59,8 @@ leaks through timing. The raw token is never written to disk by Sandi and never
 logged. `npm run api:enroll` issues a token directly (for an operator): it
 validates that the `identityId` exists in `humans.json`, appends a hashed entry
 under the managed-write lock (see [`current-state.md`](current-state.md) for that
-lock), and prints the raw token once.
+lock), and prints the raw token once. Store it on the device with
+`npm run client -- login --token <T>` (no Discord round-trip needed).
 
 ### Pairing: self-service enrollment
 
@@ -272,14 +273,22 @@ needed.
 ### Reference client
 
 `src/surfaces/api/client/` is a minimal headless desktop client so the surface is
-usable and verifiable end to end. `npm run client -- pair <CODE>` redeems a
-`/sandi auth` code and stores a per-device token at `~/.sandi/desktop.json`
-(owner-only, override with `SANDI_DESKTOP_CONFIG`). `npm run client -- run` holds
-the link open and runs each dispatched tool call locally, reconnecting with
-backoff. `npm run client -- chat` is the interactive REPL: it holds the same link,
-sends each typed line as a turn, and prints the answer as it streams in (see
-Response streaming below). The local executors live in `client/executors.ts`. The
-token file is the human's own machine state, written with plain `fs`, never the
+usable and verifiable end to end. Two commands write the credentials file.
+`npm run client -- pair <CODE>` redeems a `/sandi auth` code (the Discord
+self-service flow), and `npm run client -- login --token <T>` stores a token an
+operator minted with `npm run api:enroll`, so a self-hosted user does not have to
+hand-write the file. Both store a per-device token in the OS config dir
+(`%APPDATA%\sandi\desktop.json` on Windows, `~/Library/Application
+Support/sandi/desktop.json` on macOS, `~/.config/sandi/desktop.json` on Linux),
+owner-only, resolved through the small `directories`-style helper in
+`src/lib/config/platform-dirs.ts`; override the whole path with
+`SANDI_DESKTOP_CONFIG`. An existing `~/.sandi/desktop.json` from before the move
+is carried forward on the next client run. `npm run client -- run` holds the link
+open and runs each dispatched tool call locally, reconnecting with backoff.
+`npm run client -- chat` is the interactive REPL: it holds the same link, sends
+each typed line as a turn, and prints the answer as it streams in (see Response
+streaming below). The local executors live in `client/executors.ts`. The token
+file is the human's own machine state, written with plain `fs`, never the
 server's managed-write lock. A full desktop GUI app remains a later, separate
 effort.
 
@@ -350,7 +359,7 @@ src/surfaces/api/
     response-stream.ts          api-only extension: relays response deltas to the broker
     verify-response-stream.ts   event classification, env parsing, delta POST
   client/
-    index.ts                    reference client CLI (pair | run | chat)
+    index.ts                    reference client CLI (pair | login | run | chat)
     desktop-client.ts           SSE link loop: tool dispatch, cancel, response deltas, reconnect
     verify-desktop-client.ts    end-to-end link verify: dispatch, cancel, result-report, stream
     executors.ts                local file and shell implementations
@@ -358,14 +367,17 @@ src/surfaces/api/
     turns.ts                    sendTurn + reconcileSuffix (REPL turn POST and stream reconcile)
     response-printer.ts         renders a streamed response for the chat REPL
     verify-turns.ts             reconcile, printer, and sendTurn outcome mapping
-    credentials.ts              per-device token file (owner-only, not managed state)
-    verify-credentials.ts       owner-only round-trip and ~ config-path expansion
+    credentials.ts              per-device token file (owner-only, OS config dir, legacy migration)
+    verify-credentials.ts       owner-only round-trip, config-path resolution, legacy migration
     pairing.ts                  client-side code redemption
     verify-pairing.ts           client redemption: success, label fallback, errors
     http.ts                     client JSON POST helper
   runtime/
     context.ts                  API_SURFACE_CONTEXT (disableBuiltinTools for hands-local)
     index.ts                    runtime barrel (server-side helpers)
+src/lib/config/
+  platform-dirs.ts              directories-style per-OS config/data/cache dirs
+  verify-platform-dirs.ts       per-OS path resolution (Windows, macOS, Linux/XDG)
 src/lib/provider/
   pi-cli-client.ts              --no-builtin-tools gating + broker and turn-id env threading
 src/surfaces/discord/bot/

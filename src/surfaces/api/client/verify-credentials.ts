@@ -2,9 +2,11 @@ import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { projectDirs } from "@/lib/config/platform-dirs";
 import {
   desktopConfigPath,
   loadDesktopCredentials,
+  migrateLegacyDesktopConfig,
   saveDesktopCredentials,
 } from "@/surfaces/api/client/credentials";
 
@@ -104,10 +106,61 @@ async function verifyCredentials(): Promise<void> {
       if (previous === undefined) delete process.env["SANDI_DESKTOP_CONFIG"];
       else process.env["SANDI_DESKTOP_CONFIG"] = previous;
     }
+
+    // With no override, the credentials file lands in the OS config dir rather
+    // than the old ~/.sandi location.
+    const saved = process.env["SANDI_DESKTOP_CONFIG"];
+    delete process.env["SANDI_DESKTOP_CONFIG"];
+    try {
+      const expected = join(projectDirs("sandi").configDir, "desktop.json");
+      const resolved = desktopConfigPath();
+      assert(
+        resolved === expected,
+        `the default config path is the OS config dir (got ${resolved})`,
+      );
+      console.log("ok the default config path is the OS config dir");
+    } finally {
+      if (saved !== undefined) process.env["SANDI_DESKTOP_CONFIG"] = saved;
+    }
+
+    await verifyLegacyMigration(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
   console.log("credentials verification passed");
+}
+
+// A user paired before the file moved has a ~/.sandi/desktop.json; the first run
+// after the move carries it forward to the OS config dir, intact and owner-only,
+// and a second run is a no-op.
+async function verifyLegacyMigration(dir: string): Promise<void> {
+  const legacy = join(dir, "home", ".sandi", "desktop.json");
+  const target = join(dir, "config", "sandi", "desktop.json");
+  const credentials = {
+    url: "http://127.0.0.1:8787",
+    token: TOKEN,
+    deviceId: "device-1",
+    identityId: "tester",
+  };
+  await saveDesktopCredentials(legacy, credentials);
+
+  const moved = await migrateLegacyDesktopConfig({ legacy, target });
+  assert(moved === target, "the legacy config is moved to the target path");
+  const loaded = await loadDesktopCredentials(target);
+  assert(loaded?.token === TOKEN, "the migrated config loads intact");
+  const gone = await loadDesktopCredentials(legacy);
+  assert(gone === undefined, "the legacy file no longer exists after the move");
+  if (process.platform !== "win32") {
+    const mode = (await stat(target)).mode & 0o777;
+    assert(
+      mode === 0o600,
+      `the migrated token file stays owner-only (got ${mode.toString(8)})`,
+    );
+  }
+
+  const again = await migrateLegacyDesktopConfig({ legacy, target });
+  assert(again === undefined, "a second migration is a no-op");
+  console.log("ok a legacy ~/.sandi config migrates once to the OS config dir");
 }
 
 function assert(condition: unknown, label: string): asserts condition {

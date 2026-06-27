@@ -48,17 +48,35 @@ function verifyWindows(): void {
 function verifyWindowsFallback(): void {
   // With the AppData env vars unset, fall back to the well-known subpaths of the
   // home directory rather than producing a bare or cwd-relative path.
-  const dirs = resolveProjectDirs("sandi", {
+  const unset = resolveProjectDirs("sandi", {
     platform: "win32",
     home: "C:\\Users\\me",
     env: {},
   });
   assertEqual(
-    dirs.configDir,
+    unset.configDir,
     "C:\\Users\\me\\AppData\\Roaming\\sandi",
     "windows config falls back to ~/AppData/Roaming",
   );
-  console.log("ok windows falls back to the home AppData subpaths");
+
+  // A relative or drive-relative override is not absolute, so it is ignored in
+  // favor of the home subpath rather than resolved against the cwd.
+  const relative = resolveProjectDirs("sandi", {
+    platform: "win32",
+    home: "C:\\Users\\me",
+    env: { APPDATA: "Roaming", LOCALAPPDATA: "C:relative" },
+  });
+  assertEqual(
+    relative.configDir,
+    "C:\\Users\\me\\AppData\\Roaming\\sandi",
+    "windows config ignores a relative APPDATA",
+  );
+  assertEqual(
+    relative.dataDir,
+    "C:\\Users\\me\\AppData\\Local\\sandi\\data",
+    "windows data ignores a drive-relative LOCALAPPDATA",
+  );
+  console.log("ok windows falls back when the env override is not absolute");
 }
 
 function verifyMacos(): void {

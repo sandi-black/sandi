@@ -46,10 +46,16 @@ export function resolveProjectDirs(app: string, ctx: DirContext): ProjectDirs {
   // host, so this is the platform's own join either way.
   const join = ctx.platform === "win32" ? win32.join : posix.join;
   if (ctx.platform === "win32") {
+    // Only an absolute base from the environment is trusted. A relative or
+    // drive-relative APPDATA/LOCALAPPDATA would otherwise be joined into the
+    // config path and resolve against the caller's cwd, writing the token
+    // somewhere unintended; fall back to the home subpath instead.
     const roaming =
-      trimmed(ctx.env["APPDATA"]) ?? join(ctx.home, "AppData", "Roaming");
+      absoluteWindows(ctx.env["APPDATA"]) ??
+      join(ctx.home, "AppData", "Roaming");
     const local =
-      trimmed(ctx.env["LOCALAPPDATA"]) ?? join(ctx.home, "AppData", "Local");
+      absoluteWindows(ctx.env["LOCALAPPDATA"]) ??
+      join(ctx.home, "AppData", "Local");
     return {
       configDir: join(roaming, app),
       dataDir: join(local, app, "data"),
@@ -85,8 +91,15 @@ function xdgBase(
   fallback: readonly string[],
 ): string {
   const override = trimmed(ctx.env[variable]);
-  if (override?.startsWith("/")) return override;
+  if (override && posix.isAbsolute(override)) return override;
   return join(ctx.home, ...fallback);
+}
+
+// A trimmed, absolute Windows base path, or undefined when the value is empty or
+// not absolute (a relative or drive-relative path is rejected).
+function absoluteWindows(value: string | undefined): string | undefined {
+  const next = trimmed(value);
+  return next && win32.isAbsolute(next) ? next : undefined;
 }
 
 function trimmed(value: string | undefined): string | undefined {

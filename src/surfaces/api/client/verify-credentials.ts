@@ -201,6 +201,19 @@ async function verifyLegacyMigration(dir: string): Promise<void> {
 
   const again = await migrateLegacyDesktopConfig({ legacy, target });
   assert(again === undefined, "a second migration is a no-op");
+
+  // When SANDI_DESKTOP_CONFIG pins the location, the operator owns the path, so
+  // the migration does nothing even with a legacy file present and no injected
+  // paths (it returns before touching the filesystem).
+  const previous = process.env["SANDI_DESKTOP_CONFIG"];
+  process.env["SANDI_DESKTOP_CONFIG"] = join(dir, "pinned", "desktop.json");
+  try {
+    const pinned = await migrateLegacyDesktopConfig();
+    assert(pinned === undefined, "a pinned config path skips the migration");
+  } finally {
+    if (previous === undefined) delete process.env["SANDI_DESKTOP_CONFIG"];
+    else process.env["SANDI_DESKTOP_CONFIG"] = previous;
+  }
   console.log("ok a legacy ~/.sandi config migrates once to the OS config dir");
 }
 

@@ -25,3 +25,21 @@ export interface DesktopHands {
     turnId?: string;
   }): DesktopHandsLease | undefined;
 }
+
+// Leases desktop hands for a turn whose human is `identityId`. Returns undefined
+// when the human is unmapped (no identity) or no desktop-hands capability is
+// wired (a standalone single-surface process), so the turn runs with server
+// hands only. A missing abort signal is defaulted to a never-aborting one: a
+// surface like Discord has no client socket to abort on, so the turn's own
+// finally revokes the lease and the broker backstops a stalled call.
+export function leaseDesktopHands(input: {
+  hands: DesktopHands | undefined;
+  identityId: string | undefined;
+  signal?: AbortSignal | undefined;
+}): DesktopHandsLease | undefined {
+  if (!input.identityId || !input.hands) return undefined;
+  return input.hands.leaseForIdentity({
+    identityId: input.identityId,
+    signal: input.signal ?? new AbortController().signal,
+  });
+}

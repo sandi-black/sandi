@@ -39,6 +39,7 @@ import type {
   DesktopHands,
   DesktopHandsLease,
 } from "@/lib/provider/desktop-hands";
+import { leaseDesktopHands } from "@/lib/provider/desktop-hands";
 import type { PiAccountRoutingRequest } from "@/lib/provider/pi-account-routing";
 import {
   type ModelProviderClient,
@@ -1120,21 +1121,15 @@ export class SandiBot {
 
   // Leases hands on the author's desktop when their machine is linked, so a
   // Discord turn can read files and run shell commands there in addition to its
-  // server-side tools. Returns undefined when the author is unmapped, no
-  // desktop-hands capability is wired (a standalone Discord process), or the
-  // author has no desktop holding a link. A Discord turn has no client socket to
-  // disconnect, so when the queue passes no signal we bind to a never-aborting
-  // one; the turn's finally revokes the ticket and the broker backstops a
-  // stalled call.
+  // server-side tools.
   #leaseDesktopHands(
     author: ConversationParticipant,
     signal: AbortSignal | undefined,
   ): DesktopHandsLease | undefined {
-    const identityId = author.identityId;
-    if (!identityId || !this.#desktopHands) return undefined;
-    return this.#desktopHands.leaseForIdentity({
-      identityId,
-      signal: signal ?? new AbortController().signal,
+    return leaseDesktopHands({
+      hands: this.#desktopHands,
+      identityId: author.identityId,
+      signal,
     });
   }
 

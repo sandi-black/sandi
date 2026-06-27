@@ -108,7 +108,11 @@ async function verifyCoreHasNoSurfaceRuntimeLiterals(): Promise<void> {
     const path = displayPath(file);
     if (isSurfaceLiteralAllowedFile(path)) continue;
     const content = await readFile(file, "utf8");
-    const lines = content.split(/\r?\n/);
+    // Scan code only, not comments. The boundary we enforce is that a core
+    // module must not couple itself to a surface in code (a surface-specific
+    // string literal or field identifier); naming a surface in an explanatory
+    // comment is fine, so stripping comments first avoids policing prose.
+    const lines = stripComments(content);
     for (const [index, line] of lines.entries()) {
       const match = forbiddenSurfaceLiteral(line);
       if (!match || isAllowedSurfaceLiteralLine(path, line)) continue;
@@ -119,6 +123,51 @@ async function verifyCoreHasNoSurfaceRuntimeLiterals(): Promise<void> {
       });
     }
   }
+}
+
+// Returns the file's lines with comments blanked out, preserving line numbers so
+// findings still point at the right place. String literals are kept (a surface
+// name inside a real string is still coupling), so this walks characters
+// tracking string and block-comment state rather than naively cutting at "//",
+// which would also truncate a "https://" inside a string.
+function stripComments(content: string): string[] {
+  const out: string[] = [];
+  let inBlock = false;
+  let inString: string | undefined;
+  for (const line of content.split(/\r?\n/)) {
+    let code = "";
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i];
+      const next = line[i + 1];
+      if (inBlock) {
+        if (ch === "*" && next === "/") {
+          inBlock = false;
+          i += 1;
+        }
+        continue;
+      }
+      if (inString) {
+        code += ch;
+        if (ch === "\\" && next !== undefined) {
+          code += next;
+          i += 1;
+        } else if (ch === inString) {
+          inString = undefined;
+        }
+        continue;
+      }
+      if (ch === "/" && next === "/") break;
+      if (ch === "/" && next === "*") {
+        inBlock = true;
+        i += 1;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") inString = ch;
+      code += ch;
+    }
+    out.push(code);
+  }
+  return out;
 }
 
 function forbiddenSurfaceLiteral(line: string): string | undefined {

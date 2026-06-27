@@ -20,6 +20,7 @@ import {
   recordDeliverySideEffect,
 } from "@/lib/provider/side-effects";
 import { readDiscordPlatformContext } from "@/surfaces/discord/runtime/context";
+import { resolveGuildId as resolveGuildIdFor } from "@/surfaces/discord/runtime/guild";
 
 const MAX_DISCORD_FILE_BYTES = 24 * 1024 * 1024;
 const GIT_BINARY_CHECK_BYTES = 8_000;
@@ -606,15 +607,11 @@ function createRest(): REST {
 }
 
 // The guild a helper should operate in: the current context's guild on a
-// Discord turn, else the configured DISCORD_GUILD_ID so a turn from another
-// surface can still resolve channels by name and list the server's channels.
+// Discord turn, else the configured DISCORD_GUILD_ID (parsed at the env
+// boundary) so a turn from another surface can still resolve channels by name
+// and list the server's channels.
 function resolveGuildId(context: DiscordContext | undefined): string {
-  const fromEnv = process.env["DISCORD_GUILD_ID"]?.trim();
-  const guildId = context?.guildId ?? (fromEnv ? fromEnv : undefined);
-  if (guildId) return guildId;
-  throw new Error(
-    "This Discord helper requires a guild/server. Set DISCORD_GUILD_ID or run it from a Discord turn.",
-  );
+  return resolveGuildIdFor(context?.guildId);
 }
 
 async function discordGet<T>(

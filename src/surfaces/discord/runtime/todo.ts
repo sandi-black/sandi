@@ -24,6 +24,7 @@ import {
   writeReminder,
 } from "@/surfaces/discord/reminders/store";
 import { readDiscordPlatformContext } from "@/surfaces/discord/runtime/context";
+import { resolveGuildId } from "@/surfaces/discord/runtime/guild";
 
 const TODO_STATE_PATH = "todo-list/state.json";
 const DISCORD_MESSAGE_LIMIT = 2_000;
@@ -877,18 +878,24 @@ function currentTodoTarget(channelRef: string | undefined): {
   guildId: string;
   channelId: string;
 } {
-  const context = readContext();
-  const guildId = context.guildId;
-  if (!guildId) throw new Error("Todo helpers need a Discord guild context.");
+  const context = optionalContext();
+  const guildId = resolveGuildId(context?.guildId);
   const channelId = channelRef
     ? discordChannelIdFromRef(channelRef)
-    : (context.threadId ?? context.channelId);
+    : (context?.threadId ?? context?.channelId);
+  if (!channelId) {
+    throw new Error(
+      "Todo helpers need a channel: pass an explicit channel on a turn from another surface, or run them from a Discord turn.",
+    );
+  }
   return { guildId, channelId };
 }
 
-function readContext(): DiscordContext {
+// The current Discord context, or undefined on a turn from another surface
+// where every todo helper must name an explicit channel target.
+function optionalContext(): DiscordContext | undefined {
   const raw = readDiscordPlatformContext();
-  if (!raw) throw new Error("Discord platform context is not set.");
+  if (!raw) return undefined;
   return DiscordContextSchema.parse(JSON.parse(raw));
 }
 

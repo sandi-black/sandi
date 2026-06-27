@@ -15,6 +15,7 @@ import type {
   DesktopHands,
   DesktopHandsLease,
 } from "@/lib/provider/desktop-hands";
+import { leaseDesktopHands } from "@/lib/provider/desktop-hands";
 import type { PiAccountRoutingRequest } from "@/lib/provider/pi-account-routing";
 import {
   type ModelProviderClient,
@@ -360,15 +361,16 @@ export class GitHubBot {
 
   // Leases hands on the actor's desktop when their machine is linked, so a
   // GitHub turn can read files and run shell commands there alongside its
-  // server-side tools. Returns undefined when the actor is unmapped, no
-  // desktop-hands capability is wired (a standalone GitHub process), or the
-  // actor has no desktop holding a link.
+  // server-side tools.
   #leaseDesktopHands(
     identityId: string | undefined,
     signal: AbortSignal,
   ): DesktopHandsLease | undefined {
-    if (!identityId || !this.#desktopHands) return undefined;
-    return this.#desktopHands.leaseForIdentity({ identityId, signal });
+    return leaseDesktopHands({
+      hands: this.#desktopHands,
+      identityId,
+      signal,
+    });
   }
 
   async #sendProviderResponse(input: {

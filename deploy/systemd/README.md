@@ -27,9 +27,9 @@ the Discord surface down with it (the bot never reaches the gateway).
 
 Toggle surfaces in `.env`:
 
-- `SANDI_API_ENABLED=false` — disable the API surface (the host then runs Discord
+- `SANDI_API_ENABLED=false`: disable the API surface (the host then runs Discord
   only).
-- `SANDI_GITHUB_ENABLED=true` — fold the GitHub surface into the host process.
+- `SANDI_GITHUB_ENABLED=true`: fold the GitHub surface into the host process.
 
 `sandi-github.service` is **optional**. The GitHub surface is poll-based and
 binds no port, so it can run either:

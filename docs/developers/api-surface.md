@@ -60,7 +60,9 @@ logged. `npm run api:enroll` issues a token directly (for an operator): it
 validates that the `identityId` exists in `humans.json`, appends a hashed entry
 under the managed-write lock (see [`current-state.md`](current-state.md) for that
 lock), and prints the raw token once. Store it on the device with
-`npm run client -- login --token <T>` (no Discord round-trip needed).
+`npm run client -- login --token <T>` (no Discord round-trip needed); a token
+minted against a self-hosted server needs `--url` (or `SANDI_API_URL`) too, since
+`login` otherwise stores it pointed at the hosted default.
 
 ### Pairing: self-service enrollment
 

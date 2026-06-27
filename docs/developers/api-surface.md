@@ -277,7 +277,10 @@ usable and verifiable end to end. Two commands write the credentials file.
 `npm run client -- pair <CODE>` redeems a `/sandi auth` code (the Discord
 self-service flow), and `npm run client -- login --token <T>` stores a token an
 operator minted with `npm run api:enroll`, so a self-hosted user does not have to
-hand-write the file. Both store a per-device token in the OS config dir
+hand-write the file. Both target the hosted surface at
+`https://api.sandi.jessica.black` by default; pass `--url` (or set
+`SANDI_API_URL`) to pair against a local dev server instead. Both store a
+per-device token in the OS config dir
 (`%APPDATA%\sandi\desktop.json` on Windows, `~/Library/Application
 Support/sandi/desktop.json` on macOS, `~/.config/sandi/desktop.json` on Linux),
 owner-only, resolved through the small `directories`-style helper in

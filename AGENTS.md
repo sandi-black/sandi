@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-Sandi is a multi-surface AI bot written in TypeScript. Surface-specific entrypoints live under `src/surfaces/<surface>/`; the current Discord bot starts from `src/surfaces/discord/index.ts`, and Discord command registration starts from `src/surfaces/discord/register-commands.ts`. Shared runtime behavior lives under `src/lib/`, including context compilation, memory and skill plumbing, conversations, provider integration, generic Pi extensions, runtime helpers, state stores, migrations, and turn queueing. Discord-only lifecycle, delivery helpers, events, reminders, commands, and Discord Pi extensions live under `src/surfaces/discord/`.
+Sandi is a multi-surface AI bot written in TypeScript. The production entrypoint is the host (`src/host/index.ts`, run with `npm start`), which composes every configured surface (API/device, Discord, GitHub) into one process. Surface-specific entrypoints under `src/surfaces/<surface>/` (for example `src/surfaces/discord/index.ts`) still run a single surface standalone for development, and Discord command registration starts from `src/surfaces/discord/register-commands.ts`. Shared runtime behavior lives under `src/lib/`, including context compilation, memory and skill plumbing, conversations, provider integration, generic Pi extensions, runtime helpers, state stores, migrations, and turn queueing. Discord-only lifecycle, delivery helpers, events, reminders, commands, and Discord Pi extensions live under `src/surfaces/discord/`.
 
 Configuration and policy starter text lives under `config/`. Runtime data,
 memory, events, custom skills, generated helpers, and private overlays live under
@@ -16,7 +16,7 @@ notes are in `docs/`.
 - `npm install`: install locked dependencies and configure the checked-in Git hooks through the `prepare` script.
 - `npm run hooks:install`: reconfigure this checkout to use `.githooks/` if hooks are missing.
 - `cp .env.example .env`: create local configuration, then fill Discord and Pi settings.
-- `npm run dev` or `npm start`: run the Discord surface with `tsx src/surfaces/discord/index.ts`.
+- `npm run dev` or `npm start`: run the composed host with `tsx src/host/index.ts`. Use `npm run dev:discord` (or `dev:api`, `dev:github`) to run a single surface standalone.
 - `npm run commands:sync`: synchronize Discord application commands for the configured guild.
 - `npm run typecheck` or `npm run build`: run TypeScript with `--noEmit`.
 - `npm run lint`: run Biome lint checks.

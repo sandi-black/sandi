@@ -251,7 +251,7 @@ WorkingDirectory=/srv/sandi/app
 Environment=NODE_ENV=production
 Environment=PATH=/root/.volta/bin:/root/.volta/tools/image/node/24.15.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=/srv/sandi/app/.env
-ExecStart=/srv/sandi/app/node_modules/.bin/tsx src/surfaces/discord/index.ts
+ExecStart=/srv/sandi/app/node_modules/.bin/tsx src/host/index.ts
 Restart=always
 RestartSec=10
 TimeoutStopSec=30

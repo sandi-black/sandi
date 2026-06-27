@@ -10,30 +10,38 @@ Sandi is a TypeScript multi-surface household agent with file-backed state and
 the local `pi` command. The runtime is intentionally self-extending: a deployment
 can replace the soul, policies, user config, memory, custom skills, runtime
 helpers, and local state through the data directory while keeping the shared
-source harness stable. The current production chat surface is Discord,
-implemented with `discord.js`; a GitHub polling surface also runs Sandi from a
-normal GitHub user through the local `gh` CLI. The surface/core boundary is
-documented in
+source harness stable. Sandi reaches people through Discord (implemented with
+`discord.js`), GitHub (from a normal GitHub user through the local `gh` CLI), and
+a desktop/API surface that desktops pair to for hands-local execution. The
+surface/core boundary is documented in
 [`surfaces.md`](surfaces.md): surfaces own platform-specific event intake
 and delivery, while `src/lib/...` owns shared Sandi continuity such as memory,
 skills, policies, identity context, provider behavior, and reusable runtime
 helpers.
 
-`src/surfaces/discord/index.ts` wires together:
+The production entrypoint is the host (`src/host/index.ts`, run with
+`npm start`). It composes every configured surface into one process and builds
+the shared singletons once:
 
-- `SandiBot`
-- `ConversationStore`
-- `ContextCompiler`
-- `PiCliClient`
+- `ConversationStore`, `PiCliClient`, and the embedding-index maintainer, shared
+  by every surface so each human's conversations and account routing stay unified;
+- `DeviceRegistry` and `ToolBroker`, shared so a desktop holds one device link
+  and a turn from any surface can reach it by identity;
+- a `SandiBot`, `GitHubBot`, and `ApiBot`, each with its own `ContextCompiler`
+  bound to its surface context.
 
-The bot listens with the Discord `Guilds`, `GuildMessages`, and privileged
+Each surface is gated independently: the API/device surface is on unless
+`SANDI_API_ENABLED=false`, Discord starts when a bot token is present, and GitHub
+starts when `SANDI_GITHUB_ENABLED=true`. The standalone entrypoints
+(`src/surfaces/<surface>/index.ts`, run with `npm run dev:discord`, `dev:api`,
+`dev:github`) still exist for isolated development, where no other surface and no
+shared device links are present.
+
+The Discord bot listens with the `Guilds`, `GuildMessages`, and privileged
 `MessageContent` intents. It finds the configured Sandi forum channel by
-`SANDI_FORUM_CHANNEL_ID`, or by `SANDI_FORUM_CHANNEL_NAME` when no ID is set.
-
-`src/surfaces/github/index.ts` wires the same shared `ConversationStore`,
-`ContextCompiler`, and `PiCliClient` to a GitHub notification poller backed by
-`gh api`. It discovers Sandi's login from `gh api /user` unless
-`SANDI_GITHUB_LOGIN` is configured.
+`SANDI_FORUM_CHANNEL_ID`, or by `SANDI_FORUM_CHANNEL_NAME` when no ID is set. The
+GitHub bot polls notifications with `gh api`, discovering Sandi's login from
+`gh api /user` unless `SANDI_GITHUB_LOGIN` is configured.
 
 ## Discord Behavior
 
@@ -230,11 +238,14 @@ sentinel file and calls Pi's cooperative `ctx.abort()` path when `/sandi stop`
 is used.
 
 The default path is code-mode first: Sandi composes local capabilities by calling
-`sandi_js_run` and importing helpers from the runtime import path owned by the
-current surface. Discord turns use `./sandi/runtime.ts` for
-Discord, events, reminders, maps, and other runtime APIs. Native Codex
-conversion tools handle web search, file reads, and file edits directly when Pi
-exposes them. Code-mode conventions and examples live in
+`sandi_js_run` and importing helpers from the stable runtime import path
+`./sandi/runtime.ts`. Every surface points that path at the same unified runtime
+(`src/host/runtime/index.ts`), which re-exports Discord, GitHub, events,
+reminders, todo, and maps helpers, so a turn from any surface can compose any of
+them. Helpers used outside their native surface (for example posting to Discord
+from a desktop turn) take an explicit target since there is no current channel or
+thread. Native Codex conversion tools handle web search, file reads, and file
+edits directly when Pi exposes them. Code-mode conventions and examples live in
 [`code-mode.md`](code-mode.md).
 Process stdout and stderr from `sandi_js_run` are wrapped as untrusted execution
 evidence so external text cannot masquerade as instructions.

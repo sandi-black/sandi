@@ -70,4 +70,4 @@ USER node
 VOLUME ["/app/data"]
 
 ENTRYPOINT ["dumb-init", "--", "/usr/local/bin/sandi-docker-entrypoint"]
-CMD ["node", "--import", "tsx", "src/surfaces/discord/index.ts"]
+CMD ["node", "--import", "tsx", "src/host/index.ts"]

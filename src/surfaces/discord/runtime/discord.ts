@@ -20,6 +20,13 @@ import {
   recordDeliverySideEffect,
 } from "@/lib/provider/side-effects";
 import { readDiscordPlatformContext } from "@/surfaces/discord/runtime/context";
+import { resolveGuildId as resolveGuildIdFor } from "@/surfaces/discord/runtime/guild";
+import {
+  DeleteMessageInputSchema,
+  DiscordMessageIdSchema,
+  GetMessageInputSchema,
+  parseChannelTarget,
+} from "@/surfaces/discord/runtime/targets";
 
 const MAX_DISCORD_FILE_BYTES = 24 * 1024 * 1024;
 const GIT_BINARY_CHECK_BYTES = 8_000;
@@ -157,12 +164,11 @@ export type ReadAttachmentResult = {
 };
 
 export function currentContext(): DiscordContext {
-  return readContext();
+  return requireContext();
 }
 
 export async function listChannels(): Promise<DiscordChannel[]> {
-  const context = readContext();
-  const guildId = requireGuildId(context);
+  const guildId = resolveGuildId(optionalContext());
   return discordGet(
     createRest(),
     Routes.guildChannels(guildId),
@@ -174,7 +180,7 @@ export async function readChannelHistory(
   input: ReadChannelHistoryInput = {},
 ): Promise<DiscordMessage[]> {
   const rest = createRest();
-  const context = readContext();
+  const context = optionalContext();
   const channelId = await resolveChannelId(
     input.channel ?? "current",
     context,
@@ -198,7 +204,7 @@ export async function searchChannelHistory(
 ): Promise<SearchChannelHistoryResult> {
   const search = buildSearch(input.query, input.caseSensitive ?? false);
   const rest = createRest();
-  const context = readContext();
+  const context = optionalContext();
   const channelId = await resolveChannelId(
     input.channel ?? "current",
     context,
@@ -351,16 +357,23 @@ function normalizeSearchText(text: string, caseSensitive: boolean): string {
 export async function getMessage(
   input: { channel?: string; messageId?: string } = {},
 ): Promise<DiscordMessage> {
+  const parsed = GetMessageInputSchema.parse(input);
   const rest = createRest();
-  const context = readContext();
+  const context = optionalContext();
   const channelId = await resolveChannelId(
-    input.channel ?? "current",
+    parsed.channel ?? "current",
     context,
     rest,
   );
+  const messageId = parsed.messageId ?? context?.messageId;
+  if (!messageId) {
+    throw new Error(
+      "There is no current Discord message on this turn; pass an explicit messageId.",
+    );
+  }
   return discordGet(
     rest,
-    Routes.channelMessage(channelId, input.messageId ?? context.messageId),
+    Routes.channelMessage(channelId, messageId),
     DiscordMessageSchema,
   );
 }
@@ -369,7 +382,7 @@ export async function sendMessage(
   input: SendMessageInput,
 ): Promise<DiscordMessage> {
   const rest = createRest();
-  const context = readContext();
+  const context = optionalContext();
   const channelId = await resolveChannelId(
     input.channel ?? "current",
     context,
@@ -380,11 +393,10 @@ export async function sendMessage(
     allowed_mentions: allowedMentions(input.allowMentions),
   };
   if (input.replyToMessageId) {
-    body["message_reference"] = {
-      message_id: input.replyToMessageId,
-      channel_id: channelId,
-      fail_if_not_exists: false,
-    };
+    body["message_reference"] = messageReferenceBody(
+      input.replyToMessageId,
+      channelId,
+    );
   }
   const message = await discordPost(
     rest,
@@ -400,16 +412,22 @@ export async function deleteMessage(input: DeleteMessageInput = {}): Promise<{
   channelId: string;
   messageId: string;
 }> {
+  const parsed = DeleteMessageInputSchema.parse(input);
   const rest = createRest();
-  const context = readContext();
+  const context = optionalContext();
   const channelId = await resolveChannelId(
-    input.channel ?? "current",
+    parsed.channel ?? "current",
     context,
     rest,
   );
-  const messageId = input.messageId ?? context.messageId;
+  const messageId = parsed.messageId ?? context?.messageId;
+  if (!messageId) {
+    throw new Error(
+      "There is no current Discord message on this turn; pass an explicit messageId.",
+    );
+  }
   await rest.delete(Routes.channelMessage(channelId, messageId), {
-    reason: input.reason,
+    reason: parsed.reason,
   });
   return { channelId, messageId };
 }
@@ -452,7 +470,7 @@ async function sendLocalFile(input: {
   tooLargeLabel: string;
 }): Promise<DiscordMessage> {
   const rest = createRest();
-  const context = readContext();
+  const context = optionalContext();
   const channelId = await resolveChannelId(
     input.input.channel ?? "current",
     context,
@@ -469,11 +487,10 @@ async function sendLocalFile(input: {
     allowed_mentions: allowedMentions(input.input.allowMentions),
   };
   if (input.input.replyToMessageId) {
-    body["message_reference"] = {
-      message_id: input.input.replyToMessageId,
-      channel_id: channelId,
-      fail_if_not_exists: false,
-    };
+    body["message_reference"] = messageReferenceBody(
+      input.input.replyToMessageId,
+      channelId,
+    );
   }
   const message = DiscordMessageSchema.parse(
     await discordPostFile(Routes.channelMessages(channelId), body, {
@@ -529,40 +546,71 @@ export async function readImageAttachment(
   };
 }
 
+// Builds a Discord message_reference for a reply, parsing the target id at the
+// boundary so a malformed reply id fails clearly instead of being posted raw.
+function messageReferenceBody(
+  replyToMessageId: string,
+  channelId: string,
+): Record<string, unknown> {
+  return {
+    message_id: DiscordMessageIdSchema.parse(replyToMessageId),
+    channel_id: channelId,
+    fail_if_not_exists: false,
+  };
+}
+
 async function resolveChannelId(
   rawChannel: string,
-  context: DiscordContext,
+  context: DiscordContext | undefined,
   rest: REST,
 ): Promise<string> {
-  const raw = rawChannel.trim();
-  if (raw === "current") return context.threadId ?? context.channelId;
-  if (raw === "parent") return context.parentChannelId ?? context.channelId;
+  const target = parseChannelTarget(rawChannel);
+  if (target.kind === "current" || target.kind === "parent") {
+    if (!context) {
+      throw new Error(
+        `There is no current Discord channel on this turn; pass an explicit channel id instead of "${target.kind}".`,
+      );
+    }
+    if (target.kind === "current") return context.threadId ?? context.channelId;
+    return context.parentChannelId ?? context.channelId;
+  }
 
-  const id = snowflakeFrom(raw);
-  if (id) return id;
+  if (target.kind === "id") return target.id;
 
   const channels = await listChannelsForContext(context, rest);
-  const wanted = raw.replace(/^#/, "");
-  const match = channels.find((channel) => channel.name === wanted);
-  if (!match) throw new Error(`Could not find channel named ${raw}`);
+  const match = channels.find((channel) => channel.name === target.name);
+  if (!match) throw new Error(`Could not find channel named ${target.name}`);
   return match.id;
 }
 
 async function listChannelsForContext(
-  context: DiscordContext,
+  context: DiscordContext | undefined,
   rest: REST,
 ): Promise<DiscordChannel[]> {
   return discordGet(
     rest,
-    Routes.guildChannels(requireGuildId(context)),
+    Routes.guildChannels(resolveGuildId(context)),
     z.array(DiscordChannelSchema),
   );
 }
 
-function readContext(): DiscordContext {
+// The current Discord message context, when this turn originated on Discord.
+// Returns undefined on a turn from another surface (a desktop or GitHub turn
+// reaching into Discord), where there is no "current" channel or message and
+// every helper must name an explicit target.
+function optionalContext(): DiscordContext | undefined {
   const raw = readDiscordPlatformContext();
-  if (!raw) throw new Error("Discord platform context is not set");
+  if (!raw) return undefined;
   return DiscordContextSchema.parse(JSON.parse(raw));
+}
+
+// The current Discord message context, or an error. Used by helpers that only
+// make sense on a Discord-originated turn (reading the message that triggered
+// the turn, replying in the current channel).
+function requireContext(): DiscordContext {
+  const context = optionalContext();
+  if (!context) throw new Error("Discord platform context is not set");
+  return context;
 }
 
 function readToken(): string {
@@ -575,9 +623,12 @@ function createRest(): REST {
   return new REST({ version: "10" }).setToken(readToken());
 }
 
-function requireGuildId(context: DiscordContext): string {
-  if (context.guildId) return context.guildId;
-  throw new Error("This Discord helper requires a guild/server context");
+// The guild a helper should operate in: the current context's guild on a
+// Discord turn, else the configured DISCORD_GUILD_ID (parsed at the env
+// boundary) so a turn from another surface can still resolve channels by name
+// and list the server's channels.
+function resolveGuildId(context: DiscordContext | undefined): string {
+  return resolveGuildIdFor(context?.guildId);
 }
 
 async function discordGet<T>(
@@ -903,11 +954,6 @@ function mimeFromPath(path: string): string {
   if (ext === ".webp") return "image/webp";
   if (ext === ".yaml" || ext === ".yml") return "application/yaml";
   return "application/octet-stream";
-}
-
-function snowflakeFrom(raw: string): string | undefined {
-  const match = raw.match(/\d{15,25}/);
-  return match?.[0];
 }
 
 function clamp(

@@ -7,9 +7,25 @@ import { GhCli, GhCliError } from "@/surfaces/github/github/gh-cli";
 const workDir = await mkdtemp(join(tmpdir(), "sandi-gh-cli-"));
 
 try {
-  const command = join(workDir, "hang-gh");
-  await writeFile(command, "#!/usr/bin/env bash\nsleep 10\n", "utf8");
-  await chmod(command, 0o700);
+  // A fake gh that hangs well past the timeout, so the test exercises GhCli's
+  // own deadline. The command must be one the platform can actually launch: an
+  // extensionless shell script on POSIX, and a .cmd on Windows (where GhCli runs
+  // through cmd.exe, which cannot execute a bash script). A non-launchable fake
+  // would fail with a spawn error instead of hanging, and never reach the
+  // timeout path under test.
+  const isWindows = process.platform === "win32";
+  const command = join(workDir, isWindows ? "hang-gh.cmd" : "hang-gh");
+  if (isWindows) {
+    // ping -n 11 waits ~10s with no extra dependency; >nul keeps it quiet.
+    await writeFile(
+      command,
+      "@echo off\r\nping -n 11 127.0.0.1 >nul\r\n",
+      "utf8",
+    );
+  } else {
+    await writeFile(command, "#!/usr/bin/env bash\nsleep 10\n", "utf8");
+    await chmod(command, 0o700);
+  }
 
   const gh = new GhCli({ command, timeoutMs: 100 });
   let timedOut = false;

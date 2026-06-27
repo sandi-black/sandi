@@ -3,6 +3,15 @@ import { recordDeliverySideEffect } from "@/lib/provider/side-effects";
 import { GitHubApi } from "@/surfaces/github/github/api";
 import { GhCli } from "@/surfaces/github/github/gh-cli";
 import { readGitHubPlatformContext } from "@/surfaces/github/runtime/context";
+import {
+  CommentInputSchema,
+  CreatePullRequestReviewInputSchema,
+  type GitHubRepoIssueTarget,
+  ReplyToReviewCommentInputSchema,
+  type RepoIssueFields,
+  RepoIssueInputSchema,
+  resolveRepoIssueTarget,
+} from "@/surfaces/github/runtime/targets";
 
 const GitHubContextSchema = z.object({
   platform: z.literal("github"),
@@ -94,7 +103,7 @@ export type CreatePullRequestReviewInput = RepoIssueInput & {
 };
 
 export function currentContext(): GitHubContext {
-  return readContext();
+  return requireContext();
 }
 
 export async function getPullRequest(input: RepoIssueInput = {}) {
@@ -124,25 +133,27 @@ export async function getPullRequestDiff(
 }
 
 export async function comment(input: CommentInput) {
+  const parsed = CommentInputSchema.parse(input);
   const created = await api().createIssueComment({
-    ...resolveRepoIssue(input),
-    body: input.body,
+    ...resolveRepoIssueTarget(parsed, contextFallback()),
+    body: parsed.body,
   });
   await recordDeliverySideEffect("github:comment");
   return created;
 }
 
 export async function replyToReviewComment(input: ReplyToReviewCommentInput) {
-  const commentId = input.commentId ?? currentReviewCommentId();
+  const parsed = ReplyToReviewCommentInputSchema.parse(input);
+  const commentId = parsed.commentId ?? currentReviewCommentId();
   if (commentId === undefined) {
     throw new Error(
       "replyToReviewComment needs commentId unless the current trigger is a review comment.",
     );
   }
   const created = await api().replyToReviewComment({
-    ...resolveRepoIssue(input),
+    ...resolveRepoIssueTarget(parsed, contextFallback()),
     commentId,
-    body: input.body,
+    body: parsed.body,
   });
   await recordDeliverySideEffect("github:review-comment-reply");
   return created;
@@ -151,23 +162,37 @@ export async function replyToReviewComment(input: ReplyToReviewCommentInput) {
 export async function createPullRequestReview(
   input: CreatePullRequestReviewInput,
 ) {
+  const parsed = CreatePullRequestReviewInputSchema.parse(input);
   const created = await api().createPullRequestReview({
-    ...resolveRepoIssue(input),
-    body: input.body,
-    event: input.event ?? "COMMENT",
+    ...resolveRepoIssueTarget(parsed, contextFallback()),
+    body: parsed.body,
+    event: parsed.event ?? "COMMENT",
   });
   await recordDeliverySideEffect("github:pull-request-review");
   return created;
 }
 
-function readContext(): GitHubContext {
+// The current GitHub thread context, when this turn originated on GitHub.
+// Returns undefined on a turn from another surface (a desktop or Discord turn
+// reaching into GitHub), where there is no current thread and every helper must
+// name an explicit owner, repo, and number.
+function optionalContext(): GitHubContext | undefined {
   const raw = readGitHubPlatformContext();
-  if (!raw) {
+  if (!raw) return undefined;
+  return GitHubContextSchema.parse(JSON.parse(raw));
+}
+
+// The current GitHub thread context, or an error. Used by helpers that only make
+// sense on a GitHub-originated turn (reading the triggering thread, replying to
+// the review comment that triggered the turn).
+function requireContext(): GitHubContext {
+  const context = optionalContext();
+  if (!context) {
     throw new Error(
       "GitHub runtime helpers require SANDI_PLATFORM_CONTEXT from a GitHub turn.",
     );
   }
-  return GitHubContextSchema.parse(JSON.parse(raw));
+  return context;
 }
 
 function api(): GitHubApi {
@@ -178,17 +203,27 @@ function api(): GitHubApi {
   return new GitHubApi(new GhCli({ command }));
 }
 
-function resolveRepoIssue(input: RepoIssueInput) {
-  const context = readContext();
+function resolveRepoIssue(input: RepoIssueInput): GitHubRepoIssueTarget {
+  return resolveRepoIssueTarget(
+    RepoIssueInputSchema.parse(input),
+    contextFallback(),
+  );
+}
+
+// The repo/issue fields the current GitHub thread can supply as a fallback, or
+// undefined on a turn from another surface where every field must be explicit.
+function contextFallback(): RepoIssueFields | undefined {
+  const context = optionalContext();
+  if (!context) return undefined;
   return {
-    owner: input.owner ?? context.repository.owner,
-    repo: input.repo ?? context.repository.repo,
-    number: input.number ?? context.thread.number,
+    owner: context.repository.owner,
+    repo: context.repository.repo,
+    number: context.thread.number,
   };
 }
 
 function currentReviewCommentId(): number | undefined {
-  const source = readContext().trigger.source;
+  const source = requireContext().trigger.source;
   if (source?.kind !== "review_comment") return undefined;
   return source.id;
 }

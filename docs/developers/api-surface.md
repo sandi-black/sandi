@@ -219,6 +219,13 @@ set on `API_SURFACE_CONTEXT`. Sandi's own extension tools (memory, skills,
 `sandi_js_run`, and the rest) stay server-side and unchanged; only the proxy
 file and shell tools run on the desktop.
 
+Only the builtin file and shell tools are disabled on a desktop turn.
+`sandi_js_run` stays enabled and the desktop surface points its runtime entry at
+the unified runtime, so a desktop turn can compose Discord, GitHub, and the other
+server-side helpers in addition to its desktop `local_*` tools. File and shell
+work still flows only to the desktop, because the builtin tools that would touch
+the server's disk stay off and the `local_*` proxies take their place.
+
 ### Transport: SSE and a loopback broker
 
 Hands-local needs the server to call back into the desktop mid-turn. One tool
@@ -390,10 +397,11 @@ src/surfaces/discord/bot/
   verify-device-auth.ts         issuer verify (recognized vs declined)
 ```
 
-The pairing store lives under `src/lib/` (not the API surface) because the
-issuing surface (Discord's `/sandi auth` handler) and the redeeming API surface
-are separate processes that both write it, and shared core must not import a
-surface. It binds only an `identityId`, so it stays surface-neutral. Pairing
+The pairing store lives under `src/lib/` (not the API surface) because two
+surfaces write it: the issuing surface (Discord's `/sandi auth` handler) and the
+redeeming API surface. Even though the merged host runs both in one process,
+shared core must not import a surface, so the store stays in core. It binds only
+an `identityId`, so it stays surface-neutral. Pairing
 timestamps are stored as epoch milliseconds, parsed to numbers at the file
 boundary so nothing reparses a string at use.
 

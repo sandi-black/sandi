@@ -1,10 +1,15 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ContextCompiler } from "@/lib/context/context-compiler";
 import { ConversationStore } from "@/lib/conversations/store";
+import type {
+  DesktopHands,
+  DesktopHandsLease,
+} from "@/lib/provider/desktop-hands";
 import {
+  type LocalToolBroker,
   type ModelProviderClient,
   type ProviderProbe,
   ProviderTurnError,
@@ -55,11 +60,130 @@ async function verifyPartialAutoDeliveryIsCheckpointed(): Promise<void> {
   });
 }
 
+async function verifyMappedActorLeasesDesktopHands(): Promise<void> {
+  await withBotFixture(async ({ bot, state, api, config }) => {
+    await seedGitHubIdentity(config, {
+      identityId: "jess-human",
+      login: "jess",
+      id: "42",
+    });
+    api.notification = mentionNotification();
+    api.issueComment = issueComment("hey @sandi-witch please check this");
+
+    const ticket: LocalToolBroker = {
+      url: "http://127.0.0.1:7",
+      token: "desktop-ticket",
+    };
+    const leasedFor: string[] = [];
+    let revoked = 0;
+    bot.desktopHands = {
+      leaseForIdentity(input): DesktopHandsLease {
+        leasedFor.push(input.identityId);
+        return {
+          ticket,
+          revoke() {
+            revoked += 1;
+          },
+        };
+      },
+    };
+    const requests: ProviderTurnRequest[] = [];
+    bot.provider = providerCapturing(requests, "ok");
+
+    await bot.instance.pollOnce();
+    await waitFor("mapped-actor turn processed", () =>
+      state.hasProcessed("github:mention:issue-comment:9001"),
+    );
+
+    assertEqual(leasedFor.length, 1, "lease attempts");
+    assertEqual(leasedFor[0], "jess-human", "leased identity");
+    assertEqual(requests.length, 1, "provider turns");
+    assertEqual(
+      requests[0]?.localToolBroker?.token,
+      ticket.token,
+      "request carries the leased desktop ticket",
+    );
+    assertEqual(revoked, 1, "lease revoked exactly once");
+  });
+}
+
+async function verifyUnmappedActorRunsWithoutDesktopHands(): Promise<void> {
+  await withBotFixture(async ({ bot, state, api }) => {
+    api.notification = mentionNotification();
+    api.issueComment = issueComment("hey @sandi-witch please check this");
+
+    let leaseCalls = 0;
+    bot.desktopHands = {
+      leaseForIdentity(): DesktopHandsLease | undefined {
+        leaseCalls += 1;
+        return undefined;
+      },
+    };
+    const requests: ProviderTurnRequest[] = [];
+    bot.provider = providerCapturing(requests, "ok");
+
+    await bot.instance.pollOnce();
+    await waitFor("unmapped-actor turn processed", () =>
+      state.hasProcessed("github:mention:issue-comment:9001"),
+    );
+
+    // An unmapped GitHub actor has no identity to lease against, so the bot must
+    // not even ask for a desktop and the turn runs with server hands only.
+    assertEqual(leaseCalls, 0, "lease attempts for an unmapped actor");
+    assertEqual(requests.length, 1, "provider turns");
+    assertEqual(
+      requests[0]?.localToolBroker,
+      undefined,
+      "request omits a desktop ticket",
+    );
+  });
+}
+
+async function seedGitHubIdentity(
+  config: GitHubAppConfig,
+  input: { identityId: string; login: string; id: string },
+): Promise<void> {
+  const dir = join(config.paths.configDir, "identities");
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    join(dir, "humans.json"),
+    JSON.stringify({
+      version: 1,
+      humans: [
+        {
+          id: input.identityId,
+          displayName: input.login,
+          platforms: { github: { id: input.id, login: input.login } },
+        },
+      ],
+    }),
+    "utf8",
+  );
+}
+
+function providerCapturing(
+  sink: ProviderTurnRequest[],
+  text: string,
+): ModelProviderClient {
+  return {
+    async probe(): Promise<ProviderProbe> {
+      return passingProbe();
+    },
+    async generateTurn(
+      request: ProviderTurnRequest,
+    ): Promise<ProviderTurnResponse> {
+      sink.push(request);
+      return { text, deliverySideEffects: false, raw: null };
+    },
+  };
+}
+
 async function withBotFixture(
   run: (fixture: {
     bot: MutableBotFixture;
     state: GitHubNotificationState;
     api: FakeGitHubApi;
+    config: GitHubAppConfig;
   }) => Promise<void>,
 ): Promise<void> {
   const dataDir = await mkdtemp(join(tmpdir(), "sandi-github-bot-"));
@@ -69,6 +193,7 @@ async function withBotFixture(
     const state = new GitHubNotificationState(dataDir);
     const fixture: MutableBotFixture = {
       provider: providerReturningText("ok"),
+      desktopHands: undefined,
       get instance() {
         return new GitHubBot({
           config,
@@ -81,10 +206,11 @@ async function withBotFixture(
           ),
           provider: this.provider,
           state,
+          ...(this.desktopHands ? { desktopHands: this.desktopHands } : {}),
         });
       },
     };
-    await run({ bot: fixture, state, api });
+    await run({ bot: fixture, state, api, config });
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -92,6 +218,7 @@ async function withBotFixture(
 
 type MutableBotFixture = {
   provider: ModelProviderClient;
+  desktopHands: DesktopHands | undefined;
   readonly instance: GitHubBot;
 };
 
@@ -325,6 +452,8 @@ function githubUser(login: string, id: number): GitHubUser {
 
 await verifyProviderSideEffectFailureIsCheckpointed();
 await verifyPartialAutoDeliveryIsCheckpointed();
+await verifyMappedActorLeasesDesktopHands();
+await verifyUnmappedActorRunsWithoutDesktopHands();
 
 console.log("GitHub bot verification passed");
 

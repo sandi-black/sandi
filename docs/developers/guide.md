@@ -335,13 +335,12 @@ precedence is Discord custom, Discord builtin, core custom, core builtin.
 `skill_write` defaults to the current surface when a surface context is present;
 pass `scope: "core"` only for truly global instructions.
 
-The Discord entrypoint passes `SANDI_SKILLS_SURFACE=discord`,
-`SANDI_RUNTIME_IMPORT=./sandi/runtime.ts`, and
-`SANDI_RUNTIME_ENTRY=./src/surfaces/discord/runtime/index.ts` to Pi child
-processes. The GitHub entrypoint passes the same runtime import with
-`SANDI_SKILLS_SURFACE=github` and
-`SANDI_RUNTIME_ENTRY=./src/surfaces/github/runtime/index.ts`. These are runtime
-context values, not user configuration choices.
+Each surface sets its own `SANDI_SKILLS_SURFACE` (for example `discord` or
+`github`) and `SANDI_RUNTIME_IMPORT=./sandi/runtime.ts` for Pi child processes.
+Every surface points `SANDI_RUNTIME_ENTRY` at the one unified runtime,
+`./src/host/runtime/index.ts`, so a turn on any surface can reach the Discord,
+GitHub, and other server-side helpers. These are runtime context values, not
+user configuration choices.
 
 Core builtin workflow skills include:
 

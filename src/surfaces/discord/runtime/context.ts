@@ -1,9 +1,14 @@
 import { join, resolve } from "node:path";
 
-import type { SandiSurfaceContext } from "@/lib/surface-context";
+import {
+  type SandiSurfaceContext,
+  UNIFIED_RUNTIME_ENTRY,
+} from "@/lib/surface-context";
 
 export const DISCORD_RUNTIME_IMPORT = "./sandi/runtime.ts";
-export const DISCORD_RUNTIME_ENTRY = "./src/surfaces/discord/runtime/index.ts";
+// Every surface composes the unified runtime, so a Discord turn can also reach
+// GitHub and the desktop helpers, not only Discord's own.
+export const DISCORD_RUNTIME_ENTRY = UNIFIED_RUNTIME_ENTRY;
 
 export const DISCORD_SURFACE_CONTEXT: SandiSurfaceContext = {
   name: "discord",

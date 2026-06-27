@@ -7,6 +7,7 @@ import {
   desktopConfigPath,
   loadDesktopCredentials,
   migrateLegacyDesktopConfig,
+  parseLoginCredentials,
   saveDesktopCredentials,
 } from "@/surfaces/api/client/credentials";
 
@@ -123,11 +124,51 @@ async function verifyCredentials(): Promise<void> {
       if (saved !== undefined) process.env["SANDI_DESKTOP_CONFIG"] = saved;
     }
 
+    verifyLoginParse();
     await verifyLegacyMigration(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
   console.log("credentials verification passed");
+}
+
+// The login command validates its raw inputs in one pass; a good payload yields
+// credentials, and a bad token or url is rejected with the offending field named
+// so the CLI can print a precise message.
+function verifyLoginParse(): void {
+  const good = parseLoginCredentials({
+    url: "http://127.0.0.1:8787",
+    token: TOKEN,
+    identityId: "self",
+    deviceId: "box",
+  });
+  assert(
+    good.ok && good.credentials.token === TOKEN,
+    "a valid login payload parses into credentials",
+  );
+
+  const badToken = parseLoginCredentials({
+    url: "http://127.0.0.1:8787",
+    token: "not-hex",
+    identityId: "self",
+    deviceId: "box",
+  });
+  assert(
+    !badToken.ok && badToken.field === "token",
+    "a malformed token is rejected on the token field",
+  );
+
+  const badUrl = parseLoginCredentials({
+    url: "ftp://example.com",
+    token: TOKEN,
+    identityId: "self",
+    deviceId: "box",
+  });
+  assert(
+    !badUrl.ok && badUrl.field === "url",
+    "a non-http url is rejected on the url field",
+  );
+  console.log("ok parseLoginCredentials validates the login payload once");
 }
 
 // A user paired before the file moved has a ~/.sandi/desktop.json; the first run

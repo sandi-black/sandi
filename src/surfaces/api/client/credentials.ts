@@ -50,6 +50,28 @@ export const DesktopCredentialsSchema = z.object({
 });
 export type DesktopCredentials = z.infer<typeof DesktopCredentialsSchema>;
 
+export type ParseLoginResult =
+  | { ok: true; credentials: DesktopCredentials }
+  | { ok: false; field: string; message: string };
+
+// Validates a `login` command's raw inputs into stored credentials in one pass.
+// The url and token are checked by DesktopCredentialsSchema (the same boundary
+// the file is read back through), so they are parsed once here rather than
+// pre-validated and then revalidated by the schema. On failure it reports which
+// field was at fault so the CLI can print a precise message.
+export function parseLoginCredentials(input: {
+  url: string;
+  token: string;
+  identityId: string;
+  deviceId: string;
+}): ParseLoginResult {
+  const parsed = DesktopCredentialsSchema.safeParse(input);
+  if (parsed.success) return { ok: true, credentials: parsed.data };
+  const issue = parsed.error.issues[0];
+  const field = typeof issue?.path[0] === "string" ? issue.path[0] : "input";
+  return { ok: false, field, message: issue?.message ?? "invalid credentials" };
+}
+
 export function desktopConfigPath(): string {
   const explicit = process.env["SANDI_DESKTOP_CONFIG"]?.trim();
   if (explicit) return resolve(expandHome(explicit));
@@ -134,12 +156,16 @@ export async function saveDesktopCredentials(
   }
 }
 
+// True when the path exists, false only when it is genuinely absent. A
+// permission or other filesystem error is rethrown rather than read as "absent",
+// so the migration surfaces a real failure instead of silently skipping.
 async function pathExists(path: string): Promise<boolean> {
   try {
     await access(path, constants.F_OK);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isMissingFileError(error)) return false;
+    throw error;
   }
 }
 

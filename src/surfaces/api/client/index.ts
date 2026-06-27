@@ -8,10 +8,10 @@ import {
 } from "@/surfaces/api/client/chat";
 import {
   type DesktopCredentials,
-  DesktopCredentialsSchema,
   desktopConfigPath,
   loadDesktopCredentials,
   migrateLegacyDesktopConfig,
+  parseLoginCredentials,
   ServerUrlSchema,
   saveDesktopCredentials,
 } from "@/surfaces/api/client/credentials";
@@ -125,33 +125,28 @@ async function loginCommand(args: string[]): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const rawUrl =
-    flags.options["url"] ?? process.env["SANDI_API_URL"] ?? DEFAULT_URL;
-  const parsedUrl = ServerUrlSchema.safeParse(rawUrl);
-  if (!parsedUrl.success) {
-    console.error(`invalid server url: ${rawUrl} (must be an http(s) url)`);
-    process.exitCode = 1;
-    return;
-  }
-  // Validate the whole credential set through the same schema the file is read
-  // back with, so a mistyped token is rejected here, not as a late 401.
-  const parsed = DesktopCredentialsSchema.safeParse({
-    url: parsedUrl.data,
+  // Validate the whole credential set in one pass through the same schema the
+  // file is read back with, so a mistyped token or url is rejected here (not as a
+  // late 401) without revalidating the url twice.
+  const parsed = parseLoginCredentials({
+    url: flags.options["url"] ?? process.env["SANDI_API_URL"] ?? DEFAULT_URL,
     token,
     identityId: flags.options["identity"] ?? "self",
     deviceId: flags.options["device"] ?? defaultDeviceLabel(),
   });
-  if (!parsed.success) {
-    const reason = parsed.error.issues[0]?.message ?? "invalid credentials";
-    console.error(`could not store credentials: ${reason}`);
+  if (!parsed.ok) {
+    console.error(
+      `could not store credentials (${parsed.field}): ${parsed.message}`,
+    );
     process.exitCode = 1;
     return;
   }
+  const { credentials } = parsed;
   const path = desktopConfigPath();
-  await saveDesktopCredentials(path, parsed.data);
+  await saveDesktopCredentials(path, credentials);
   console.log(`Saved credentials to ${path}.`);
   console.log(
-    `Linked to ${parsed.data.url} as device ${parsed.data.deviceId} (identity ${parsed.data.identityId}).`,
+    `Linked to ${credentials.url} as device ${credentials.deviceId} (identity ${credentials.identityId}).`,
   );
   console.log("Start chatting with: npm run client -- chat");
 }

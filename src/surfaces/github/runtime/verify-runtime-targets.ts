@@ -40,9 +40,11 @@ assert.throws(() => resolveRepoIssueTarget({ number: 0 }, FALLBACK));
 assert.throws(() => resolveRepoIssueTarget({ number: -3 }, FALLBACK));
 assert.throws(() => resolveRepoIssueTarget({ number: 1.5 }, FALLBACK));
 
-// The action input schemas require a non-empty body and a valid review event.
+// The action input schemas parse the repo fields too, so a blank owner is
+// rejected at the input boundary, not only at final target validation.
 assert.equal(CommentInputSchema.parse({ body: "hi" }).body, "hi");
 assert.throws(() => CommentInputSchema.parse({ body: "" }));
+assert.throws(() => CommentInputSchema.parse({ owner: "  ", body: "hi" }));
 assert.equal(
   ReplyToReviewCommentInputSchema.parse({ commentId: 5, body: "ok" }).commentId,
   5,

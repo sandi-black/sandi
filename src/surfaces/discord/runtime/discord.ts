@@ -393,11 +393,10 @@ export async function sendMessage(
     allowed_mentions: allowedMentions(input.allowMentions),
   };
   if (input.replyToMessageId) {
-    body["message_reference"] = {
-      message_id: DiscordMessageIdSchema.parse(input.replyToMessageId),
-      channel_id: channelId,
-      fail_if_not_exists: false,
-    };
+    body["message_reference"] = messageReferenceBody(
+      input.replyToMessageId,
+      channelId,
+    );
   }
   const message = await discordPost(
     rest,
@@ -488,11 +487,10 @@ async function sendLocalFile(input: {
     allowed_mentions: allowedMentions(input.input.allowMentions),
   };
   if (input.input.replyToMessageId) {
-    body["message_reference"] = {
-      message_id: input.input.replyToMessageId,
-      channel_id: channelId,
-      fail_if_not_exists: false,
-    };
+    body["message_reference"] = messageReferenceBody(
+      input.input.replyToMessageId,
+      channelId,
+    );
   }
   const message = DiscordMessageSchema.parse(
     await discordPostFile(Routes.channelMessages(channelId), body, {
@@ -545,6 +543,19 @@ export async function readImageAttachment(
     mimeType: downloaded.mimeType,
     size: downloaded.size,
     base64: downloaded.bytes.toString("base64"),
+  };
+}
+
+// Builds a Discord message_reference for a reply, parsing the target id at the
+// boundary so a malformed reply id fails clearly instead of being posted raw.
+function messageReferenceBody(
+  replyToMessageId: string,
+  channelId: string,
+): Record<string, unknown> {
+  return {
+    message_id: DiscordMessageIdSchema.parse(replyToMessageId),
+    channel_id: channelId,
+    fail_if_not_exists: false,
   };
 }
 

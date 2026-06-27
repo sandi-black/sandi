@@ -8,6 +8,8 @@ import {
   CreatePullRequestReviewInputSchema,
   type GitHubRepoIssueTarget,
   ReplyToReviewCommentInputSchema,
+  type RepoIssueFields,
+  RepoIssueInputSchema,
   resolveRepoIssueTarget,
 } from "@/surfaces/github/runtime/targets";
 
@@ -133,7 +135,7 @@ export async function getPullRequestDiff(
 export async function comment(input: CommentInput) {
   const parsed = CommentInputSchema.parse(input);
   const created = await api().createIssueComment({
-    ...resolveRepoIssue(input),
+    ...resolveRepoIssueTarget(parsed, contextFallback()),
     body: parsed.body,
   });
   await recordDeliverySideEffect("github:comment");
@@ -149,7 +151,7 @@ export async function replyToReviewComment(input: ReplyToReviewCommentInput) {
     );
   }
   const created = await api().replyToReviewComment({
-    ...resolveRepoIssue(input),
+    ...resolveRepoIssueTarget(parsed, contextFallback()),
     commentId,
     body: parsed.body,
   });
@@ -162,7 +164,7 @@ export async function createPullRequestReview(
 ) {
   const parsed = CreatePullRequestReviewInputSchema.parse(input);
   const created = await api().createPullRequestReview({
-    ...resolveRepoIssue(input),
+    ...resolveRepoIssueTarget(parsed, contextFallback()),
     body: parsed.body,
     event: parsed.event ?? "COMMENT",
   });
@@ -202,17 +204,22 @@ function api(): GitHubApi {
 }
 
 function resolveRepoIssue(input: RepoIssueInput): GitHubRepoIssueTarget {
-  const context = optionalContext();
   return resolveRepoIssueTarget(
-    input,
-    context
-      ? {
-          owner: context.repository.owner,
-          repo: context.repository.repo,
-          number: context.thread.number,
-        }
-      : undefined,
+    RepoIssueInputSchema.parse(input),
+    contextFallback(),
   );
+}
+
+// The repo/issue fields the current GitHub thread can supply as a fallback, or
+// undefined on a turn from another surface where every field must be explicit.
+function contextFallback(): RepoIssueFields | undefined {
+  const context = optionalContext();
+  if (!context) return undefined;
+  return {
+    owner: context.repository.owner,
+    repo: context.repository.repo,
+    number: context.thread.number,
+  };
 }
 
 function currentReviewCommentId(): number | undefined {

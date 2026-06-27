@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 
+import { resolveGuildId } from "@/surfaces/discord/runtime/guild";
 import {
   DeleteMessageInputSchema,
   DiscordMessageIdSchema,
@@ -9,10 +10,11 @@ import {
 } from "@/surfaces/discord/runtime/targets";
 
 const CHANNEL = "123456789012345678";
+const GUILD = "111111111111111111";
 const MESSAGE = "987654321098765432";
 
-// parseChannelTarget resolves the context keywords, explicit snowflakes (raw, a
-// <#id> mention, or a channel URL), and bare names into a precise target.
+// parseChannelTarget resolves the context keywords, explicit snowflakes (a bare
+// id, a <#id> mention, or a channel URL), and bare names into a precise target.
 assert.deepEqual(parseChannelTarget("current"), { kind: "current" });
 assert.deepEqual(parseChannelTarget("  parent "), { kind: "parent" });
 assert.deepEqual(parseChannelTarget(CHANNEL), { kind: "id", id: CHANNEL });
@@ -28,9 +30,11 @@ assert.deepEqual(parseChannelTarget("#general"), {
   kind: "name",
   name: "general",
 });
-assert.deepEqual(parseChannelTarget("general"), {
+// A name that merely contains a long digit run is a name, not an id: the id
+// forms must match the whole reference, no substring extraction.
+assert.deepEqual(parseChannelTarget(`team-${CHANNEL}`), {
   kind: "name",
-  name: "general",
+  name: `team-${CHANNEL}`,
 });
 assert.throws(() => parseChannelTarget("   "), /must not be empty/);
 
@@ -58,5 +62,23 @@ assert.deepEqual(
   { messageId: MESSAGE, reason: "spam" },
 );
 assert.throws(() => DeleteMessageInputSchema.parse({ channel: "" }));
+
+// resolveGuildId parses both the per-turn context guild and (in its absence) the
+// configured fallback through the snowflake schema, so a malformed guild id never
+// reaches Discord route construction.
+const priorGuildEnv = process.env["DISCORD_GUILD_ID"];
+try {
+  delete process.env["DISCORD_GUILD_ID"];
+  assert.equal(resolveGuildId(GUILD), GUILD);
+  assert.throws(() => resolveGuildId("not-a-guild"));
+  assert.throws(() => resolveGuildId(undefined), /requires a guild/);
+  process.env["DISCORD_GUILD_ID"] = GUILD;
+  assert.equal(resolveGuildId(undefined), GUILD);
+  process.env["DISCORD_GUILD_ID"] = "bogus";
+  assert.throws(() => resolveGuildId(undefined), /snowflake/);
+} finally {
+  if (priorGuildEnv === undefined) delete process.env["DISCORD_GUILD_ID"];
+  else process.env["DISCORD_GUILD_ID"] = priorGuildEnv;
+}
 
 console.log("discord runtime targets verification passed");

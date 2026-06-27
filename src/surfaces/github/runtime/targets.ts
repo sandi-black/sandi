@@ -52,18 +52,28 @@ export const CreatePullRequestReviewInputSchema = RepoIssueInputSchema.extend({
   event: GitHubReviewEventSchema.optional(),
 });
 
-// Resolves an explicit owner/repo/number against the current thread's fallback
-// (the GitHub context's repository and thread number, when this turn originated
-// on GitHub), then validates the resolved target. Throws a clear error when a
-// turn from another surface omits a field the context cannot supply.
+// A repo/issue target carried by an already-parsed helper input. The action
+// schemas above all extend RepoIssueInputSchema, so this is the parsed shape
+// every caller threads in without re-parsing the boundary.
+export type RepoIssueFields = {
+  owner?: string | undefined;
+  repo?: string | undefined;
+  number?: number | undefined;
+};
+
+// Resolves an already-parsed owner/repo/number against the current thread's
+// fallback (the GitHub context's repository and thread number, when this turn
+// originated on GitHub), then validates the resolved target. The input is parsed
+// once by the caller's schema; only the resolved target (which may draw on
+// context values) is validated here. Throws a clear error when a turn from
+// another surface omits a field the context cannot supply.
 export function resolveRepoIssueTarget(
-  input: { owner?: string; repo?: string; number?: number },
-  fallback: { owner?: string; repo?: string; number?: number } | undefined,
+  input: RepoIssueFields,
+  fallback: RepoIssueFields | undefined,
 ): GitHubRepoIssueTarget {
-  const parsed = RepoIssueInputSchema.parse(input);
-  const owner = parsed.owner ?? fallback?.owner;
-  const repo = parsed.repo ?? fallback?.repo;
-  const number = parsed.number ?? fallback?.number;
+  const owner = input.owner ?? fallback?.owner;
+  const repo = input.repo ?? fallback?.repo;
+  const number = input.number ?? fallback?.number;
   if (owner === undefined || repo === undefined || number === undefined) {
     throw new Error(
       "Provide owner, repo, and number to target a GitHub thread from a turn that did not originate on GitHub.",

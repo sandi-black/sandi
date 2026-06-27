@@ -26,10 +26,15 @@ export function configuredGuildId(): string | undefined {
 // The guild a helper should operate in: the per-turn guild (the current Discord
 // context's guild) when present, else the configured fallback so a turn from
 // another surface can still resolve channels by name and list the server's
-// channels. Throws when neither is available.
+// channels. Both sources are parsed through the snowflake schema, so an invalid
+// guild id never reaches Discord route construction. Throws when neither is
+// available.
 export function resolveGuildId(contextGuildId: string | undefined): string {
-  const guildId = contextGuildId ?? configuredGuildId();
-  if (guildId) return guildId;
+  if (contextGuildId !== undefined) {
+    return DiscordSnowflakeSchema.parse(contextGuildId);
+  }
+  const configured = configuredGuildId();
+  if (configured) return configured;
   throw new Error(
     "This Discord helper requires a guild/server. Set DISCORD_GUILD_ID or run it from a Discord turn.",
   );

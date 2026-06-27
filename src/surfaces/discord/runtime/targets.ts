@@ -35,15 +35,24 @@ export type DiscordChannelTarget =
   | { kind: "id"; id: string }
   | { kind: "name"; name: string };
 
+const CHANNEL_SNOWFLAKE = /^\d{15,25}$/u;
+const CHANNEL_MENTION = /^<#(\d{15,25})>$/u;
+const CHANNEL_URL = /^https?:\/\/\S*\/channels\/(?:@me|\d+)\/(\d{15,25})\b/u;
+
 // Parses a channel reference into a precise target: the two context-relative
-// keywords, an explicit snowflake (raw, a <#id> mention, or a channel URL), or a
-// channel name to resolve against the guild's channels.
+// keywords, an explicit snowflake (a bare id, a <#id> mention, or a channel
+// URL), or a channel name to resolve against the guild's channels. The id forms
+// must match the whole reference (or the channel segment of a URL), so a name
+// that merely contains a long digit run is treated as a name, not an id.
 export function parseChannelTarget(rawChannel: string): DiscordChannelTarget {
   const raw = DiscordChannelRefSchema.parse(rawChannel);
   if (raw === "current") return { kind: "current" };
   if (raw === "parent") return { kind: "parent" };
-  const id = raw.match(/\d{15,25}/u)?.[0];
-  if (id) return { kind: "id", id };
+  if (CHANNEL_SNOWFLAKE.test(raw)) return { kind: "id", id: raw };
+  const mention = CHANNEL_MENTION.exec(raw)?.[1];
+  if (mention) return { kind: "id", id: mention };
+  const url = CHANNEL_URL.exec(raw)?.[1];
+  if (url) return { kind: "id", id: url };
   return { kind: "name", name: raw.replace(/^#/u, "") };
 }
 

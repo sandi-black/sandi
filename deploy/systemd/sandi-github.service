@@ -10,6 +10,13 @@ WorkingDirectory=/srv/sandi/app
 Environment=NODE_ENV=production
 Environment=PATH=/root/.volta/bin:/root/.volta/tools/image/node/24.15.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=/srv/sandi/app/.env
+# Optional: runs the GitHub surface as its own process. The GitHub surface is
+# poll-based and binds no port, so it can run standalone here alongside the
+# merged host without conflict. Use this when you want GitHub to restart
+# independently of Discord. The alternative is to fold GitHub into the merged
+# host by setting SANDI_GITHUB_ENABLED=true in .env and not installing this
+# unit; that keeps GitHub turns on the same shared device links as the other
+# surfaces. Run it in exactly one place, never both.
 ExecStart=/srv/sandi/app/node_modules/.bin/tsx src/surfaces/github/index.ts
 Restart=always
 RestartSec=10

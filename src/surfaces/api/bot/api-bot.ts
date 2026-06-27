@@ -33,9 +33,9 @@ import { apiParticipantFromHuman } from "@/surfaces/api/auth/participant";
 import { FixedWindowLimiter } from "@/surfaces/api/auth/rate-limiter";
 import { type ApiTokenEntry, ApiTokenStore } from "@/surfaces/api/auth/tokens";
 import type { ApiAppConfig } from "@/surfaces/api/config";
-import { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
+import type { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
 import { DeviceRoutes } from "@/surfaces/api/devices/device-routes";
-import { ToolBroker } from "@/surfaces/api/devices/tool-broker";
+import type { ToolBroker } from "@/surfaces/api/devices/tool-broker";
 import { readJsonBody } from "@/surfaces/api/http/read-json-body";
 import { bearerToken, sendJson } from "@/surfaces/api/http/respond";
 import { API_SURFACE_CONTEXT } from "@/surfaces/api/runtime/context";
@@ -73,6 +73,12 @@ export type ApiBotInput = {
   conversations: ConversationStore;
   contextCompiler: ContextCompiler;
   provider: ModelProviderClient;
+  // The device registry and tool broker are owned by the composition root and
+  // shared across every surface, so a turn from any surface can reach the same
+  // desktop links. The host starts and stops them; the api bot only registers
+  // device links and leases per-turn tickets against them.
+  devices: DeviceRegistry;
+  broker: ToolBroker;
 };
 
 export class ApiBot {
@@ -88,9 +94,9 @@ export class ApiBot {
     PAIR_RATE_MAX_PER_CLIENT,
     PAIR_RATE_MAX_GLOBAL,
   );
-  readonly #devices = new DeviceRegistry();
-  readonly #broker = new ToolBroker(this.#devices);
-  readonly #deviceRoutes = new DeviceRoutes(this.#devices);
+  readonly #devices: DeviceRegistry;
+  readonly #broker: ToolBroker;
+  readonly #deviceRoutes: DeviceRoutes;
   #server: Server | undefined;
 
   constructor(input: ApiBotInput) {
@@ -98,6 +104,9 @@ export class ApiBot {
     this.#conversations = input.conversations;
     this.#contextCompiler = input.contextCompiler;
     this.#provider = input.provider;
+    this.#devices = input.devices;
+    this.#broker = input.broker;
+    this.#deviceRoutes = new DeviceRoutes(input.devices);
     // ttlMs 0 on both auth stores: re-stat on every check so a token minted by
     // the pairing endpoint authenticates immediately (no cache-window 401), a
     // revoked token stops working at once, and a removed or unmapped identity
@@ -110,8 +119,12 @@ export class ApiBot {
   async start(): Promise<void> {
     if (this.#server) return;
     // The loopback tool broker must be reachable before any turn leases a ticket
-    // for it, so start it before the public listener accepts requests.
-    await this.#broker.start();
+    // for it. The composition root owns the broker's lifecycle (it is shared
+    // across surfaces) and starts it before any bot, so we only assert it here
+    // rather than starting it ourselves.
+    if (!this.#broker.url()) {
+      throw new Error("tool broker must be started before the API bot");
+    }
     const server = createServer((request, response) => {
       void this.#handleRequest(request, response);
     });
@@ -143,8 +156,9 @@ export class ApiBot {
     if (!server) return;
     this.#server = undefined;
     log.info("stopping API surface");
-    this.#devices.closeAll();
-    this.#broker.stop();
+    // The shared device registry and tool broker are owned by the composition
+    // root, which closes them once for the whole process. Closing them here
+    // would tear down links and the broker out from under any other surface.
     server.close();
     server.closeAllConnections?.();
   }

@@ -11,6 +11,10 @@ import {
 } from "@/lib/identity/resolver";
 import type { HumanIdentityConfig } from "@/lib/identity/types";
 import { createLogger } from "@/lib/logging";
+import type {
+  DesktopHands,
+  DesktopHandsLease,
+} from "@/lib/provider/desktop-hands";
 import type { PiAccountRoutingRequest } from "@/lib/provider/pi-account-routing";
 import {
   type ModelProviderClient,
@@ -50,6 +54,10 @@ export type GitHubBotInput = {
   conversations: ConversationStore;
   contextCompiler: ContextCompiler;
   provider: ModelProviderClient;
+  // Shared desktop-hands capability, injected by the host when the api surface
+  // runs alongside GitHub so a GitHub turn from a human whose desktop is linked
+  // can reach that desktop. Absent in a standalone GitHub process.
+  desktopHands?: DesktopHands;
   state?: GitHubNotificationState;
 };
 
@@ -81,6 +89,7 @@ export class GitHubBot {
   readonly #conversations: ConversationStore;
   readonly #contextCompiler: ContextCompiler;
   readonly #provider: ModelProviderClient;
+  readonly #desktopHands: DesktopHands | undefined;
   readonly #state: GitHubNotificationState;
   readonly #queue = new ThreadQueue();
   readonly #pendingTriggerKeys = new Set<string>();
@@ -96,6 +105,7 @@ export class GitHubBot {
     this.#conversations = input.conversations;
     this.#contextCompiler = input.contextCompiler;
     this.#provider = input.provider;
+    this.#desktopHands = input.desktopHands;
     this.#state =
       input.state ?? new GitHubNotificationState(input.config.paths.dataDir);
   }
@@ -294,6 +304,7 @@ export class GitHubBot {
       deliveryInstructions: GITHUB_DELIVERY_INSTRUCTIONS,
       skillHintQuery: skillHintQuery(input.trigger),
     });
+    const lease = this.#leaseDesktopHands(input.actor.identityId, input.signal);
     const request: ProviderTurnRequest = {
       conversationId: input.conversation.canonicalId,
       instructions,
@@ -313,33 +324,51 @@ export class GitHubBot {
         conversation: input.conversation,
         participants: input.conversation.participants,
       }),
+      ...(lease ? { localToolBroker: lease.ticket } : {}),
       signal: input.signal,
     };
-    let response: ProviderTurnResponse;
     try {
-      response = await this.#provider.generateTurn(request);
-    } catch (error) {
-      if (error instanceof ProviderTurnError && error.deliverySideEffects) {
-        log.warn("GitHub provider turn failed after delivery side effect", {
-          conversationId: input.conversation.canonicalId,
-          triggerKey: input.trigger.key,
-          reason: error.reason,
-          providerError: error.message,
-        });
-        return;
+      let response: ProviderTurnResponse;
+      try {
+        response = await this.#provider.generateTurn(request);
+      } catch (error) {
+        if (error instanceof ProviderTurnError && error.deliverySideEffects) {
+          log.warn("GitHub provider turn failed after delivery side effect", {
+            conversationId: input.conversation.canonicalId,
+            triggerKey: input.trigger.key,
+            reason: error.reason,
+            providerError: error.message,
+          });
+          return;
+        }
+        throw error;
       }
-      throw error;
+      log.info("GitHub provider turn finished", {
+        conversationId: input.conversation.canonicalId,
+        triggerKey: input.trigger.key,
+        responseLength: response.text.length,
+        deliverySideEffects: response.deliverySideEffects,
+      });
+      await this.#sendProviderResponse({
+        trigger: input.trigger,
+        response,
+      });
+    } finally {
+      lease?.revoke();
     }
-    log.info("GitHub provider turn finished", {
-      conversationId: input.conversation.canonicalId,
-      triggerKey: input.trigger.key,
-      responseLength: response.text.length,
-      deliverySideEffects: response.deliverySideEffects,
-    });
-    await this.#sendProviderResponse({
-      trigger: input.trigger,
-      response,
-    });
+  }
+
+  // Leases hands on the actor's desktop when their machine is linked, so a
+  // GitHub turn can read files and run shell commands there alongside its
+  // server-side tools. Returns undefined when the actor is unmapped, no
+  // desktop-hands capability is wired (a standalone GitHub process), or the
+  // actor has no desktop holding a link.
+  #leaseDesktopHands(
+    identityId: string | undefined,
+    signal: AbortSignal,
+  ): DesktopHandsLease | undefined {
+    if (!identityId || !this.#desktopHands) return undefined;
+    return this.#desktopHands.leaseForIdentity({ identityId, signal });
   }
 
   async #sendProviderResponse(input: {

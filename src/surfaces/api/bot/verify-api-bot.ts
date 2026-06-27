@@ -21,6 +21,8 @@ import {
 } from "@/surfaces/api/auth/tokens";
 import { ApiBot } from "@/surfaces/api/bot/api-bot";
 import type { ApiAppConfig } from "@/surfaces/api/config";
+import { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
+import { ToolBroker } from "@/surfaces/api/devices/tool-broker";
 import { API_SURFACE_CONTEXT } from "@/surfaces/api/runtime/context";
 
 const RAW_TOKEN =
@@ -36,6 +38,8 @@ async function verifyApiBot(): Promise<void> {
   const dataDir = await mkdtemp(join(tmpdir(), "sandi-api-bot-"));
   const provider = new RecordingProvider();
   const config = testConfig(dataDir);
+  const devices = new DeviceRegistry();
+  const broker = new ToolBroker(devices);
   const bot = new ApiBot({
     config,
     conversations: new ConversationStore(dataDir),
@@ -45,10 +49,13 @@ async function verifyApiBot(): Promise<void> {
       API_SURFACE_CONTEXT,
     ),
     provider,
+    devices,
+    broker,
   });
 
   try {
     await writeFixtures(dataDir);
+    await broker.start();
     await bot.start();
     const port = bot.address()?.port;
     if (!port) throw new Error("API bot did not expose a listening port");
@@ -68,6 +75,8 @@ async function verifyApiBot(): Promise<void> {
     await verifyPairing(base, config);
   } finally {
     bot.stop();
+    devices.closeAll();
+    broker.stop();
     await rm(dataDir, { recursive: true, force: true });
   }
 }

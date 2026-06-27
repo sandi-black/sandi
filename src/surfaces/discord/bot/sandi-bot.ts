@@ -35,6 +35,10 @@ import {
   defaultApiPairingsPath,
   PAIRING_TTL_MS,
 } from "@/lib/pairing/pairing-store";
+import type {
+  DesktopHands,
+  DesktopHandsLease,
+} from "@/lib/provider/desktop-hands";
 import type { PiAccountRoutingRequest } from "@/lib/provider/pi-account-routing";
 import {
   type ModelProviderClient,
@@ -144,6 +148,11 @@ export type SandiBotDependencies = {
   conversations: ConversationStore;
   contextCompiler: ContextCompiler;
   provider: ModelProviderClient;
+  // When the host runs the api surface alongside Discord, it injects the shared
+  // desktop-hands capability so a Discord turn from a human whose desktop is
+  // linked can run file and shell tools on that desktop. Absent in a standalone
+  // Discord process, where no desktop links exist to reach.
+  desktopHands?: DesktopHands;
 };
 
 type DiscordToolContext = {
@@ -195,6 +204,7 @@ export class SandiBot {
   readonly #conversations: ConversationStore;
   readonly #contextCompiler: ContextCompiler;
   readonly #provider: ModelProviderClient;
+  readonly #desktopHands: DesktopHands | undefined;
   readonly #events: EventWatcher;
   readonly #reminders: ReminderManager;
   readonly #reactions: ReactionDigestStore;
@@ -210,6 +220,7 @@ export class SandiBot {
     this.#conversations = deps.conversations;
     this.#contextCompiler = deps.contextCompiler;
     this.#provider = deps.provider;
+    this.#desktopHands = deps.desktopHands;
     this.#events = new EventWatcher(
       this.#config.paths.eventsRoot,
       (trigger) => {
@@ -1107,6 +1118,26 @@ export class SandiBot {
     );
   }
 
+  // Leases hands on the author's desktop when their machine is linked, so a
+  // Discord turn can read files and run shell commands there in addition to its
+  // server-side tools. Returns undefined when the author is unmapped, no
+  // desktop-hands capability is wired (a standalone Discord process), or the
+  // author has no desktop holding a link. A Discord turn has no client socket to
+  // disconnect, so when the queue passes no signal we bind to a never-aborting
+  // one; the turn's finally revokes the ticket and the broker backstops a
+  // stalled call.
+  #leaseDesktopHands(
+    author: ConversationParticipant,
+    signal: AbortSignal | undefined,
+  ): DesktopHandsLease | undefined {
+    const identityId = author.identityId;
+    if (!identityId || !this.#desktopHands) return undefined;
+    return this.#desktopHands.leaseForIdentity({
+      identityId,
+      signal: signal ?? new AbortController().signal,
+    });
+  }
+
   async #runTurn(input: RunTurnInput): Promise<void> {
     log.info("starting conversation turn", {
       conversationId: input.conversation.canonicalId,
@@ -1142,21 +1173,28 @@ export class SandiBot {
         conversationId: input.conversation.canonicalId,
         messageId: input.messageId,
       });
-      const providerRequest = {
-        conversationId: input.conversation.canonicalId,
-        instructions,
-        input: formatUserTurn(input.author, input.input, metadata),
-        sessionMode: "persistent" as const,
-        platformContext: input.toolContext,
-        accountRouting: accountRoutingForPersistentTurn(input.author),
-        surfaceContext: DISCORD_SURFACE_CONTEXT,
-        memoryContext: this.#memoryContext(input.conversation),
-      };
-      const response = await this.#provider.generateTurn(
-        input.signal
-          ? { ...providerRequest, signal: input.signal }
-          : providerRequest,
-      );
+      const lease = this.#leaseDesktopHands(input.author, input.signal);
+      let response: ProviderTurnResponse;
+      try {
+        const providerRequest = {
+          conversationId: input.conversation.canonicalId,
+          instructions,
+          input: formatUserTurn(input.author, input.input, metadata),
+          sessionMode: "persistent" as const,
+          platformContext: input.toolContext,
+          accountRouting: accountRoutingForPersistentTurn(input.author),
+          surfaceContext: DISCORD_SURFACE_CONTEXT,
+          memoryContext: this.#memoryContext(input.conversation),
+          ...(lease ? { localToolBroker: lease.ticket } : {}),
+        };
+        response = await this.#provider.generateTurn(
+          input.signal
+            ? { ...providerRequest, signal: input.signal }
+            : providerRequest,
+        );
+      } finally {
+        lease?.revoke();
+      }
       log.info("provider turn finished", {
         conversationId: input.conversation.canonicalId,
         messageId: input.messageId,
@@ -1337,19 +1375,26 @@ export class SandiBot {
         conversationId: `oneoff:${message.id}`,
         messageId: message.id,
       });
-      const providerRequest = {
-        conversationId: `oneoff:${message.id}`,
-        instructions,
-        input: formatUserTurn(author, input, metadata),
-        sessionMode: "none" as const,
-        platformContext: toolContextFromMessage(message, author),
-        accountRouting: accountRoutingForOneOffTurn(author),
-        surfaceContext: DISCORD_SURFACE_CONTEXT,
-        memoryContext: this.#memoryContext(undefined, [author]),
-      };
-      const response = await this.#provider.generateTurn(
-        signal ? { ...providerRequest, signal } : providerRequest,
-      );
+      const lease = this.#leaseDesktopHands(author, signal);
+      let response: ProviderTurnResponse;
+      try {
+        const providerRequest = {
+          conversationId: `oneoff:${message.id}`,
+          instructions,
+          input: formatUserTurn(author, input, metadata),
+          sessionMode: "none" as const,
+          platformContext: toolContextFromMessage(message, author),
+          accountRouting: accountRoutingForOneOffTurn(author),
+          surfaceContext: DISCORD_SURFACE_CONTEXT,
+          memoryContext: this.#memoryContext(undefined, [author]),
+          ...(lease ? { localToolBroker: lease.ticket } : {}),
+        };
+        response = await this.#provider.generateTurn(
+          signal ? { ...providerRequest, signal } : providerRequest,
+        );
+      } finally {
+        lease?.revoke();
+      }
       log.info("provider turn finished", {
         conversationId: `oneoff:${message.id}`,
         messageId: message.id,

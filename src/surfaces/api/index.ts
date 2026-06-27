@@ -9,6 +9,8 @@ import { ensurePiRuntimeSetup } from "@/lib/provider/pi-runtime-setup";
 import { startEmbeddingIndexMaintenance } from "@/lib/retrieval/embedding-index-maintenance";
 import { ApiBot } from "@/surfaces/api/bot/api-bot";
 import { loadApiAppConfig } from "@/surfaces/api/config";
+import { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
+import { ToolBroker } from "@/surfaces/api/devices/tool-broker";
 import { API_SURFACE_CONTEXT } from "@/surfaces/api/runtime/context";
 
 const log = createLogger("api-main");
@@ -25,6 +27,14 @@ const embeddingMaintenance = startEmbeddingIndexMaintenance({
   logger: createLogger("embedding-index"),
 });
 
+// The device registry and tool broker are shared, process-owned resources. In
+// the standalone API surface this entry point owns them; in the merged host
+// they are owned there and shared across every surface. The broker must be
+// listening before the bot accepts requests, so start it first.
+const devices = new DeviceRegistry();
+const broker = new ToolBroker(devices);
+await broker.start();
+
 const bot = new ApiBot({
   config,
   conversations: new ConversationStore(config.paths.dataDir),
@@ -35,6 +45,8 @@ const bot = new ApiBot({
     config.environmentHint,
   ),
   provider: new PiCliClient(config.pi),
+  devices,
+  broker,
 });
 
 process.on("unhandledRejection", (reason) => {
@@ -55,6 +67,10 @@ function shutdown(signal: NodeJS.Signals): void {
 
   try {
     bot.stop();
+    // The bot no longer owns these shared resources, so close them here where
+    // they were started.
+    devices.closeAll();
+    broker.stop();
   } catch (error) {
     log.error("API bot shutdown failed", { error: errorMessage(error) });
     process.exitCode = 1;

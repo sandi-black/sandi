@@ -111,6 +111,25 @@ export class DeviceRegistry {
     return state !== undefined && !state.closed;
   }
 
+  // Finds a live device link belonging to a human identity, returning its
+  // routing key. The api surface keys a turn by the caller's own token hash, but
+  // a turn that originates on another surface (a Discord message, a GitHub
+  // mention) has no device token: it reaches the human's desktop by identity
+  // instead. When a human has more than one desktop linked, the most recently
+  // connected one wins (connections preserve insertion order, so the last match
+  // is newest). Returns undefined when that human has no desktop holding a link,
+  // so the turn runs with server hands only rather than reaching a stranger's
+  // machine.
+  keyForIdentity(identityId: string): string | undefined {
+    let key: string | undefined;
+    for (const state of this.#connections.values()) {
+      if (!state.closed && state.identityId === identityId) {
+        key = state.key;
+      }
+    }
+    return key;
+  }
+
   // Pushes a tool call to the keyed device's stream and resolves with the
   // outcome the device POSTs back. Rejects with DeviceUnavailableError if no link
   // is present or the stream is dead, and rejects if the turn aborts or the

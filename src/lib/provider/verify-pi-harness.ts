@@ -205,9 +205,8 @@ process.stdout.write("fake model output\\n");
       name: "api",
       skillsSurface: "api",
       runtimeImport: "./sandi/runtime.ts",
-      runtimeEntry: "./src/surfaces/api/runtime/index.ts",
+      runtimeEntry: "./src/host/runtime/index.ts",
       disableBuiltinTools: true,
-      excludeTools: ["sandi_js_run"],
     },
     localToolBroker: { url: "http://127.0.0.1:9", token: "broker-secret" },
     memoryContext: {
@@ -222,8 +221,8 @@ process.stdout.write("fake model output\\n");
     "api turns disable pi's native builtin file and shell tools",
   );
   assert(
-    valueAfter(apiRecord.args, "--exclude-tools") === "sandi_js_run",
-    "api turns exclude sandi_js_run so no code runs on the server",
+    !apiRecord.args.includes("--exclude-tools"),
+    "api turns no longer exclude sandi_js_run: one trusted environment, the same trust other surface turns run under",
   );
   assert(
     apiRecord.env.SANDI_TOOL_BROKER_URL === "http://127.0.0.1:9",

@@ -294,9 +294,12 @@ export class PiCliClient implements ModelProviderClient {
         this.#agentDir,
         this.#packageDir,
         request.localToolBroker,
-        // Prefer the caller's turn id so the desktop can scope this turn's
-        // stream; fall back to the internal id when none was supplied.
-        request.turnId ?? turnId,
+        // Only the caller's turn id, set when a client is awaiting this turn's
+        // streamed response (the desktop generates one to scope its live
+        // preview). Left unset otherwise so the response-stream extension stays
+        // off: a turn that merely leased desktop hands while originating on
+        // another surface must not push its reply onto that desktop's link.
+        request.turnId,
         request.input,
         request.signal,
       );

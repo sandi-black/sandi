@@ -1,3 +1,9 @@
+// The default `sandi_js_run` runtime entry. Every surface points here so a turn
+// composes the same unified runtime regardless of where it originated: the
+// module at this path re-exports every surface's server-side helpers. It is a
+// plain path string (not an import) so naming it from core couples nothing.
+export const UNIFIED_RUNTIME_ENTRY = "./src/host/runtime/index.ts";
+
 export type SandiSurfaceContext = {
   name: string;
   skillsSurface: string;

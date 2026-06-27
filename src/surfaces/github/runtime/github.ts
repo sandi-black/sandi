@@ -94,7 +94,7 @@ export type CreatePullRequestReviewInput = RepoIssueInput & {
 };
 
 export function currentContext(): GitHubContext {
-  return readContext();
+  return requireContext();
 }
 
 export async function getPullRequest(input: RepoIssueInput = {}) {
@@ -160,14 +160,27 @@ export async function createPullRequestReview(
   return created;
 }
 
-function readContext(): GitHubContext {
+// The current GitHub thread context, when this turn originated on GitHub.
+// Returns undefined on a turn from another surface (a desktop or Discord turn
+// reaching into GitHub), where there is no current thread and every helper must
+// name an explicit owner, repo, and number.
+function optionalContext(): GitHubContext | undefined {
   const raw = readGitHubPlatformContext();
-  if (!raw) {
+  if (!raw) return undefined;
+  return GitHubContextSchema.parse(JSON.parse(raw));
+}
+
+// The current GitHub thread context, or an error. Used by helpers that only make
+// sense on a GitHub-originated turn (reading the triggering thread, replying to
+// the review comment that triggered the turn).
+function requireContext(): GitHubContext {
+  const context = optionalContext();
+  if (!context) {
     throw new Error(
       "GitHub runtime helpers require SANDI_PLATFORM_CONTEXT from a GitHub turn.",
     );
   }
-  return GitHubContextSchema.parse(JSON.parse(raw));
+  return context;
 }
 
 function api(): GitHubApi {
@@ -179,16 +192,20 @@ function api(): GitHubApi {
 }
 
 function resolveRepoIssue(input: RepoIssueInput) {
-  const context = readContext();
-  return {
-    owner: input.owner ?? context.repository.owner,
-    repo: input.repo ?? context.repository.repo,
-    number: input.number ?? context.thread.number,
-  };
+  const context = optionalContext();
+  const owner = input.owner ?? context?.repository.owner;
+  const repo = input.repo ?? context?.repository.repo;
+  const number = input.number ?? context?.thread.number;
+  if (!owner || !repo || number === undefined) {
+    throw new Error(
+      "Provide owner, repo, and number to target a GitHub thread from a turn that did not originate on GitHub.",
+    );
+  }
+  return { owner, repo, number };
 }
 
 function currentReviewCommentId(): number | undefined {
-  const source = readContext().trigger.source;
+  const source = requireContext().trigger.source;
   if (source?.kind !== "review_comment") return undefined;
   return source.id;
 }

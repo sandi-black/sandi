@@ -3,6 +3,11 @@ import type { Dirent, Stats } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import {
+  listMonitors,
+  listWindows,
+  screenshot,
+} from "@/surfaces/api/client/desktop-state";
 import type {
   BrokerCall,
   LocalBashParams,
@@ -66,6 +71,16 @@ export async function executeLocalTool(
         return await grepLocal(call.params, context, signal);
       case "local_bash":
         return await bashLocal(call.params, context, signal);
+      case "local_list_desktops":
+        // The broker answers this from its registry and never dispatches it to a
+        // desktop; this case only keeps the switch exhaustive.
+        return refused("local_list_desktops is resolved server-side");
+      case "local_list_monitors":
+        return await listMonitors(signal);
+      case "local_list_windows":
+        return await listWindows(signal);
+      case "local_screenshot":
+        return await screenshot(call.params, signal);
     }
   } catch (error) {
     return refused(errorMessage(error));

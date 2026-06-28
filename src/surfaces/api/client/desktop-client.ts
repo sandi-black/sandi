@@ -5,6 +5,7 @@ import type { DesktopCredentials } from "@/surfaces/api/client/credentials";
 import { executeLocalTool } from "@/surfaces/api/client/executors";
 import { postJson } from "@/surfaces/api/client/http";
 import {
+  type DeviceImage,
   RESPONSE_CHUNK_EVENT,
   type ResponseChunk,
   ResponseChunkSchema,
@@ -243,6 +244,7 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
       ok: outcome.ok,
       output: outcome.output,
       ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+      ...(outcome.image !== undefined ? { image: outcome.image } : {}),
     });
   } finally {
     conn.inflight.delete(id);
@@ -251,7 +253,13 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
 
 async function reportResult(
   conn: Connection,
-  result: { id: string; ok: boolean; output: string; error?: string },
+  result: {
+    id: string;
+    ok: boolean;
+    output: string;
+    error?: string;
+    image?: DeviceImage;
+  },
 ): Promise<void> {
   try {
     const response = await postJson({

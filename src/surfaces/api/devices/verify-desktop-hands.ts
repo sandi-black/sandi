@@ -4,8 +4,77 @@ import { ToolBroker } from "@/surfaces/api/devices/tool-broker";
 
 async function verifyDesktopHands(): Promise<void> {
   verifyKeyForIdentity();
+  verifyDesktopResolution();
   await verifyLeaseForIdentity();
   console.log("desktop hands verification passed");
+}
+
+function verifyDesktopResolution(): void {
+  const registry = new DeviceRegistry();
+  const a = registry.connect({
+    key: "key-a",
+    deviceId: "Grace's ThinkPad",
+    identityId: "grace",
+    write: () => true,
+    end: () => {},
+  });
+  const b = registry.connect({
+    key: "key-b",
+    deviceId: "Hopper Studio",
+    identityId: "grace",
+    write: () => true,
+    end: () => {},
+  });
+  const c = registry.connect({
+    key: "key-c",
+    deviceId: "Ada's Desk",
+    identityId: "ada",
+    write: () => true,
+    end: () => {},
+  });
+
+  assertEqual(
+    registry.identityForKey("key-a"),
+    "grace",
+    "a live key resolves to its owning identity",
+  );
+  assertEqual(
+    registry.identityForKey("key-missing"),
+    undefined,
+    "an unknown key resolves to no identity",
+  );
+
+  const graceDesktops = registry
+    .desktopsForIdentity("grace")
+    .map((desktop) => desktop.key)
+    .sort();
+  assertEqual(
+    JSON.stringify(graceDesktops),
+    JSON.stringify(["key-a", "key-b"]),
+    "an identity sees all of its own connected desktops",
+  );
+  assertEqual(
+    registry.desktopsForIdentity("grace").some((d) => d.key === "key-c"),
+    false,
+    "an identity never sees another human's desktop",
+  );
+
+  // A closed link drops out of both resolutions.
+  b.close();
+  assertEqual(
+    registry.identityForKey("key-b"),
+    undefined,
+    "a closed key no longer resolves to an identity",
+  );
+  assertEqual(
+    registry.desktopsForIdentity("grace").length,
+    1,
+    "a closed desktop drops out of the identity's set",
+  );
+
+  a.close();
+  c.close();
+  console.log("ok identityForKey and desktopsForIdentity scope by identity");
 }
 
 function verifyKeyForIdentity(): void {

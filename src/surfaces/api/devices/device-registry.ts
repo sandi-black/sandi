@@ -130,6 +130,32 @@ export class DeviceRegistry {
     return key;
   }
 
+  // The identity that owns a live link, or undefined when the key is unknown or
+  // its link has closed. The broker resolves this once at lease time so a turn
+  // can later enumerate and target that identity's other desktops without
+  // reaching across to a stranger's machine.
+  identityForKey(key: string): string | undefined {
+    const state = this.#connections.get(key);
+    if (!state || state.closed) return undefined;
+    return state.identityId;
+  }
+
+  // Every desktop an identity currently has linked, as routing key plus the
+  // client-chosen name (for display and selection). Backs the local_list_desktops
+  // tool and the `desktop` selector: a turn may target any of its own identity's
+  // connected desktops, and only those.
+  desktopsForIdentity(
+    identityId: string,
+  ): Array<{ key: string; deviceId: string }> {
+    const desktops: Array<{ key: string; deviceId: string }> = [];
+    for (const state of this.#connections.values()) {
+      if (!state.closed && state.identityId === identityId) {
+        desktops.push({ key: state.key, deviceId: state.deviceId });
+      }
+    }
+    return desktops;
+  }
+
   // Pushes a tool call to the keyed device's stream and resolves with the
   // outcome the device POSTs back. Rejects with DeviceUnavailableError if no link
   // is present or the stream is dead, and rejects if the turn aborts or the
@@ -231,6 +257,7 @@ export class DeviceRegistry {
       ok: result.ok,
       output: result.output,
       ...(result.error !== undefined ? { error: result.error } : {}),
+      ...(result.image !== undefined ? { image: result.image } : {}),
     });
     return true;
   }

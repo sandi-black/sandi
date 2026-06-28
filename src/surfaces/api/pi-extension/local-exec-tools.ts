@@ -25,6 +25,18 @@ const TOOL_BROKER_TOKEN_ENV = "SANDI_TOOL_BROKER_TOKEN";
 const CALL_TIMEOUT_MS = 11 * 60_000;
 const DESKTOP_HINT =
   "Operates on the human's local desktop, not the server. Paths are resolved on that machine.";
+// Every tool may run on any desktop the human has connected, not only the one
+// this turn originated on. The selector names one from local_list_desktops;
+// omitting it uses the originating desktop, or, when the turn did not originate
+// on a desktop and several are connected, the call asks you to name one.
+const DESKTOP_SELECTOR_HINT =
+  "Optional desktop to run on (an id or name from local_list_desktops). Omit to use the current desktop.";
+
+// The selector parameter, shared by every proxy tool so the model can redirect
+// any call to another of the caller's connected desktops.
+const desktopParam = Type.Optional(
+  Type.String({ description: DESKTOP_SELECTOR_HINT }),
+);
 
 export default function localExecToolsExtension(pi: ExtensionAPI): void {
   const broker = readBroker();
@@ -41,6 +53,7 @@ export default function localExecToolsExtension(pi: ExtensionAPI): void {
       label: "Read Local File",
       description: `Read a file from the human's desktop. ${DESKTOP_HINT}`,
       parameters: Type.Object({
+        desktop: desktopParam,
         path: Type.String({
           description: "Absolute or desktop-relative path.",
         }),
@@ -63,6 +76,7 @@ export default function localExecToolsExtension(pi: ExtensionAPI): void {
       label: "Write Local File",
       description: `Create or overwrite a file on the human's desktop. ${DESKTOP_HINT}`,
       parameters: Type.Object({
+        desktop: desktopParam,
         path: Type.String({ description: "Path to write." }),
         content: Type.String({ description: "Full file contents to write." }),
       }),
@@ -78,6 +92,7 @@ export default function localExecToolsExtension(pi: ExtensionAPI): void {
       label: "Edit Local File",
       description: `Replace an exact substring in a file on the human's desktop. ${DESKTOP_HINT}`,
       parameters: Type.Object({
+        desktop: desktopParam,
         path: Type.String({ description: "Path to edit." }),
         oldString: Type.String({ description: "Exact text to replace." }),
         newString: Type.String({ description: "Replacement text." }),
@@ -97,6 +112,7 @@ export default function localExecToolsExtension(pi: ExtensionAPI): void {
       label: "List Local Directory",
       description: `List the entries of a directory on the human's desktop. ${DESKTOP_HINT}`,
       parameters: Type.Object({
+        desktop: desktopParam,
         path: Type.String({ description: "Directory to list." }),
       }),
       async execute(_id, params) {
@@ -111,6 +127,7 @@ export default function localExecToolsExtension(pi: ExtensionAPI): void {
       label: "Find Local Files",
       description: `Find files on the human's desktop by glob pattern (supports ** and *). ${DESKTOP_HINT}`,
       parameters: Type.Object({
+        desktop: desktopParam,
         pattern: Type.String({
           description: "Glob pattern, e.g. src/**/*.ts.",
         }),
@@ -130,6 +147,7 @@ export default function localExecToolsExtension(pi: ExtensionAPI): void {
       label: "Search Local Files",
       description: `Search file contents on the human's desktop with a regular expression. ${DESKTOP_HINT}`,
       parameters: Type.Object({
+        desktop: desktopParam,
         pattern: Type.String({
           description: "Regular expression to search for.",
         }),
@@ -155,6 +173,7 @@ export default function localExecToolsExtension(pi: ExtensionAPI): void {
       label: "Run Local Shell Command",
       description: `Run a shell command on the human's desktop and return its output. ${DESKTOP_HINT}`,
       parameters: Type.Object({
+        desktop: desktopParam,
         command: Type.String({ description: "Shell command to run." }),
         cwd: Type.Optional(
           Type.String({ description: "Working directory for the command." }),
@@ -165,6 +184,79 @@ export default function localExecToolsExtension(pi: ExtensionAPI): void {
       }),
       async execute(_id, params) {
         return callTool(broker, "local_bash", params);
+      },
+    }),
+  );
+
+  pi.registerTool(
+    defineTool({
+      name: "local_list_desktops",
+      label: "List Connected Desktops",
+      description:
+        "List the human's desktops that are currently connected, so a monitor, window, or screenshot tool can target one of them. Returns an id and name for each, with the current desktop marked.",
+      parameters: Type.Object({}),
+      async execute(_id, params) {
+        return callTool(broker, "local_list_desktops", params);
+      },
+    }),
+  );
+
+  pi.registerTool(
+    defineTool({
+      name: "local_list_monitors",
+      label: "List Desktop Monitors",
+      description: `List the monitors attached to a connected desktop, with their pixel sizes and positions. ${DESKTOP_HINT}`,
+      parameters: Type.Object({
+        desktop: desktopParam,
+      }),
+      async execute(_id, params) {
+        return callTool(broker, "local_list_monitors", params);
+      },
+    }),
+  );
+
+  pi.registerTool(
+    defineTool({
+      name: "local_list_windows",
+      label: "List Desktop Windows",
+      description: `List the visible top-level windows open on a connected desktop, with their titles, owning process, and positions. ${DESKTOP_HINT}`,
+      parameters: Type.Object({
+        desktop: desktopParam,
+      }),
+      async execute(_id, params) {
+        return callTool(broker, "local_list_windows", params);
+      },
+    }),
+  );
+
+  pi.registerTool(
+    defineTool({
+      name: "local_screenshot",
+      label: "Screenshot Desktop",
+      description: `Capture a screenshot of a connected desktop and return it as an image. Capture one monitor or one window; with neither, the primary monitor is captured. ${DESKTOP_HINT}`,
+      parameters: Type.Object({
+        desktop: desktopParam,
+        monitor: Type.Optional(
+          Type.String({
+            description:
+              "Monitor to capture, by index or device name from local_list_monitors.",
+          }),
+        ),
+        window: Type.Optional(
+          Type.String({
+            description:
+              "Window to capture, by handle or title from local_list_windows.",
+          }),
+        ),
+        maxDimension: Type.Optional(
+          Type.Number({
+            description:
+              "Longest-edge cap in pixels before encoding (default 1568).",
+          }),
+        ),
+      }),
+      async execute(_id, params) {
+        return callTool(broker, "local_screenshot", params);
       },
     }),
   );
@@ -203,15 +295,22 @@ export function readBroker(): Broker | undefined {
   return { url: parsed.origin, token: rawToken };
 }
 
+type ToolCallImage = {
+  mimeType: string;
+  dataBase64: string;
+};
+
 type ToolCallOutcome = {
   ok: boolean;
   output: string;
   error?: string;
+  image?: ToolCallImage;
 };
 
 // Exported for tests: POSTs one tool call to the broker and maps the outcome to
 // a pi tool result, throwing so pi surfaces a tool error when the desktop
-// refuses the call or is unavailable.
+// refuses the call or is unavailable. A tool that produced an image (a
+// screenshot) returns it as an image block alongside its text summary.
 export async function callTool(
   broker: Broker,
   tool: string,
@@ -223,9 +322,32 @@ export async function callTool(
     // tool error to the model instead of presenting a failure as evidence.
     throw new Error(outcome.error ?? (outcome.output || `${tool} failed`));
   }
+  // A screenshot's whole point is the image; a "successful" one without it is a
+  // broken result, not evidence. Fail closed rather than hand back text alone.
+  if (tool === "local_screenshot" && outcome.image === undefined) {
+    throw new Error(
+      "the desktop returned a screenshot result without an image",
+    );
+  }
+  const content: AgentToolResult<Record<string, unknown>>["content"] = [];
+  if (outcome.output.length > 0) {
+    content.push({ type: "text", text: outcome.output });
+  }
+  if (outcome.image) {
+    content.push({
+      type: "image",
+      data: outcome.image.dataBase64,
+      mimeType: outcome.image.mimeType,
+    });
+  }
+  // Always hand back at least one block so a tool that returned neither text nor
+  // an image still reads as a completed call rather than an empty result.
+  if (content.length === 0) {
+    content.push({ type: "text", text: `${tool} ok` });
+  }
   return {
-    content: [{ type: "text", text: outcome.output }],
-    details: { tool, ok: true },
+    content,
+    details: { tool, ok: true, hasImage: outcome.image !== undefined },
   };
 }
 
@@ -302,9 +424,72 @@ function parseOutcome(raw: string): ToolCallOutcome {
     throw new Error("tool broker result was malformed");
   }
   const error = record["error"];
+  const image = parseImage(record["image"]);
   return {
     ok,
     output,
     ...(typeof error === "string" ? { error } : {}),
+    ...(image !== undefined ? { image } : {}),
   };
+}
+
+// The supported image types, the canonical-base64 shape, and the magic-byte
+// check, restated here (this extension cannot import the protocol module) so the
+// proxy parses an image result exactly as precisely as the protocol's
+// DeviceImageSchema does on the wire.
+const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png"]);
+const CANONICAL_BASE64 =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+// Confirms the decoded bytes start with the declared type's signature, so a
+// payload cannot claim image/png while carrying jpeg (or arbitrary) bytes.
+function imageBytesMatchMime(mimeType: string, dataBase64: string): boolean {
+  const bytes = Buffer.from(dataBase64, "base64");
+  if (mimeType === "image/jpeg") {
+    return (
+      bytes.length >= 3 &&
+      bytes[0] === 0xff &&
+      bytes[1] === 0xd8 &&
+      bytes[2] === 0xff
+    );
+  }
+  if (mimeType === "image/png") {
+    return (
+      bytes.length >= 4 &&
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47
+    );
+  }
+  return false;
+}
+
+// Parses an optional image payload off a broker result. Absent is fine (most
+// tools return none). A present payload must be a well-formed, supported image
+// whose bytes match its declared type: anything malformed throws so the call
+// fails closed rather than being reported successful with the image dropped.
+function parseImage(value: unknown): ToolCallImage | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object") {
+    throw new Error("tool broker returned a malformed image");
+  }
+  const record: Record<string, unknown> = { ...value };
+  const mimeType = record["mimeType"];
+  const dataBase64 = record["dataBase64"];
+  if (typeof mimeType !== "string" || typeof dataBase64 !== "string") {
+    throw new Error("tool broker returned a malformed image");
+  }
+  if (!SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
+    throw new Error(
+      `tool broker returned an unsupported image type: ${mimeType}`,
+    );
+  }
+  if (!CANONICAL_BASE64.test(dataBase64)) {
+    throw new Error("tool broker returned image data that was not base64");
+  }
+  if (!imageBytesMatchMime(mimeType, dataBase64)) {
+    throw new Error("tool broker image bytes do not match the declared type");
+  }
+  return { mimeType, dataBase64 };
 }

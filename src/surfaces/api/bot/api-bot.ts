@@ -499,6 +499,9 @@ export class ApiBot {
       ? this.#broker.lease({
           key: input.deviceKey,
           signal: input.signal,
+          // The turn originated on this desktop, so a tool with no selector runs
+          // here unconditionally rather than asking the model to pick.
+          originDevice: true,
           ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
         })
       : undefined;

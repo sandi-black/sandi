@@ -14,6 +14,13 @@ async function verifyToolBroker(): Promise<void> {
     await verifyAbortRejects(registry, broker);
     await verifyInvalidCall(registry, broker);
     await verifyRevoke(registry, broker);
+    await verifyListDesktops(registry, broker);
+    await verifyDesktopTargeting(registry, broker);
+    await verifyOriginDeviceDefault(registry, broker);
+    await verifyAmbiguousDefault(registry, broker);
+    await verifyStaleKeyFailover(registry, broker);
+    await verifyUnknownDesktop(registry, broker);
+    await verifyImagePassthrough(registry, broker);
     await verifyStreamRelay(registry, broker);
     await verifyStreamToGoneDevice(broker);
     await verifyStreamTurnMismatch(registry, broker);
@@ -38,6 +45,7 @@ async function verifyHappyPath(
   const lease = broker.lease({
     key: "d-happy",
     signal: controller.signal,
+    originDevice: true,
   });
   const response = await postCall(lease.ticket.url, lease.ticket.token, {
     tool: "local_read",
@@ -109,6 +117,7 @@ async function verifyAbortRejects(
   const lease = broker.lease({
     key: "d-silent",
     signal: controller.signal,
+    originDevice: true,
   });
   const pending = postCall(lease.ticket.url, lease.ticket.token, {
     tool: "local_bash",
@@ -171,6 +180,285 @@ async function verifyRevoke(
   });
   assertEqual(response.status, 401, "a revoked token no longer routes");
   console.log("ok a revoked lease token stops working");
+}
+
+async function verifyListDesktops(
+  registry: DeviceRegistry,
+  broker: ToolBroker,
+): Promise<void> {
+  // Two desktops for one human, plus one for another human. The discovery call
+  // names only the leasing identity's desktops, with the leased one marked.
+  connectEchoDevice(registry, "grace-1", okEcho, "grace");
+  connectEchoDevice(registry, "grace-2", okEcho, "grace");
+  connectEchoDevice(registry, "ada-1", okEcho, "ada");
+  const lease = broker.lease({
+    key: "grace-1",
+    signal: new AbortController().signal,
+  });
+  const response = await postCall(lease.ticket.url, lease.ticket.token, {
+    tool: "local_list_desktops",
+    params: {},
+  });
+  assertEqual(response.status, 200, "list_desktops returns 200");
+  const body = asRecord(response.body);
+  assertEqual(body?.["ok"], true, "list_desktops is an ok outcome");
+  const output = body?.["output"];
+  const text = typeof output === "string" ? output : "";
+  assert(
+    text.includes("Connected desktops (2)"),
+    "only the leasing identity's desktops are listed",
+  );
+  assert(text.includes("(current)"), "the leased desktop is marked current");
+  assert(
+    !text.includes("ada-1"),
+    "another human's desktop never appears in the list",
+  );
+  lease.revoke();
+  console.log("ok list_desktops names the identity's own desktops");
+}
+
+async function verifyDesktopTargeting(
+  registry: DeviceRegistry,
+  broker: ToolBroker,
+): Promise<void> {
+  // A turn leased to one desktop can target another desktop of the same
+  // identity by selector; the call reaches that desktop, not the leased one.
+  // This holds for a file tool, not only the state tools.
+  connectEchoDevice(
+    registry,
+    "hopper-1",
+    (dispatch) => ({ id: dispatch.id, ok: true, output: "from hopper-1" }),
+    "hopper",
+  );
+  connectEchoDevice(
+    registry,
+    "hopper-2",
+    (dispatch) => ({ id: dispatch.id, ok: true, output: "from hopper-2" }),
+    "hopper",
+  );
+  const lease = broker.lease({
+    key: "hopper-1",
+    signal: new AbortController().signal,
+  });
+
+  const targeted = await postCall(lease.ticket.url, lease.ticket.token, {
+    tool: "local_read",
+    params: { path: "x", desktop: "hopper-2" },
+  });
+  assertEqual(
+    asRecord(targeted.body)?.["output"],
+    "from hopper-2",
+    "a selector routes any tool to the named desktop of the same identity",
+  );
+  lease.revoke();
+  console.log("ok a desktop selector routes any tool to the named desktop");
+}
+
+async function verifyOriginDeviceDefault(
+  registry: DeviceRegistry,
+  broker: ToolBroker,
+): Promise<void> {
+  // A turn that originated on a desktop runs an unselected call on that desktop
+  // even when the human has other desktops connected.
+  connectEchoDevice(
+    registry,
+    "curie-1",
+    (dispatch) => ({ id: dispatch.id, ok: true, output: "from curie-1" }),
+    "curie",
+  );
+  connectEchoDevice(
+    registry,
+    "curie-2",
+    (dispatch) => ({ id: dispatch.id, ok: true, output: "from curie-2" }),
+    "curie",
+  );
+  const lease = broker.lease({
+    key: "curie-1",
+    signal: new AbortController().signal,
+    originDevice: true,
+  });
+  const response = await postCall(lease.ticket.url, lease.ticket.token, {
+    tool: "local_read",
+    params: { path: "x" },
+  });
+  assertEqual(
+    asRecord(response.body)?.["output"],
+    "from curie-1",
+    "an origin-device turn defaults to its own desktop despite others connected",
+  );
+  lease.revoke();
+  console.log("ok an origin-device turn defaults to the desktop it came from");
+}
+
+async function verifyAmbiguousDefault(
+  registry: DeviceRegistry,
+  broker: ToolBroker,
+): Promise<void> {
+  // A turn not tied to a desktop, with several of the identity's desktops
+  // connected and no selector, refuses and asks the model to pick rather than
+  // guessing the most recently linked one.
+  connectEchoDevice(registry, "noether-1", okEcho, "noether");
+  connectEchoDevice(registry, "noether-2", okEcho, "noether");
+  const lease = broker.lease({
+    key: "noether-1",
+    signal: new AbortController().signal,
+  });
+  const ambiguous = await postCall(lease.ticket.url, lease.ticket.token, {
+    tool: "local_read",
+    params: { path: "x" },
+  });
+  assertEqual(ambiguous.status, 200, "an ambiguous default is a 200 outcome");
+  const body = asRecord(ambiguous.body);
+  assertEqual(body?.["ok"], false, "an ambiguous default refuses the call");
+  const error = body?.["error"];
+  assert(
+    typeof error === "string" && error.includes("name a desktop"),
+    "the refusal asks the model to name a desktop",
+  );
+
+  // The same turn proceeds once it names one.
+  const picked = await postCall(lease.ticket.url, lease.ticket.token, {
+    tool: "local_read",
+    params: { path: "x", desktop: "noether-2" },
+  });
+  assertEqual(
+    asRecord(picked.body)?.["ok"],
+    true,
+    "naming a desktop resolves the ambiguity",
+  );
+  lease.revoke();
+  console.log(
+    "ok an unanchored turn with several desktops asks the model to pick",
+  );
+}
+
+async function verifyStaleKeyFailover(
+  registry: DeviceRegistry,
+  broker: ToolBroker,
+): Promise<void> {
+  // An identity-bound turn whose original desktop dropped and relinked under a
+  // new key still resolves an unselected call to the sole live desktop, not the
+  // dead lease key. The lease captures the identity while the first link is up.
+  const first = registry.connect({
+    key: "hopper-1",
+    deviceId: "hopper-1",
+    identityId: "hopper",
+    write: () => true,
+    end: () => {},
+  });
+  const lease = broker.lease({
+    key: "hopper-1",
+    signal: new AbortController().signal,
+  });
+  // The original desktop drops its link and the human relinks under a fresh key.
+  first.close();
+  connectEchoDevice(
+    registry,
+    "hopper-2",
+    (dispatch) => ({ id: dispatch.id, ok: true, output: "from hopper-2" }),
+    "hopper",
+  );
+  const response = await postCall(lease.ticket.url, lease.ticket.token, {
+    tool: "local_read",
+    params: { path: "x" },
+  });
+  assertEqual(
+    asRecord(response.body)?.["output"],
+    "from hopper-2",
+    "an unselected call resolves to the sole live desktop, not the stale lease key",
+  );
+  lease.revoke();
+  console.log(
+    "ok an unanchored turn with one relinked desktop targets the live key",
+  );
+}
+
+async function verifyUnknownDesktop(
+  registry: DeviceRegistry,
+  broker: ToolBroker,
+): Promise<void> {
+  // A selector that matches no desktop of the identity (here, another human's)
+  // is a refused outcome, not a transport error, so the model sees a tool error.
+  connectEchoDevice(registry, "lovelace-1", okEcho, "lovelace");
+  connectEchoDevice(registry, "babbage-1", okEcho, "babbage");
+  const lease = broker.lease({
+    key: "lovelace-1",
+    signal: new AbortController().signal,
+  });
+  const response = await postCall(lease.ticket.url, lease.ticket.token, {
+    tool: "local_screenshot",
+    params: { desktop: "babbage-1" },
+  });
+  assertEqual(
+    response.status,
+    200,
+    "an unknown desktop is still a 200 outcome",
+  );
+  const body = asRecord(response.body);
+  assertEqual(body?.["ok"], false, "an unknown desktop refuses the call");
+  const error = body?.["error"];
+  assert(
+    typeof error === "string" && error.includes("no connected desktop matches"),
+    "the refusal names the unmatched selector",
+  );
+  lease.revoke();
+  console.log(
+    "ok a selector that crosses identities refuses rather than routes",
+  );
+}
+
+async function verifyImagePassthrough(
+  registry: DeviceRegistry,
+  broker: ToolBroker,
+): Promise<void> {
+  // A desktop that answers a screenshot with an image: the broker relays the
+  // image alongside the text in its /call reply.
+  registry.connect({
+    key: "shot",
+    deviceId: "shot",
+    identityId: "i",
+    write: (chunk) => {
+      const match = /event: tool_call\ndata: (.*)\n\n/s.exec(chunk);
+      if (!match || match[1] === undefined) return true;
+      const dispatch = asRecord(JSON.parse(match[1]));
+      const id = dispatch?.["id"];
+      if (typeof id !== "string") return true;
+      queueMicrotask(() => {
+        registry.settleResult("shot", {
+          id,
+          ok: true,
+          output: "captured primary monitor",
+          image: { mimeType: "image/jpeg", dataBase64: "/9j/4AAQ" },
+        });
+      });
+      return true;
+    },
+    end: () => {},
+  });
+  const lease = broker.lease({
+    key: "shot",
+    signal: new AbortController().signal,
+    originDevice: true,
+  });
+  const response = await postCall(lease.ticket.url, lease.ticket.token, {
+    tool: "local_screenshot",
+    params: {},
+  });
+  assertEqual(response.status, 200, "a screenshot returns 200");
+  const body = asRecord(response.body);
+  const image = asRecord(body?.["image"]);
+  assertEqual(
+    image?.["mimeType"],
+    "image/jpeg",
+    "the image mime type rides back to the caller",
+  );
+  assertEqual(
+    image?.["dataBase64"],
+    "/9j/4AAQ",
+    "the image bytes ride back to the caller",
+  );
+  lease.revoke();
+  console.log("ok a screenshot image relays through the broker reply");
 }
 
 async function verifyStreamRelay(
@@ -306,11 +594,12 @@ function connectEchoDevice(
   registry: DeviceRegistry,
   key: string,
   respond: (dispatch: EchoDispatch) => EchoResult,
+  identityId = "i",
 ): void {
   registry.connect({
     key,
     deviceId: key,
-    identityId: "i",
+    identityId,
     write: (chunk) => {
       const match = /event: tool_call\ndata: (.*)\n\n/s.exec(chunk);
       if (!match || match[1] === undefined) return true;

@@ -12,8 +12,10 @@ import {
   DeviceUnavailableError,
 } from "@/surfaces/api/devices/device-registry";
 import {
+  type BrokerCall,
   BrokerCallSchema,
   ResponseChunkSchema,
+  type ToolCallOutcome,
 } from "@/surfaces/api/devices/protocol";
 import { readJsonBody } from "@/surfaces/api/http/read-json-body";
 import { bearerToken, sendJson } from "@/surfaces/api/http/respond";
@@ -50,6 +52,20 @@ type TurnBinding = {
   // do not consume the stream (no client turn id), where the env turn id is
   // generated late and there is nothing to bind against.
   turnId?: string;
+  // The identity that owns the leased desktop, resolved once at lease time. A
+  // tool may target any of this identity's connected desktops; the selector is
+  // resolved against this identity so a turn can never reach a desktop belonging
+  // to someone else. Absent when the leased key was not a live link at lease
+  // time, which leaves the turn able to use only its own desktop.
+  identityId?: string;
+  // Whether the leased key is the desktop the turn originated on (an api-surface
+  // turn the desktop itself sent). When true, a call with no selector runs on
+  // that desktop unconditionally: it is the machine the human is working at.
+  // When false (a turn from Discord or GitHub, which has no originating device
+  // and was bound to a guessed desktop), a call with no selector runs on the one
+  // connected desktop if there is only one, but refuses and asks the model to
+  // pick when several are connected, rather than guessing.
+  originDevice?: boolean;
 };
 
 export type TurnBrokerTicket = {
@@ -123,20 +139,100 @@ export class ToolBroker {
     key: string;
     signal: AbortSignal;
     turnId?: string;
+    // True when the leased key is the desktop the turn originated on (an
+    // api-surface turn). Defaults to false for turns bound to a desktop by
+    // identity (Discord, GitHub), which then ask the model to pick when the
+    // human has several desktops connected rather than guessing one.
+    originDevice?: boolean;
   }): TurnBrokerLease {
     const url = this.#url;
     if (!url) throw new Error("tool broker is not started");
     const token = randomBytes(TOKEN_BYTES).toString("hex");
+    // Resolve the owning identity now, while the leased link is live: a turn's
+    // own desktop is connected at lease time, so this fixes the set of desktops
+    // a later call may target even if the original link drops mid-turn.
+    const identityId = this.#registry.identityForKey(input.key);
     this.#turns.set(token, {
       key: input.key,
       signal: input.signal,
       ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+      ...(identityId !== undefined ? { identityId } : {}),
+      ...(input.originDevice === true ? { originDevice: true } : {}),
     });
     return {
       ticket: { url, token },
       revoke: () => {
         this.#turns.delete(token);
       },
+    };
+  }
+
+  // Answers local_list_desktops from the registry: the desktops this turn's
+  // identity has connected, with the leased one marked current. Stays inside the
+  // identity, so a turn only ever learns of its own desktops.
+  #listDesktops(binding: TurnBinding): ToolCallOutcome {
+    if (binding.identityId === undefined) {
+      return {
+        ok: true,
+        output:
+          "No connected desktops are addressable for this turn (its desktop link is not live).",
+      };
+    }
+    const desktops = this.#registry.desktopsForIdentity(binding.identityId);
+    if (desktops.length === 0) {
+      return { ok: true, output: "No connected desktops." };
+    }
+    const lines = desktops.map((desktop) => {
+      const current = desktop.key === binding.key ? "  (current)" : "";
+      return `- id=${shortId(desktop.key)}  name=${JSON.stringify(desktop.deviceId)}${current}`;
+    });
+    const output = [
+      `Connected desktops (${desktops.length}):`,
+      ...lines,
+      "",
+      "Pass an id or name as the `desktop` argument to local_list_monitors, local_list_windows, or local_screenshot. Omit it to use the current desktop.",
+    ].join("\n");
+    return { ok: true, output };
+  }
+
+  // Resolves a `desktop` selector to a connected desktop of the binding's
+  // identity, or undefined when nothing matches. Matches a short id first, then
+  // a unique name; an ambiguous name (two desktops sharing one) resolves to
+  // nothing so the caller is told to disambiguate by id rather than reaching an
+  // arbitrary one.
+  #resolveDesktop(binding: TurnBinding, selector: string): string | undefined {
+    if (binding.identityId === undefined) return undefined;
+    const desktops = this.#registry.desktopsForIdentity(binding.identityId);
+    const norm = selector.trim().toLowerCase();
+    const byId = desktops.find((desktop) => shortId(desktop.key) === norm);
+    if (byId) return byId.key;
+    const byName = desktops.filter(
+      (desktop) => desktop.deviceId.toLowerCase() === norm,
+    );
+    const [only] = byName;
+    if (only && byName.length === 1) return only.key;
+    return undefined;
+  }
+
+  // The desktop a call with no selector runs on. A turn that originated on a
+  // desktop always uses that desktop (the human is working at it). A turn bound
+  // by identity uses the sole connected desktop, but refuses when several are
+  // connected so the model names one with the `desktop` argument instead of the
+  // broker silently picking the most recently linked.
+  #defaultDesktop(
+    binding: TurnBinding,
+  ): { ok: true; key: string } | { ok: false; error: string } {
+    if (binding.originDevice === true || binding.identityId === undefined) {
+      return { ok: true, key: binding.key };
+    }
+    const desktops = this.#registry.desktopsForIdentity(binding.identityId);
+    if (desktops.length <= 1) return { ok: true, key: binding.key };
+    const names = desktops
+      .map((desktop) => `${shortId(desktop.key)} (${desktop.deviceId})`)
+      .join(", ");
+    return {
+      ok: false,
+      error: `you have ${desktops.length} desktops connected and this turn is not tied to one; name a desktop with the \`desktop\` argument (call local_list_desktops to see them: ${names})`,
     };
   }
 
@@ -176,11 +272,53 @@ export class ToolBroker {
         sendJson(response, 400, { error: "invalid_call" });
         return;
       }
+      const call = parsed.data;
+
+      // The discovery call never reaches a desktop: the broker answers it from
+      // the registry, naming the desktops this identity has connected so Sandi
+      // can pick one to target.
+      if (call.tool === "local_list_desktops") {
+        sendJson(response, 200, this.#listDesktops(binding));
+        return;
+      }
+
+      // A call may name a desktop other than the leased one. With a selector,
+      // resolve it to a connected desktop of the same identity; an unmatched
+      // selector is a refused outcome (with a helpful message) rather than a
+      // transport error, so the model sees a tool error it can act on. Without a
+      // selector, pick the default: the originating desktop, or, for a turn that
+      // did not originate on a desktop, the sole connected one, refusing when the
+      // human has several so the model names one rather than the broker guessing.
+      const selector = desktopSelector(call);
+      let targetKey: string;
+      if (selector !== undefined) {
+        const resolved = this.#resolveDesktop(binding, selector);
+        if (!resolved) {
+          sendJson(response, 200, {
+            ok: false,
+            output: "",
+            error: unknownDesktopMessage(this.#registry, binding, selector),
+          });
+          return;
+        }
+        targetKey = resolved;
+      } else {
+        const fallback = this.#defaultDesktop(binding);
+        if (!fallback.ok) {
+          sendJson(response, 200, {
+            ok: false,
+            output: "",
+            error: fallback.error,
+          });
+          return;
+        }
+        targetKey = fallback.key;
+      }
 
       try {
         const outcome = await this.#registry.dispatch({
-          key: binding.key,
-          call: parsed.data,
+          key: targetKey,
+          call,
           signal: binding.signal,
         });
         sendJson(response, 200, outcome);
@@ -251,4 +389,37 @@ export class ToolBroker {
     if (!token) return undefined;
     return this.#turns.get(token);
   }
+}
+
+// The desktop a call wants to run on, when it named one. Every tool but the
+// discovery call carries the selector; local_list_desktops is answered from the
+// registry before this is reached, so it has none.
+function desktopSelector(call: BrokerCall): string | undefined {
+  if (call.tool === "local_list_desktops") return undefined;
+  return call.params.desktop;
+}
+
+// A short, stable handle for a desktop derived from its routing key. The key is
+// opaque (a token hash in production), so the leading hex is enough to name a
+// desktop in a list and match a selector without exposing the whole key.
+function shortId(key: string): string {
+  return key.slice(0, 8).toLowerCase();
+}
+
+function unknownDesktopMessage(
+  registry: DeviceRegistry,
+  binding: TurnBinding,
+  selector: string,
+): string {
+  const desktops =
+    binding.identityId !== undefined
+      ? registry.desktopsForIdentity(binding.identityId)
+      : [];
+  if (desktops.length === 0) {
+    return `no connected desktop matches "${selector}"; this turn has no addressable desktops`;
+  }
+  const names = desktops
+    .map((desktop) => `${shortId(desktop.key)} (${desktop.deviceId})`)
+    .join(", ");
+  return `no connected desktop matches "${selector}"; available desktops: ${names}`;
 }

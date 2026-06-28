@@ -22,6 +22,7 @@ async function verifyExecutors(): Promise<void> {
     await verifyBash(context);
     await verifyBashCancellation(context);
     await verifyBashTimeout(context);
+    await verifyStateToolRouting(context);
   });
   console.log("executors verification passed");
 }
@@ -312,6 +313,35 @@ async function verifyBashTimeout(context: ExecutorContext): Promise<void> {
     `a timed-out command must be killed promptly (took ${elapsedMs}ms)`,
   );
   console.log("ok local_bash reports a timeout as a failed call");
+}
+
+async function verifyStateToolRouting(context: ExecutorContext): Promise<void> {
+  // local_list_desktops is answered by the broker; if one ever reaches a desktop
+  // the executor refuses it rather than acting, so the switch stays exhaustive.
+  const desktops = await executeLocalTool(
+    { tool: "local_list_desktops", params: {} },
+    context,
+  );
+  assert(
+    !desktops.ok,
+    "local_list_desktops is refused on the desktop (the broker answers it)",
+  );
+
+  // The state tools route to the Windows capture path: a real result on Windows,
+  // a platform refusal elsewhere. Either way the tool name reached its executor.
+  const monitors = await executeLocalTool(
+    { tool: "local_list_monitors", params: {} },
+    context,
+  );
+  if (process.platform === "win32") {
+    assert(monitors.ok, "local_list_monitors runs on a Windows desktop");
+  } else {
+    assert(
+      !monitors.ok && (monitors.error ?? "").includes("only supported"),
+      "local_list_monitors refuses on a non-Windows desktop",
+    );
+  }
+  console.log("ok the state tools route to their executors");
 }
 
 async function withTempDir(run: (dir: string) => Promise<void>): Promise<void> {

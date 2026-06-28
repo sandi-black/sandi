@@ -26,6 +26,15 @@ export const LocalToolNameSchema = z.enum([
   "local_glob",
   "local_grep",
   "local_bash",
+  // Machine-state tools. Unlike the file and shell tools, which run on the one
+  // desktop leased for the turn, these read the shape of a desktop (its
+  // monitors, its open windows, a screenshot) and accept a `desktop` selector so
+  // Sandi can target any of the caller's connected desktops, not only the
+  // current one. `local_list_desktops` is the discovery call that names them.
+  "local_list_desktops",
+  "local_list_monitors",
+  "local_list_windows",
+  "local_screenshot",
 ]);
 export type LocalToolName = z.infer<typeof LocalToolNameSchema>;
 export const LOCAL_TOOL_NAMES: readonly LocalToolName[] =
@@ -36,38 +45,74 @@ export const LOCAL_TOOL_NAMES: readonly LocalToolName[] =
 // malformed dispatch is rejected rather than acted on. The pi-side extension
 // describes the same shapes in TypeBox (it cannot share this module), so the two
 // schemas are the two ends of one JSON contract.
+//
+// Every tool carries an optional `desktop` selector: the broker reads it to
+// route the call to one of the caller's connected desktops, then the desktop
+// client ignores it (it is routing metadata, resolved server-side, not an
+// argument the executor acts on). Omitting it runs on the turn's own desktop.
 export const LocalReadParamsSchema = z.object({
+  desktop: z.string().min(1).optional(),
   path: z.string().min(1),
   offset: z.number().int().nonnegative().optional(),
   limit: z.number().int().positive().optional(),
 });
 export const LocalWriteParamsSchema = z.object({
+  desktop: z.string().min(1).optional(),
   path: z.string().min(1),
   content: z.string(),
 });
 export const LocalEditParamsSchema = z.object({
+  desktop: z.string().min(1).optional(),
   path: z.string().min(1),
   oldString: z.string(),
   newString: z.string(),
   replaceAll: z.boolean().optional(),
 });
 export const LocalLsParamsSchema = z.object({
+  desktop: z.string().min(1).optional(),
   path: z.string().min(1),
 });
 export const LocalGlobParamsSchema = z.object({
+  desktop: z.string().min(1).optional(),
   pattern: z.string().min(1),
   path: z.string().min(1).optional(),
 });
 export const LocalGrepParamsSchema = z.object({
+  desktop: z.string().min(1).optional(),
   pattern: z.string().min(1),
   path: z.string().min(1).optional(),
   glob: z.string().min(1).optional(),
   ignoreCase: z.boolean().optional(),
 });
 export const LocalBashParamsSchema = z.object({
+  desktop: z.string().min(1).optional(),
   command: z.string().min(1),
   cwd: z.string().min(1).optional(),
   timeoutMs: z.number().int().positive().optional(),
+});
+
+// The state tools. They take the same `desktop` selector as every other tool;
+// local_list_desktops is the discovery call that names the desktops a selector
+// can target, so it takes no arguments and the broker answers it from its own
+// registry rather than dispatching it to a desktop.
+export const LocalListDesktopsParamsSchema = z.object({});
+export const LocalListMonitorsParamsSchema = z.object({
+  desktop: z.string().min(1).optional(),
+});
+export const LocalListWindowsParamsSchema = z.object({
+  desktop: z.string().min(1).optional(),
+});
+export const LocalScreenshotParamsSchema = z.object({
+  desktop: z.string().min(1).optional(),
+  // Capture one monitor (by index or device name from local_list_monitors) or
+  // one window (by handle or title from local_list_windows). At most one; with
+  // neither, the primary monitor is captured.
+  monitor: z.string().min(1).optional(),
+  window: z.string().min(1).optional(),
+  // Longest-edge cap in pixels before encoding. The desktop downscales to this
+  // so a 4K screen does not return a multi-megabyte image; defaulted and clamped
+  // on the desktop, not here.
+  maxDimension: z.number().int().positive().optional(),
 });
 
 export type LocalReadParams = z.infer<typeof LocalReadParamsSchema>;
@@ -77,6 +122,16 @@ export type LocalLsParams = z.infer<typeof LocalLsParamsSchema>;
 export type LocalGlobParams = z.infer<typeof LocalGlobParamsSchema>;
 export type LocalGrepParams = z.infer<typeof LocalGrepParamsSchema>;
 export type LocalBashParams = z.infer<typeof LocalBashParamsSchema>;
+export type LocalListDesktopsParams = z.infer<
+  typeof LocalListDesktopsParamsSchema
+>;
+export type LocalListMonitorsParams = z.infer<
+  typeof LocalListMonitorsParamsSchema
+>;
+export type LocalListWindowsParams = z.infer<
+  typeof LocalListWindowsParamsSchema
+>;
+export type LocalScreenshotParams = z.infer<typeof LocalScreenshotParamsSchema>;
 
 // What the pi child POSTs to the loopback broker, and what the broker pushes on
 // to the desktop. A discriminated union keyed by `tool`: each tool is paired
@@ -92,6 +147,22 @@ export const BrokerCallSchema = z.discriminatedUnion("tool", [
   z.object({ tool: z.literal("local_glob"), params: LocalGlobParamsSchema }),
   z.object({ tool: z.literal("local_grep"), params: LocalGrepParamsSchema }),
   z.object({ tool: z.literal("local_bash"), params: LocalBashParamsSchema }),
+  z.object({
+    tool: z.literal("local_list_desktops"),
+    params: LocalListDesktopsParamsSchema,
+  }),
+  z.object({
+    tool: z.literal("local_list_monitors"),
+    params: LocalListMonitorsParamsSchema,
+  }),
+  z.object({
+    tool: z.literal("local_list_windows"),
+    params: LocalListWindowsParamsSchema,
+  }),
+  z.object({
+    tool: z.literal("local_screenshot"),
+    params: LocalScreenshotParamsSchema,
+  }),
 ]);
 export type BrokerCall = z.infer<typeof BrokerCallSchema>;
 
@@ -109,16 +180,29 @@ export type ToolDispatch = z.infer<typeof ToolDispatchSchema>;
 // reporting a failure against the right id rather than dropping it silently.
 export const ToolDispatchEnvelopeSchema = z.object({ id: z.string().min(1) });
 
+// A binary artifact a tool produces alongside its text, carried base64-encoded
+// so it survives the JSON hops back to the model. A screenshot is the only such
+// artifact today; `output` still carries the textual summary that accompanies
+// it. The desktop caps the encoded size (it downscales before encoding) so an
+// image stays well within the result body limit.
+export const DeviceImageSchema = z.object({
+  mimeType: z.string().min(1),
+  dataBase64: z.string().min(1),
+});
+export type DeviceImage = z.infer<typeof DeviceImageSchema>;
+
 // What the desktop POSTs back once it has run the call. `ok` is the tool's own
 // success (a shell command exiting non-zero is still `ok: true` with the exit
 // code in `output`); `ok: false` is reserved for a call the desktop refused or
 // could not attempt (bad params, missing file, disallowed path). `output` is the
-// textual evidence handed to the model.
+// textual evidence handed to the model; `image` rides along when a tool produced
+// one (a screenshot), and the proxy maps it to an image block in the result.
 export const DeviceResultSchema = z.object({
   id: z.string().min(1),
   ok: z.boolean(),
   output: z.string(),
   error: z.string().optional(),
+  image: DeviceImageSchema.optional(),
 });
 export type DeviceResult = z.infer<typeof DeviceResultSchema>;
 
@@ -128,6 +212,7 @@ export type ToolCallOutcome = {
   ok: boolean;
   output: string;
   error?: string;
+  image?: DeviceImage;
 };
 
 // SSE event name for a dispatched tool call. Heartbeats are sent as SSE comment

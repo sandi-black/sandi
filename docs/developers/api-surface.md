@@ -226,6 +226,38 @@ server-side helpers in addition to its desktop `local_*` tools. File and shell
 work still flows only to the desktop, because the builtin tools that would touch
 the server's disk stay off and the `local_*` proxies take their place.
 
+The same extension registers four machine-state tools that read the shape of a
+desktop rather than its files: `local_list_desktops`, `local_list_monitors`,
+`local_list_windows`, and `local_screenshot`. They register on the same gate as
+the file and shell proxies (any turn that leased a desktop), so they are
+available from every surface, not just the desktop REPL. A screenshot returns a
+downscaled JPEG that the proxy maps to an image block in the tool result, so the
+model sees the picture; the wire result (`DeviceResult`) carries an optional
+base64 `image` alongside its text for exactly this. Capture is Windows-only today
+(PowerShell with `System.Windows.Forms` for the screen list, `user32` for the
+window list, and `System.Drawing` with `PrintWindow`/`CopyFromScreen` for the
+image, in `client/desktop-state.ts`); on any other platform the tools refuse with
+a clear message rather than guess at a capture path.
+
+Every `local_*` tool (file, shell, and state alike) takes an optional `desktop`
+selector, so Sandi can run any call on any of the caller's connected desktops,
+not only the one the turn is paired with. `local_list_desktops` names the
+candidates (an id and name per desktop, the current one marked); a selector
+resolves against the leasing identity's connected desktops only, so a turn can
+never reach a desktop belonging to someone else, and a selector that matches none
+is a refused outcome rather than a misroute. The broker answers
+`local_list_desktops` from the registry itself (it never reaches a desktop) and
+resolves a selector to a same-identity routing key before it dispatches.
+
+When a call names no desktop, the default depends on how the turn was bound. A
+turn that originated on a desktop (an api-surface turn the desktop itself sent)
+runs on that desktop, the machine the human is working at. A turn bound by
+identity (from Discord or GitHub, with no originating device) runs on the sole
+connected desktop if there is one, but refuses and asks Sandi to name a desktop
+when the human has several connected, rather than silently picking the most
+recently linked one. The lease carries an `originDevice` flag for this; the
+api-surface lease sets it, the cross-surface lease leaves it false.
+
 ### Transport: SSE and a loopback broker
 
 Hands-local needs the server to call back into the desktop mid-turn. One tool
@@ -265,6 +297,15 @@ needed.
   device that reused another token's `deviceId`. A second desktop for the same
   human never receives another desktop's tool calls. The lease is revoked in the
   turn's `finally`, so a broker token never outlives its turn.
+- A turn is leased one device key, but any of its `local_*` calls may target a
+  different desktop of the same identity by selector. The broker resolves the
+  leasing identity once at lease time (from the leased key, while its link is
+  live) and stores it on the binding, so a `desktop` selector resolves only among
+  that identity's connected desktops. A selector that matches none (including
+  another human's desktop) is a refused outcome, not a misroute. The identity is
+  the boundary; which of that identity's desktops a call lands on is Sandi's to
+  choose, defaulting to the originating desktop and asking when a cross-surface
+  turn finds several connected.
 - An offline device fails closed. With no link registered, the turn leases no
   broker, the proxy extension registers no tools, and the turn runs without file
   or shell access rather than touching the server. A call whose device drops
@@ -357,25 +398,27 @@ src/surfaces/api/
     api-bot.ts                  HTTP server, routing, auth, pairing, turns, device routes
     verify-api-bot.ts           verify harness with an injected provider
   devices/
-    protocol.ts                 hands-local + streaming wire protocol (tools, cancel, response_chunk)
-    device-registry.ts          tracks desktop SSE links; dispatches, cancels, settles, streams
+    protocol.ts                 hands-local + streaming wire protocol (tools, cancel, image result, response_chunk)
+    device-registry.ts          tracks desktop SSE links; dispatches, cancels, settles, streams, resolves identity desktops
     device-routes.ts            HTTP edge: SSE link and result POST controllers
-    tool-broker.ts              loopback broker: per-turn token, /call relay, /stream ingress
-    verify-tool-broker.ts       broker + registry round-trip, unavailable, abort + cancel, stream relay
+    tool-broker.ts              loopback broker: per-turn token, /call relay, desktop selection, /stream ingress
+    verify-tool-broker.ts       broker + registry round-trip, unavailable, abort + cancel, desktop selection, image relay, stream relay
   http/
     respond.ts                  shared sendJson and bearer-token parsing
     read-json-body.ts           shared bounded JSON body reader
   pi-extension/
-    local-exec-tools.ts         api-only proxy tools (local_*) routed to the broker
-    verify-local-exec-tools.ts  proxy routing and ok/refused/unavailable mapping
+    local-exec-tools.ts         api-only proxy tools (local_*) routed to the broker, incl. state tools + image mapping
+    verify-local-exec-tools.ts  proxy routing and ok/refused/unavailable/image mapping
     response-stream.ts          api-only extension: relays response deltas to the broker
     verify-response-stream.ts   event classification, env parsing, delta POST
   client/
     index.ts                    reference client CLI (pair | login | run | chat)
     desktop-client.ts           SSE link loop: tool dispatch, cancel, response deltas, reconnect
     verify-desktop-client.ts    end-to-end link verify: dispatch, cancel, result-report, stream
-    executors.ts                local file and shell implementations
+    executors.ts                local file and shell implementations + state-tool routing
     verify-executors.ts         per-tool executor verify against a temp dir
+    desktop-state.ts            Windows monitor/window enumeration and screenshot capture
+    verify-desktop-state.ts     platform-aware state-tool verify (live on Windows, refusal elsewhere)
     turns.ts                    sendTurn + reconcileSuffix (REPL turn POST and stream reconcile)
     response-printer.ts         renders a streamed response for the chat REPL
     verify-turns.ts             reconcile, printer, and sendTurn outcome mapping
@@ -416,11 +459,18 @@ covers the store's single-use, expiry, supersede, and concurrency properties;
 duplicate-id rejection; `verify:api-rate-limiter` and `verify:discord-auth` cover
 the limiter and the issuer. For hands-local, `verify:tool-broker` covers the
 broker-to-device round-trip, device-unavailable, abort (including the
-`tool_cancel` it pushes to a connected device), and token revocation;
-`verify:local-exec-tools` covers the proxy extension's routing and error mapping;
-`verify:client-executors` covers each local file and shell executor, including
-bash cancellation; `verify:desktop-client` drives the reference client against a
-fake api surface to prove it runs a dispatched call, abandons one on
-`tool_cancel`, and reports both outcomes; and `verify:pi-harness` proves an api
-turn disables builtin tools and passes the broker env through while a default
-turn does neither.
+`tool_cancel` it pushes to a connected device), token revocation, desktop
+discovery and same-identity selection, the origin-device default, the
+ask-to-pick refusal when an unanchored turn finds several desktops, the
+cross-identity refusal, and a screenshot image relaying through the broker reply; `verify:local-exec-tools`
+covers the proxy extension's routing and error mapping, including mapping an image
+outcome to an image content block; `verify:desktop-hands` covers identity-scoped
+desktop resolution (`identityForKey`, `desktopsForIdentity`) alongside the lease
+path; `verify:desktop-state` exercises the Windows enumeration and capture path
+live on Windows and asserts a clear refusal on any other platform;
+`verify:client-executors` covers each local file and shell executor (and the
+state-tool routing), including bash cancellation; `verify:desktop-client` drives
+the reference client against a fake api surface to prove it runs a dispatched
+call, abandons one on `tool_cancel`, and reports both outcomes; and
+`verify:pi-harness` proves an api turn disables builtin tools and passes the
+broker env through while a default turn does neither.

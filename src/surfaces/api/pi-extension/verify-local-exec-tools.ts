@@ -8,6 +8,7 @@ import { type Broker, callTool, readBroker } from "./local-exec-tools";
 
 type ServerMode =
   | { kind: "ok"; output: string }
+  | { kind: "image"; output: string; mimeType: string; dataBase64: string }
   | { kind: "refuse"; error: string }
   | { kind: "status"; status: number };
 
@@ -29,6 +30,31 @@ async function verifyLocalExecTools(): Promise<void> {
     console.log(
       "ok an ok outcome is returned as tool text with the bearer token",
     );
+
+    setMode({
+      kind: "image",
+      output: "captured primary monitor",
+      mimeType: "image/jpeg",
+      dataBase64: "QUJD",
+    });
+    const shot = await callTool(broker, "local_screenshot", {});
+    assertEqual(
+      textOf(shot),
+      "captured primary monitor",
+      "a screenshot keeps its text summary",
+    );
+    const image = imageOf(shot);
+    assertEqual(
+      image?.mimeType,
+      "image/jpeg",
+      "a screenshot result carries an image block with its mime type",
+    );
+    assertEqual(
+      image?.data,
+      "QUJD",
+      "a screenshot result carries the image bytes",
+    );
+    console.log("ok an image outcome is returned as an image content block");
 
     setMode({ kind: "refuse", error: "permission denied" });
     await assertThrows(
@@ -133,6 +159,12 @@ async function withBroker(
     request.on("end", () => {
       if (mode.kind === "ok") {
         respond(response, 200, { ok: true, output: mode.output });
+      } else if (mode.kind === "image") {
+        respond(response, 200, {
+          ok: true,
+          output: mode.output,
+          image: { mimeType: mode.mimeType, dataBase64: mode.dataBase64 },
+        });
       } else if (mode.kind === "refuse") {
         respond(response, 200, { ok: false, output: "", error: mode.error });
       } else {
@@ -179,6 +211,21 @@ function textOf(result: {
 }): string | undefined {
   const first = result.content[0];
   if (first && first.type === "text") return first.text;
+  return undefined;
+}
+
+function imageOf(result: {
+  content: ReadonlyArray<{ type: string; data?: string; mimeType?: string }>;
+}): { data: string; mimeType: string } | undefined {
+  for (const item of result.content) {
+    if (
+      item.type === "image" &&
+      typeof item.data === "string" &&
+      typeof item.mimeType === "string"
+    ) {
+      return { data: item.data, mimeType: item.mimeType };
+    }
+  }
   return undefined;
 }
 

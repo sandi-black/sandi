@@ -18,6 +18,7 @@ async function verifyToolBroker(): Promise<void> {
     await verifyDesktopTargeting(registry, broker);
     await verifyOriginDeviceDefault(registry, broker);
     await verifyAmbiguousDefault(registry, broker);
+    await verifyStaleKeyFailover(registry, broker);
     await verifyUnknownDesktop(registry, broker);
     await verifyImagePassthrough(registry, broker);
     await verifyStreamRelay(registry, broker);
@@ -331,6 +332,47 @@ async function verifyAmbiguousDefault(
   );
 }
 
+async function verifyStaleKeyFailover(
+  registry: DeviceRegistry,
+  broker: ToolBroker,
+): Promise<void> {
+  // An identity-bound turn whose original desktop dropped and relinked under a
+  // new key still resolves an unselected call to the sole live desktop, not the
+  // dead lease key. The lease captures the identity while the first link is up.
+  const first = registry.connect({
+    key: "hopper-1",
+    deviceId: "hopper-1",
+    identityId: "hopper",
+    write: () => true,
+    end: () => {},
+  });
+  const lease = broker.lease({
+    key: "hopper-1",
+    signal: new AbortController().signal,
+  });
+  // The original desktop drops its link and the human relinks under a fresh key.
+  first.close();
+  connectEchoDevice(
+    registry,
+    "hopper-2",
+    (dispatch) => ({ id: dispatch.id, ok: true, output: "from hopper-2" }),
+    "hopper",
+  );
+  const response = await postCall(lease.ticket.url, lease.ticket.token, {
+    tool: "local_read",
+    params: { path: "x" },
+  });
+  assertEqual(
+    asRecord(response.body)?.["output"],
+    "from hopper-2",
+    "an unselected call resolves to the sole live desktop, not the stale lease key",
+  );
+  lease.revoke();
+  console.log(
+    "ok an unanchored turn with one relinked desktop targets the live key",
+  );
+}
+
 async function verifyUnknownDesktop(
   registry: DeviceRegistry,
   broker: ToolBroker,
@@ -386,7 +428,7 @@ async function verifyImagePassthrough(
           id,
           ok: true,
           output: "captured primary monitor",
-          image: { mimeType: "image/jpeg", dataBase64: "QUJD" },
+          image: { mimeType: "image/jpeg", dataBase64: "/9j/4AAQ" },
         });
       });
       return true;
@@ -412,7 +454,7 @@ async function verifyImagePassthrough(
   );
   assertEqual(
     image?.["dataBase64"],
-    "QUJD",
+    "/9j/4AAQ",
     "the image bytes ride back to the caller",
   );
   lease.revoke();

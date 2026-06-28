@@ -186,16 +186,55 @@ export const ToolDispatchEnvelopeSchema = z.object({ id: z.string().min(1) });
 // it. The desktop caps the encoded size (it downscales before encoding) so an
 // image stays well within the result body limit.
 //
-// Both fields are parsed precisely, not accepted as any non-empty string: the
-// mime type must be one the model can render, and the payload must be base64.
-// A desktop result that names an unsupported type or carries non-base64 bytes is
-// rejected at this boundary rather than travelling on as a typed image.
+// The image is parsed precisely, not accepted as a base64-looking string: the
+// mime type is one the model can render, the payload is canonical base64, and
+// the decoded bytes carry the magic number for the declared type. A result that
+// fails any of these is rejected at the boundary rather than carried as a typed
+// image that only fails later when mapped to a model image block.
 export const SUPPORTED_IMAGE_MIME_TYPES = ["image/jpeg", "image/png"];
-const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
-export const DeviceImageSchema = z.object({
-  mimeType: z.enum(["image/jpeg", "image/png"]),
-  dataBase64: z.string().regex(BASE64_PATTERN, "must be base64-encoded"),
-});
+// Canonical base64: groups of four, with only a final two- or three-char group
+// padded to four. Rejects an impossible length or stray padding that a loose
+// charset pattern would accept.
+export const CANONICAL_BASE64 =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+// True when the decoded bytes begin with the magic number for the declared mime
+// type, so a payload labelled image/jpeg is genuinely JPEG and not arbitrary
+// base64 that merely decodes.
+export function imageBytesMatchMime(
+  mimeType: string,
+  dataBase64: string,
+): boolean {
+  const bytes = Buffer.from(dataBase64, "base64");
+  if (mimeType === "image/jpeg") {
+    return (
+      bytes.length >= 3 &&
+      bytes[0] === 0xff &&
+      bytes[1] === 0xd8 &&
+      bytes[2] === 0xff
+    );
+  }
+  if (mimeType === "image/png") {
+    return (
+      bytes.length >= 4 &&
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47
+    );
+  }
+  return false;
+}
+
+export const DeviceImageSchema = z
+  .object({
+    mimeType: z.enum(["image/jpeg", "image/png"]),
+    dataBase64: z.string().regex(CANONICAL_BASE64, "must be canonical base64"),
+  })
+  .refine((image) => imageBytesMatchMime(image.mimeType, image.dataBase64), {
+    message: "image bytes do not match the declared mime type",
+    path: ["dataBase64"],
+  });
 export type DeviceImage = z.infer<typeof DeviceImageSchema>;
 
 // What the desktop POSTs back once it has run the call. `ok` is the tool's own

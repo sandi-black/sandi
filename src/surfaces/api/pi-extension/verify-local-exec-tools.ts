@@ -35,7 +35,7 @@ async function verifyLocalExecTools(): Promise<void> {
       kind: "image",
       output: "captured primary monitor",
       mimeType: "image/jpeg",
-      dataBase64: "QUJD",
+      dataBase64: "/9j/4AAQ",
     });
     const shot = await callTool(broker, "local_screenshot", {});
     assertEqual(
@@ -51,7 +51,7 @@ async function verifyLocalExecTools(): Promise<void> {
     );
     assertEqual(
       image?.data,
-      "QUJD",
+      "/9j/4AAQ",
       "a screenshot result carries the image bytes",
     );
     console.log("ok an image outcome is returned as an image content block");

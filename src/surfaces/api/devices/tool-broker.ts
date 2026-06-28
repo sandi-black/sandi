@@ -226,7 +226,14 @@ export class ToolBroker {
       return { ok: true, key: binding.key };
     }
     const desktops = this.#registry.desktopsForIdentity(binding.identityId);
-    if (desktops.length <= 1) return { ok: true, key: binding.key };
+    // No desktop is registered under this identity right now (none ever linked,
+    // or the only one dropped its link); the lease key is the best we have.
+    if (desktops.length === 0) return { ok: true, key: binding.key };
+    // Exactly one desktop: target its live key, not the lease key, so a turn
+    // whose original device dropped and relinked still resolves to the current
+    // connection rather than a stale one.
+    const [sole] = desktops;
+    if (sole && desktops.length === 1) return { ok: true, key: sole.key };
     const names = desktops
       .map((desktop) => `${shortId(desktop.key)} (${desktop.deviceId})`)
       .join(", ");

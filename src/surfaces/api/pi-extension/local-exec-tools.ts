@@ -433,16 +433,42 @@ function parseOutcome(raw: string): ToolCallOutcome {
   };
 }
 
-// Supported image types and the base64 shape, restated here (this extension
-// cannot import the protocol module) so the proxy parses an image result as
-// precisely as the protocol's DeviceImageSchema does.
+// The supported image types, the canonical-base64 shape, and the magic-byte
+// check, restated here (this extension cannot import the protocol module) so the
+// proxy parses an image result exactly as precisely as the protocol's
+// DeviceImageSchema does on the wire.
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png"]);
-const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+const CANONICAL_BASE64 =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+// Confirms the decoded bytes start with the declared type's signature, so a
+// payload cannot claim image/png while carrying jpeg (or arbitrary) bytes.
+function imageBytesMatchMime(mimeType: string, dataBase64: string): boolean {
+  const bytes = Buffer.from(dataBase64, "base64");
+  if (mimeType === "image/jpeg") {
+    return (
+      bytes.length >= 3 &&
+      bytes[0] === 0xff &&
+      bytes[1] === 0xd8 &&
+      bytes[2] === 0xff
+    );
+  }
+  if (mimeType === "image/png") {
+    return (
+      bytes.length >= 4 &&
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47
+    );
+  }
+  return false;
+}
 
 // Parses an optional image payload off a broker result. Absent is fine (most
-// tools return none). But a present payload must be a well-formed, supported
-// image: a malformed one throws so the call fails closed rather than being
-// reported successful with the image silently dropped.
+// tools return none). A present payload must be a well-formed, supported image
+// whose bytes match its declared type: anything malformed throws so the call
+// fails closed rather than being reported successful with the image dropped.
 function parseImage(value: unknown): ToolCallImage | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "object") {
@@ -459,8 +485,11 @@ function parseImage(value: unknown): ToolCallImage | undefined {
       `tool broker returned an unsupported image type: ${mimeType}`,
     );
   }
-  if (!BASE64_PATTERN.test(dataBase64)) {
+  if (!CANONICAL_BASE64.test(dataBase64)) {
     throw new Error("tool broker returned image data that was not base64");
+  }
+  if (!imageBytesMatchMime(mimeType, dataBase64)) {
+    throw new Error("tool broker image bytes do not match the declared type");
   }
   return { mimeType, dataBase64 };
 }

@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
 
 import { z } from "zod/v4";
-import type {
-  LocalScreenshotParams,
-  ToolCallOutcome,
+import {
+  CANONICAL_BASE64,
+  imageBytesMatchMime,
+  type LocalScreenshotParams,
+  type ToolCallOutcome,
 } from "@/surfaces/api/devices/protocol";
 
 // The Windows side of the desktop state tools: enumerate the monitors and open
@@ -16,7 +18,7 @@ import type {
 // arbitrary commands on the paired desktop.
 //
 // Only Windows is supported today. On any other platform the tools refuse with a
-// clear message rather than guess at a cross-platform capture path.
+// clear message.
 
 const DEFAULT_MAX_DIMENSION = 1568;
 const MIN_MAX_DIMENSION = 256;
@@ -38,11 +40,14 @@ const MAX_WINDOWS = 300;
 
 type Rect = { x: number; y: number; width: number; height: number };
 
+// A pixel rectangle from the enumeration subprocess: integer coordinates (which
+// may be negative on a multi-monitor desktop) and positive integer dimensions.
+// Parsed precisely so malformed bounds cannot ride into a capture region.
 const RectSchema = z.object({
-  x: z.number(),
-  y: z.number(),
-  width: z.number(),
-  height: z.number(),
+  x: z.number().int(),
+  y: z.number().int(),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
 });
 
 const MonitorSchema = z.object({
@@ -55,7 +60,9 @@ const MonitorSchema = z.object({
 type Monitor = z.infer<typeof MonitorSchema>;
 
 const WindowSchema = z.object({
-  handle: z.string(),
+  // A window handle is a decimal IntPtr string; parse it as such here so an
+  // invalid handle is rejected at the boundary, not re-checked ad hoc later.
+  handle: z.string().regex(/^\d+$/, "must be a decimal window handle"),
   title: z.string(),
   processName: z.string(),
   pid: z.number().int().nonnegative(),
@@ -65,16 +72,21 @@ const WindowSchema = z.object({
 type DesktopWindow = z.infer<typeof WindowSchema>;
 
 // The capture subprocess is a trust boundary like any other: its stdout is
-// parsed precisely, including that the payload is genuine base64, so a mangled
-// capture fails closed here rather than travelling on as a typed image.
-const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
-const CaptureSchema = z.object({
-  originalWidth: z.number().int().positive(),
-  originalHeight: z.number().int().positive(),
-  width: z.number().int().positive(),
-  height: z.number().int().positive(),
-  base64: z.string().regex(BASE64_PATTERN, "must be base64-encoded"),
-});
+// parsed precisely, including that the payload is canonical base64 whose decoded
+// bytes are a JPEG, so a mangled capture fails closed here rather than
+// travelling on as a typed image.
+const CaptureSchema = z
+  .object({
+    originalWidth: z.number().int().positive(),
+    originalHeight: z.number().int().positive(),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+    base64: z.string().regex(CANONICAL_BASE64, "must be canonical base64"),
+  })
+  .refine((capture) => imageBytesMatchMime("image/jpeg", capture.base64), {
+    message: "capture was not a JPEG image",
+    path: ["base64"],
+  });
 type Capture = z.infer<typeof CaptureSchema>;
 
 // Lists the monitors attached to this desktop with their pixel bounds, so Sandi
@@ -279,13 +291,12 @@ async function captureRegion(
 }
 
 async function captureWindow(
+  // The handle is a decimal IntPtr string already parsed by WindowSchema, so it
+  // is safe to interpolate into the capture script; no re-validation needed.
   handle: string,
   maxDimension: number,
   signal?: AbortSignal,
 ): Promise<Capture> {
-  if (!/^\d+$/.test(handle)) {
-    throw new Error(`malformed window handle: ${handle}`);
-  }
   const result = await runPowerShell(
     captureWindowScript(handle, maxDimension),
     signal,
@@ -361,33 +372,47 @@ public class SandiWin {
 }
 "@
 $rows = New-Object System.Collections.Generic.List[string]
+$errs = New-Object System.Collections.Generic.List[string]
+# Best-effort process-name table. A window whose owning process this session
+# cannot read (elevated, or exited mid-scan) simply lists with an empty
+# processName; the window is still real. This is the one supplementary field,
+# distinct from the required title, bounds, and pid checked below.
+$procNames = @{}
+foreach ($p in Get-Process -ErrorAction SilentlyContinue) { $procNames[[int]$p.Id] = $p.ProcessName }
 $cb = [SandiWin+EnumProc] {
   param($hWnd, $lParam)
-  if ([SandiWin]::IsWindowVisible($hWnd)) {
-    $len = [SandiWin]::GetWindowTextLength($hWnd)
-    if ($len -gt 0) {
-      $sb = New-Object System.Text.StringBuilder ($len + 1)
-      [void][SandiWin]::GetWindowText($hWnd, $sb, $sb.Capacity)
-      $rect = New-Object SandiWin+RECT
-      [void][SandiWin]::GetWindowRect($hWnd, [ref]$rect)
-      $procId = [uint32]0
-      [void][SandiWin]::GetWindowThreadProcessId($hWnd, [ref]$procId)
-      $procName = ''
-      try { $procName = (Get-Process -Id $procId -ErrorAction Stop).ProcessName } catch { $procName = '' }
-      $obj = [pscustomobject]@{
-        handle = $hWnd.ToString()
-        title = $sb.ToString()
-        processName = $procName
-        pid = [int]$procId
-        minimized = [bool]([SandiWin]::IsIconic($hWnd))
-        bounds = [pscustomobject]@{ x = $rect.Left; y = $rect.Top; width = ($rect.Right - $rect.Left); height = ($rect.Bottom - $rect.Top) }
-      }
-      $rows.Add(($obj | ConvertTo-Json -Compress -Depth 4))
-    }
+  if (-not [SandiWin]::IsWindowVisible($hWnd)) { return $true }
+  $len = [SandiWin]::GetWindowTextLength($hWnd)
+  if ($len -le 0) { return $true }
+  $sb = New-Object System.Text.StringBuilder ($len + 1)
+  $copied = [SandiWin]::GetWindowText($hWnd, $sb, $sb.Capacity)
+  if ($copied -le 0) { $errs.Add('GetWindowText failed'); return $true }
+  $rect = New-Object SandiWin+RECT
+  if (-not [SandiWin]::GetWindowRect($hWnd, [ref]$rect)) { $errs.Add('GetWindowRect failed'); return $true }
+  $w = $rect.Right - $rect.Left
+  $h = $rect.Bottom - $rect.Top
+  # A visible titled window with no area is a helper window, not something to
+  # list or capture; skip it (this is a filter, not a discarded failure).
+  if ($w -le 0 -or $h -le 0) { return $true }
+  $procId = [uint32]0
+  $tid = [SandiWin]::GetWindowThreadProcessId($hWnd, [ref]$procId)
+  if ($tid -eq 0) { $errs.Add('GetWindowThreadProcessId failed'); return $true }
+  $procName = ''
+  if ($procNames.ContainsKey([int]$procId)) { $procName = $procNames[[int]$procId] }
+  $obj = [pscustomobject]@{
+    handle = $hWnd.ToString()
+    title = $sb.ToString()
+    processName = $procName
+    pid = [int]$procId
+    minimized = [bool]([SandiWin]::IsIconic($hWnd))
+    bounds = [pscustomobject]@{ x = $rect.Left; y = $rect.Top; width = $w; height = $h }
   }
+  $rows.Add(($obj | ConvertTo-Json -Compress -Depth 4))
   return $true
 }
-[void][SandiWin]::EnumWindows($cb, [IntPtr]::Zero)
+$ok = [SandiWin]::EnumWindows($cb, [IntPtr]::Zero)
+if (-not $ok) { throw 'EnumWindows failed' }
+if ($errs.Count -gt 0) { throw $errs[0] }
 $rows | ForEach-Object { $_ }
 `;
 

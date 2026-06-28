@@ -237,7 +237,7 @@ base64 `image` alongside its text for exactly this. Capture is Windows-only toda
 (PowerShell with `System.Windows.Forms` for the screen list, `user32` for the
 window list, and `System.Drawing` with `PrintWindow`/`CopyFromScreen` for the
 image, in `client/desktop-state.ts`); on any other platform the tools refuse with
-a clear message rather than guess at a capture path.
+a clear message.
 
 Every `local_*` tool (file, shell, and state alike) takes an optional `desktop`
 selector, so Sandi can run any call on any of the caller's connected desktops,

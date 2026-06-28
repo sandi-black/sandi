@@ -185,9 +185,16 @@ export const ToolDispatchEnvelopeSchema = z.object({ id: z.string().min(1) });
 // artifact today; `output` still carries the textual summary that accompanies
 // it. The desktop caps the encoded size (it downscales before encoding) so an
 // image stays well within the result body limit.
+//
+// Both fields are parsed precisely, not accepted as any non-empty string: the
+// mime type must be one the model can render, and the payload must be base64.
+// A desktop result that names an unsupported type or carries non-base64 bytes is
+// rejected at this boundary rather than travelling on as a typed image.
+export const SUPPORTED_IMAGE_MIME_TYPES = ["image/jpeg", "image/png"];
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 export const DeviceImageSchema = z.object({
-  mimeType: z.string().min(1),
-  dataBase64: z.string().min(1),
+  mimeType: z.enum(["image/jpeg", "image/png"]),
+  dataBase64: z.string().regex(BASE64_PATTERN, "must be base64-encoded"),
 });
 export type DeviceImage = z.infer<typeof DeviceImageSchema>;
 

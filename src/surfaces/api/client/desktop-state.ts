@@ -20,10 +20,18 @@ import type {
 
 const DEFAULT_MAX_DIMENSION = 1568;
 const MIN_MAX_DIMENSION = 256;
-const MAX_MAX_DIMENSION = 4096;
+// Kept well below 4K: a JPEG at this longest edge stays comfortably under the
+// device-result body cap, and the model gains little from more pixels.
+const MAX_MAX_DIMENSION = 2048;
 const JPEG_QUALITY = 82;
 const SCREENSHOT_MIME = "image/jpeg";
 const PS_TIMEOUT_MS = 30_000;
+// The device-result POST is capped at 8 MiB of JSON (DEVICE_RESULT_MAX_BODY_BYTES
+// in device-routes). The base64 image is the bulk of that body, so cap it below
+// the limit with headroom for the JSON envelope. A capture that still exceeds it
+// is refused promptly (a small text result) rather than POSTed and rejected with
+// a 413 that would leave the call pending until the broker backstop fires.
+const MAX_IMAGE_BASE64_BYTES = 6 * 1024 * 1024;
 // A busy desktop can have many windows; cap the listing so one call cannot flood
 // the model, and note when the list was trimmed.
 const MAX_WINDOWS = 300;
@@ -56,12 +64,16 @@ const WindowSchema = z.object({
 });
 type DesktopWindow = z.infer<typeof WindowSchema>;
 
+// The capture subprocess is a trust boundary like any other: its stdout is
+// parsed precisely, including that the payload is genuine base64, so a mangled
+// capture fails closed here rather than travelling on as a typed image.
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 const CaptureSchema = z.object({
   originalWidth: z.number().int().positive(),
   originalHeight: z.number().int().positive(),
   width: z.number().int().positive(),
   height: z.number().int().positive(),
-  base64: z.string().min(1),
+  base64: z.string().regex(BASE64_PATTERN, "must be base64-encoded"),
 });
 type Capture = z.infer<typeof CaptureSchema>;
 
@@ -160,6 +172,8 @@ async function screenshotMonitor(
     );
   }
   const capture = await captureRegion(target.bounds, maxDimension, signal);
+  const tooLarge = imageTooLarge(capture.base64);
+  if (tooLarge) return refused(tooLarge);
   const summary =
     `Captured monitor [${target.index}] ${target.deviceName} ` +
     `(${capture.originalWidth}x${capture.originalHeight}), ` +
@@ -188,6 +202,8 @@ async function screenshotWindow(
     );
   }
   const capture = await captureWindow(target.handle, maxDimension, signal);
+  const tooLarge = imageTooLarge(capture.base64);
+  if (tooLarge) return refused(tooLarge);
   const summary =
     `Captured window ${JSON.stringify(target.title)} ` +
     `(${target.processName}, pid ${target.pid}) ` +
@@ -238,7 +254,7 @@ function resolveWindow(
 async function enumerateMonitors(signal?: AbortSignal): Promise<Monitor[]> {
   const result = await runPowerShell(MONITORS_SCRIPT, signal);
   ensureExited(result, "list monitors");
-  return parseJsonLines(result.stdout, MonitorSchema);
+  return parseJsonLines(result.stdout, MonitorSchema, "the monitor list");
 }
 
 async function enumerateWindows(
@@ -246,7 +262,7 @@ async function enumerateWindows(
 ): Promise<DesktopWindow[]> {
   const result = await runPowerShell(WINDOWS_SCRIPT, signal);
   ensureExited(result, "list windows");
-  return parseJsonLines(result.stdout, WindowSchema);
+  return parseJsonLines(result.stdout, WindowSchema, "the window list");
 }
 
 async function captureRegion(
@@ -514,10 +530,16 @@ function ensureExited(result: PsResult, action: string): void {
   }
 }
 
-// Parses newline-delimited JSON, keeping only the lines that match the schema.
-// PowerShell emits one compact JSON object per item, so a stray line (a warning,
-// a blank) is skipped rather than failing the whole listing.
-function parseJsonLines<T>(stdout: string, schema: z.ZodType<T>): T[] {
+// Parses newline-delimited JSON, one record per non-blank line. PowerShell emits
+// one compact JSON object per item to stdout and nothing else, so a non-blank
+// line that does not parse or does not match the schema is corrupt output, not
+// noise to skip: it throws so the listing fails closed rather than quietly
+// returning partial or empty data. Blank lines (trailing newline) are ignored.
+function parseJsonLines<T>(
+  stdout: string,
+  schema: z.ZodType<T>,
+  label: string,
+): T[] {
   const items: T[] = [];
   for (const line of stdout.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -526,10 +548,13 @@ function parseJsonLines<T>(stdout: string, schema: z.ZodType<T>): T[] {
     try {
       raw = JSON.parse(trimmed);
     } catch {
-      continue;
+      throw new Error(`${label} returned a line that was not valid JSON`);
     }
     const parsed = schema.safeParse(raw);
-    if (parsed.success) items.push(parsed.data);
+    if (!parsed.success) {
+      throw new Error(`${label} returned an unexpected record shape`);
+    }
+    items.push(parsed.data);
   }
   return items;
 }
@@ -559,6 +584,14 @@ function ensureWindows(action: string): ToolCallOutcome | undefined {
   return refused(
     `cannot ${action}: the desktop state tools are only supported on Windows desktops (this desktop is ${process.platform})`,
   );
+}
+
+// Refuses a capture whose encoded size would not fit the device-result body cap.
+// Returns the refusal message, or undefined when the image is within budget.
+function imageTooLarge(base64: string): string | undefined {
+  if (base64.length <= MAX_IMAGE_BASE64_BYTES) return undefined;
+  const mb = (base64.length / (1024 * 1024)).toFixed(1);
+  return `the screenshot is too large to return (${mb} MB encoded); retry with a smaller maxDimension`;
 }
 
 // Approximate decoded byte size of a base64 string, for the human-readable

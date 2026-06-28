@@ -302,10 +302,9 @@ needed.
   leasing identity once at lease time (from the leased key, while its link is
   live) and stores it on the binding, so a `desktop` selector resolves only among
   that identity's connected desktops. A selector that matches none (including
-  another human's desktop) is a refused outcome, not a misroute. The identity is
-  the boundary; which of that identity's desktops a call lands on is Sandi's to
-  choose, defaulting to the originating desktop and asking when a cross-surface
-  turn finds several connected.
+  another human's desktop) is a refused outcome, not a misroute. Within that
+  identity, an unselected call defaults to the originating desktop, and a
+  cross-surface turn that finds several connected asks Sandi to name one.
 - An offline device fails closed. With no link registered, the turn leases no
   broker, the proxy extension registers no tools, and the turn runs without file
   or shell access rather than touching the server. A call whose device drops

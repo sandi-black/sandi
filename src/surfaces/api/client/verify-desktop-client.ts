@@ -16,7 +16,12 @@ import {
 // through onResponseChunk. This covers the seam the unit tests cannot, the SSE
 // parse plus cancel plus result-report plus response-stream path end to end.
 
-type ResultRow = { id: string; ok: boolean; error?: string };
+type ResultRow = {
+  id: string;
+  ok: boolean;
+  hasImage: boolean;
+  error?: string;
+};
 
 async function verifyDesktopClient(): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "sandi-desktop-client-"));
@@ -35,6 +40,7 @@ async function verifyDesktopClient(): Promise<void> {
 
   const cancelId = randomUUID();
   const echoId = randomUUID();
+  const screenshotId = randomUUID();
   let cancelTimer: ReturnType<typeof setTimeout> | undefined;
 
   const streamed: ResponseChunk[] = [];
@@ -86,6 +92,15 @@ async function verifyDesktopClient(): Promise<void> {
         tool: "local_bash",
         params: { command: "echo done" },
       });
+      // A screenshot exercises the image-bearing result POST end to end. On
+      // Windows with a live session it returns an image; elsewhere (and in a
+      // headless session) it refuses, so the assertion only requires that a
+      // successful one carries an image through the real /v1/devices/result hop.
+      writeEvent(res, "tool_call", {
+        id: screenshotId,
+        tool: "local_screenshot",
+        params: { maxDimension: 256 },
+      });
       // Cancel the long command shortly after dispatch.
       cancelTimer = setTimeout(() => {
         writeEvent(res, "tool_cancel", { id: cancelId });
@@ -125,7 +140,12 @@ async function verifyDesktopClient(): Promise<void> {
 
   try {
     await Promise.race([
-      Promise.all([awaitResult(cancelId), awaitResult(echoId), streamEnded]),
+      Promise.all([
+        awaitResult(cancelId),
+        awaitResult(echoId),
+        awaitResult(screenshotId),
+        streamEnded,
+      ]),
       timeout(10_000),
     ]);
 
@@ -152,6 +172,20 @@ async function verifyDesktopClient(): Promise<void> {
     assert(echoed !== undefined, "the echo call reported a result");
     assert(echoed?.ok === true, "an uncancelled command runs to completion");
     console.log("ok an uncancelled command runs and reports its outcome");
+
+    const shot = results.find((row) => row.id === screenshotId);
+    assert(shot !== undefined, "the screenshot call reported a result");
+    if (shot?.ok) {
+      assert(
+        shot.hasImage,
+        "a successful screenshot POSTs an image-bearing result the server parses",
+      );
+      console.log("ok a screenshot delivers its image through the result POST");
+    } else {
+      console.log(
+        "ok a screenshot with no live capture reports a refusal (no image expected)",
+      );
+    }
   } finally {
     if (cancelTimer) clearTimeout(cancelTimer);
     controller.abort();
@@ -190,6 +224,7 @@ async function readResult(
   return {
     id: result.data.id,
     ok: result.data.ok,
+    hasImage: result.data.image !== undefined,
     ...(result.data.error !== undefined ? { error: result.data.error } : {}),
   };
 }

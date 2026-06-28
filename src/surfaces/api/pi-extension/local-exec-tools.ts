@@ -322,6 +322,13 @@ export async function callTool(
     // tool error to the model instead of presenting a failure as evidence.
     throw new Error(outcome.error ?? (outcome.output || `${tool} failed`));
   }
+  // A screenshot's whole point is the image; a "successful" one without it is a
+  // broken result, not evidence. Fail closed rather than hand back text alone.
+  if (tool === "local_screenshot" && outcome.image === undefined) {
+    throw new Error(
+      "the desktop returned a screenshot result without an image",
+    );
+  }
   const content: AgentToolResult<Record<string, unknown>>["content"] = [];
   if (outcome.output.length > 0) {
     content.push({ type: "text", text: outcome.output });
@@ -426,15 +433,34 @@ function parseOutcome(raw: string): ToolCallOutcome {
   };
 }
 
-// Pulls an optional image payload off a broker result. A malformed image is
-// dropped rather than failing the whole call: the text output still stands.
+// Supported image types and the base64 shape, restated here (this extension
+// cannot import the protocol module) so the proxy parses an image result as
+// precisely as the protocol's DeviceImageSchema does.
+const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png"]);
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+
+// Parses an optional image payload off a broker result. Absent is fine (most
+// tools return none). But a present payload must be a well-formed, supported
+// image: a malformed one throws so the call fails closed rather than being
+// reported successful with the image silently dropped.
 function parseImage(value: unknown): ToolCallImage | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object") {
+    throw new Error("tool broker returned a malformed image");
+  }
   const record: Record<string, unknown> = { ...value };
   const mimeType = record["mimeType"];
   const dataBase64 = record["dataBase64"];
   if (typeof mimeType !== "string" || typeof dataBase64 !== "string") {
-    return undefined;
+    throw new Error("tool broker returned a malformed image");
+  }
+  if (!SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
+    throw new Error(
+      `tool broker returned an unsupported image type: ${mimeType}`,
+    );
+  }
+  if (!BASE64_PATTERN.test(dataBase64)) {
+    throw new Error("tool broker returned image data that was not base64");
   }
   return { mimeType, dataBase64 };
 }

@@ -128,21 +128,33 @@ const SESSION_JSONL = [
   "",
 ].join("\n");
 
-// 1. Transcript parsing is tolerant and keeps only human-meaningful turns.
+// 1. Transcript parsing keeps human-meaningful turns, skips expected non-message
+// records, and counts only genuinely unreadable data.
 {
-  const turns = parsePiSessionTranscript(SESSION_JSONL);
+  const parsed = parsePiSessionTranscript(SESSION_JSONL);
   assert.deepEqual(
-    turns.map((turn) => turn.role),
+    parsed.turns.map((turn) => turn.role),
     ["user", "assistant", "assistant"],
   );
-  const text = formatTranscript(turns);
+  // The "{ not json" line is unreadable; the model_change record is an expected
+  // non-message entry and is not counted as corruption.
+  assert.equal(parsed.unparseableLines, 1);
+  assert.equal(parsed.malformedMessages, 0);
+
+  const text = formatTranscript(parsed.turns);
   assert.match(text, /Human: I want to plan a vegetable garden/);
   assert.match(text, /Sandi: Lovely\. Raised beds work well\./);
   assert.match(text, /\[uses memory_search\]/);
 
-  const trimmed = formatTranscript(turns, { maxChars: 40 });
+  const trimmed = formatTranscript(parsed.turns, { maxChars: 40 });
   assert.ok(trimmed.length <= 80);
   assert.match(trimmed, /trimmed/);
+
+  // A record claiming to be a message but failing validation is counted.
+  const malformed = parsePiSessionTranscript(
+    JSON.stringify({ type: "message", message: { bogus: true } }),
+  );
+  assert.equal(malformed.malformedMessages, 1);
 }
 
 // 2. Episodic note refs, path safety, and round-tripping through disk.
@@ -217,6 +229,11 @@ const SESSION_JSONL = [
     assert.equal(request.instructions, ENCODE_SYSTEM_PROMPT);
     assert.match(request.input, /vegetable garden/);
     assert.equal(request.accountRouting?.identityId, "jess-human");
+    // Encoding runs with builtin file/shell tools off, server code execution
+    // excluded, and no memory tools (the recap is written from its text).
+    assert.equal(request.surfaceContext?.disableBuiltinTools, true);
+    assert.ok(request.surfaceContext?.excludeTools?.includes("sandi_js_run"));
+    assert.ok(request.surfaceContext?.excludeTools?.includes("memory_write"));
 
     const notePath = join(dataDir, "memory", NOTE_REF);
     const written = await readFile(notePath, "utf8");
@@ -269,6 +286,14 @@ const SESSION_JSONL = [
     assert.match(request.input, /Fresh notes/);
     assert.match(request.input, /raised beds/);
     assert.equal(request.accountRouting?.identityId, "jess-human");
+    // Dreaming keeps its memory tools but never server-side code execution or
+    // builtin file/shell tools.
+    assert.equal(request.surfaceContext?.disableBuiltinTools, true);
+    assert.ok(request.surfaceContext?.excludeTools?.includes("sandi_js_run"));
+    assert.equal(
+      request.surfaceContext?.excludeTools?.includes("memory_write"),
+      false,
+    );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -288,6 +313,16 @@ const SESSION_JSONL = [
     assert.equal(got.toISOString(), when.toISOString());
     // A second conversation is independent: marking one never advances another.
     assert.equal(await store.lastDreamAt("c2"), null);
+
+    // A loosely parseable but non-ISO timestamp is rejected at the file
+    // boundary rather than coerced into a Date later.
+    const statePath = join(tempRoot, "data", "dreaming", "state.json");
+    await writeFile(
+      statePath,
+      JSON.stringify({ version: 1, conversations: { c3: "June 29, 2026" } }),
+      "utf8",
+    );
+    await assert.rejects(() => store.lastDreamAt("c3"));
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

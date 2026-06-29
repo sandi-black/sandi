@@ -3,12 +3,10 @@ import { join } from "node:path";
 import { z } from "zod/v4";
 import { JsonFileStore } from "@/lib/state/file-store";
 
-const IsoDateTime = z
-  .string()
-  .refine(
-    (value) => !Number.isNaN(new Date(value).getTime()),
-    "must be an ISO datetime",
-  );
+// A strict ISO 8601 datetime (what Date.toISOString produces), so a loosely
+// parseable string like "June 29, 2026" or "1" is rejected at the file boundary
+// rather than coerced into a Date later.
+const IsoDateTime = z.iso.datetime();
 
 const DreamStateSchema = z.object({
   version: z.literal(1),

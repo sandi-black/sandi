@@ -67,6 +67,7 @@ class DreamingService {
   readonly #idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #conversationWatchers: FSWatcher[] = [];
   readonly #encoding = new Set<string>();
+  readonly #pendingEncode = new Set<string>();
   #rootWatcher: FSWatcher | undefined;
   #cron: Cron | undefined;
   #stopped = false;
@@ -99,6 +100,7 @@ class DreamingService {
     this.#stopped = true;
     for (const timer of this.#idleTimers.values()) clearTimeout(timer);
     this.#idleTimers.clear();
+    this.#pendingEncode.clear();
     this.#rootWatcher?.close();
     this.#rootWatcher = undefined;
     this.#closeConversationWatchers();
@@ -205,7 +207,14 @@ class DreamingService {
   }
 
   async #encodeConversation(storageId: string): Promise<void> {
-    if (this.#stopped || this.#encoding.has(storageId)) return;
+    if (this.#stopped) return;
+    if (this.#encoding.has(storageId)) {
+      // An encode is already running for this conversation. Remember to run
+      // again once it finishes so activity that arrived mid-encode (after the
+      // running pass read the transcript) is still captured.
+      this.#pendingEncode.add(storageId);
+      return;
+    }
     this.#encoding.add(storageId);
     try {
       const manifest = await this.#input.conversations.get(storageId);
@@ -226,6 +235,9 @@ class DreamingService {
       });
     } finally {
       this.#encoding.delete(storageId);
+      if (this.#pendingEncode.delete(storageId) && !this.#stopped) {
+        this.#scheduleIdleEncode(storageId);
+      }
     }
   }
 

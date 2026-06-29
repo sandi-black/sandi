@@ -8,6 +8,18 @@ export type TranscriptTurn = {
   text: string;
 };
 
+// The result of parsing a session file. `turns` is the readable transcript;
+// the counts surface records that could not be read so a caller can warn about
+// potentially corrupt session storage instead of silently consolidating from a
+// partial transcript. Expected non-message records (the session header, model
+// and thinking-level changes, compaction markers, and so on) are NOT counted as
+// anomalies; only genuinely unreadable data is.
+export type ParsedTranscript = {
+  turns: TranscriptTurn[];
+  unparseableLines: number;
+  malformedMessages: number;
+};
+
 const TextBlockSchema = z.object({
   type: z.literal("text"),
   text: z.string(),
@@ -30,13 +42,16 @@ const MessageEntrySchema = z.object({
 
 /**
  * Parses a Pi coding-agent session file (JSONL) into an ordered transcript of
- * who-said-what. The on-disk format is owned by the pi packages, so this stays
- * deliberately tolerant: the header line, unknown entry types, and unknown
- * content blocks are skipped rather than throwing, and only the human-meaningful
- * roles (user, assistant, tool result) are surfaced.
+ * who-said-what. The on-disk format is owned by the pi packages and legitimately
+ * interleaves many record types, so non-message records are skipped as normal.
+ * A line that is not valid JSON, or a record that claims to be a message but
+ * fails validation, is treated as corruption: it is skipped (one bad line should
+ * not abort a whole consolidation) but counted so the caller can surface it.
  */
-export function parsePiSessionTranscript(jsonl: string): TranscriptTurn[] {
+export function parsePiSessionTranscript(jsonl: string): ParsedTranscript {
   const turns: TranscriptTurn[] = [];
+  let unparseableLines = 0;
+  let malformedMessages = 0;
   for (const line of jsonl.split("\n")) {
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
@@ -44,14 +59,28 @@ export function parsePiSessionTranscript(jsonl: string): TranscriptTurn[] {
     try {
       parsed = JSON.parse(trimmed);
     } catch {
+      unparseableLines += 1;
       continue;
     }
     const entry = MessageEntrySchema.safeParse(parsed);
-    if (!entry.success) continue;
-    const turn = turnFromMessage(entry.data.message);
-    if (turn) turns.push(turn);
+    if (entry.success) {
+      const turn = turnFromMessage(entry.data.message);
+      if (turn) turns.push(turn);
+      continue;
+    }
+    // A record that claims to be a message but fails the schema is malformed; a
+    // record of any other type is an expected non-message entry, skipped quietly.
+    if (recordType(parsed) === "message") malformedMessages += 1;
   }
-  return turns;
+  return { turns, unparseableLines, malformedMessages };
+}
+
+function recordType(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || !("type" in value)) {
+    return undefined;
+  }
+  const type = value["type"];
+  return typeof type === "string" ? type : undefined;
 }
 
 function turnFromMessage(

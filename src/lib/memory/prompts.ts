@@ -24,7 +24,7 @@ You are shown the notes you formed since you last rested. Read them, then decide
 
 The notes are your starting point. You may revisit older memory with memory_search and memory_read. The underlying conversation transcript is included for reference if a note is unclear. Lean on the notes, and dig deeper only when it helps.
 
-Follow your soul and memory policies. Memory is visible, correctable household continuity, and sensitive personal details deserve care. Work calmly. When you are done, a sentence to yourself about what you consolidated is plenty.`;
+Follow your soul and memory policies for visible, correctable memory and sensitive personal details. Work calmly. When done, write one sentence to yourself about what you consolidated.`;
 
 /**
  * Assembles the dream's working material: the fresh notes surfaced front and

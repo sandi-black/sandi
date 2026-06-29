@@ -8,6 +8,10 @@ import type {
 import { participantRef } from "@/lib/conversations/types";
 import type { Logger } from "@/lib/logging";
 import {
+  DREAM_SURFACE_CONTEXT,
+  ENCODE_SURFACE_CONTEXT,
+} from "@/lib/memory/dreaming-context";
+import {
   type EpisodicNote,
   episodicNoteRef,
   episodicScopePrefix,
@@ -41,8 +45,8 @@ type ConsolidationBase = {
 
 /**
  * The idle "encode" pass. Summarizes a conversation transcript into a short
- * episodic note with the main model on low thinking — it is just a summarizer.
- * Skips conversations with no memory scope of their own or no transcript yet.
+ * episodic note with the main model on low thinking (just a summarizer). Skips
+ * conversations with no memory scope of their own or no transcript yet.
  */
 export async function encodeConversation(
   input: ConsolidationBase & { now: Date },
@@ -65,6 +69,7 @@ export async function encodeConversation(
     sessionMode: "none",
     thinking: "low",
     memoryContext,
+    surfaceContext: ENCODE_SURFACE_CONTEXT,
     accountRouting: routingFor(input.manifest),
   });
 
@@ -87,7 +92,7 @@ export async function encodeConversation(
 
 /**
  * Returns the episodic notes for one conversation that were written or updated
- * since the last dream — the raw material a dream consolidates.
+ * since the last dream (the raw material a dream consolidates).
  */
 export async function freshNotesForConversation(input: {
   memoryRoot: string;
@@ -130,6 +135,7 @@ export async function runDreamForConversation(
     sessionMode: "none",
     thinking: "high",
     memoryContext,
+    surfaceContext: DREAM_SURFACE_CONTEXT,
     accountRouting: routingFor(input.manifest),
   });
   input.logger.info("dreamed over conversation", {
@@ -143,6 +149,7 @@ async function readTranscript(input: {
   sessionDir: string;
   manifest: ConversationManifest;
   transcriptCharBudget: number;
+  logger: Logger;
 }): Promise<string> {
   const path = piSessionFilePath(input.sessionDir, input.manifest.canonicalId);
   let jsonl: string;
@@ -155,8 +162,20 @@ async function readTranscript(input: {
     if (isMissingFileError(error)) return "";
     throw error;
   }
-  const turns = parsePiSessionTranscript(jsonl);
-  return formatTranscript(turns, { maxChars: input.transcriptCharBudget });
+  const parsed = parsePiSessionTranscript(jsonl);
+  if (parsed.unparseableLines > 0 || parsed.malformedMessages > 0) {
+    // Unreadable records mean the session file is partially corrupt. Consolidate
+    // from what was readable rather than aborting, but surface it so corruption
+    // is visible instead of silently summarized as if complete.
+    input.logger.warn("pi session transcript had unreadable records", {
+      conversationId: input.manifest.canonicalId,
+      unparseableLines: parsed.unparseableLines,
+      malformedMessages: parsed.malformedMessages,
+    });
+  }
+  return formatTranscript(parsed.turns, {
+    maxChars: input.transcriptCharBudget,
+  });
 }
 
 function memoryContextFor(

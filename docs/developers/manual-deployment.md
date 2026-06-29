@@ -256,6 +256,7 @@ Restart=always
 RestartSec=10
 TimeoutStopSec=30
 KillSignal=SIGINT
+SuccessExitStatus=130
 
 [Install]
 WantedBy=multi-user.target
@@ -266,6 +267,11 @@ units. Systemd sends the stop signal to every process in the service control
 group; when `npm` is the parent process, routine restarts can still be reported
 as signal/error exits even when Sandi's Node process handles `SIGINT` or
 `SIGTERM` cleanly.
+
+Keep `SuccessExitStatus=130` in the units. Node/tsx can report an intentional
+`SIGINT` shutdown as exit code 130 (`128 + SIGINT`) after Sandi's signal handler
+has stopped surfaces cleanly; systemd should treat that specific code as a
+normal restart/stop result.
 
 For the optional GitHub polling surface, create a matching unit with the same
 environment and this entrypoint:

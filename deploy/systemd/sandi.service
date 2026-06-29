@@ -23,6 +23,11 @@ Restart=always
 RestartSec=10
 TimeoutStopSec=30
 KillSignal=SIGINT
+# Node/tsx can report an intentional SIGINT shutdown as 130 (128 + SIGINT)
+# even after Sandi's signal handler stops surfaces cleanly. Treat that as a
+# normal systemd restart/stop result while still letting real startup/runtime
+# failures surface as failures.
+SuccessExitStatus=130
 
 [Install]
 WantedBy=multi-user.target

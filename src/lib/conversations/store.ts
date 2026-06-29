@@ -33,13 +33,13 @@ const MemoryScopeSchema = z
   .transform(normalizeMemoryScope);
 
 const ConversationManifestSchema = z.object({
-  canonicalId: z.custom<ConversationManifest["canonicalId"]>(),
+  canonicalId: z.string().min(1),
   surface: z.string(),
   platform: z.enum(["discord", "github"]),
   kind: z.string(),
   title: z.string(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
   starterParticipantRef: z.string(),
   participants: z.array(ParticipantSchema),
   memoryScopes: z.array(MemoryScopeSchema),
@@ -96,7 +96,15 @@ export class ConversationStore {
       if (!entry.isDirectory()) continue;
       try {
         const manifest = await this.get(entry.name);
-        if (manifest) manifests.push(manifest);
+        if (manifest) {
+          manifests.push(manifest);
+        } else {
+          // A conversation directory with no manifest.json is a corrupt state,
+          // not an absent conversation; surface it rather than skip silently.
+          log.warn("conversation directory has no manifest", {
+            storageId: entry.name,
+          });
+        }
       } catch (error) {
         // Skip a manifest that fails to read or parse so one bad conversation
         // does not stop the rest from being consolidated, but log it so the

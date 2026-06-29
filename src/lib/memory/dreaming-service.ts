@@ -56,6 +56,11 @@ export function startMemoryDreaming(
   return { stop: () => service.stop() };
 }
 
+// How many encode passes may run concurrently. Keeps the startup backfill (and
+// any burst of idle conversations) from spawning a provider turn per conversation
+// all at once.
+const MAX_CONCURRENT_ENCODES = 3;
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -69,6 +74,8 @@ class DreamingService {
   readonly #conversationWatchers: FSWatcher[] = [];
   readonly #encoding = new Set<string>();
   readonly #pendingEncode = new Set<string>();
+  readonly #queuedEncode = new Set<string>();
+  readonly #encodeQueue: string[] = [];
   readonly #knownConversations = new Set<string>();
   readonly #abort = new AbortController();
   #rootWatcher: FSWatcher | undefined;
@@ -107,6 +114,8 @@ class DreamingService {
     for (const timer of this.#idleTimers.values()) clearTimeout(timer);
     this.#idleTimers.clear();
     this.#pendingEncode.clear();
+    this.#queuedEncode.clear();
+    this.#encodeQueue.length = 0;
     this.#rootWatcher?.close();
     this.#rootWatcher = undefined;
     this.#closeConversationWatchers();
@@ -211,15 +220,22 @@ class DreamingService {
     for (const storageId of storageIds) {
       if (this.#stopped) return;
       if (this.#knownConversations.has(storageId)) continue;
-      this.#knownConversations.add(storageId);
       try {
         const manifest = await this.#input.conversations.get(storageId);
-        if (!manifest) continue;
+        if (!manifest) {
+          // No manifest to encode from (the store surfaces the missing file). It
+          // is a stable state, so record it to avoid re-checking every refresh.
+          this.#knownConversations.add(storageId);
+          continue;
+        }
         const pending = await conversationHasUnencodedActivity({
           memoryRoot: this.#memoryRoot,
           manifest,
         });
         if (pending) this.#scheduleIdleEncode(storageId);
+        // Mark known only after the check succeeds, so a failed check below is
+        // retried on a later refresh rather than treated as completed.
+        this.#knownConversations.add(storageId);
       } catch (error) {
         this.#input.logger.warn("dreaming startup encode check failed", {
           storageId,
@@ -243,20 +259,44 @@ class DreamingService {
     if (existing) clearTimeout(existing);
     const timer = setTimeout(() => {
       this.#idleTimers.delete(storageId);
-      void this.#encodeConversation(storageId);
+      this.#requestEncode(storageId);
     }, this.#input.config.idleMs);
     this.#idleTimers.set(storageId, timer);
   }
 
-  async #encodeConversation(storageId: string): Promise<void> {
+  // Enqueues an encode, then runs the queue under a global concurrency cap. The
+  // cap matters most for the startup backfill, where many conversations' idle
+  // timers fire at once: without it each would spawn a provider turn
+  // concurrently and could exhaust local resources or provider quota.
+  #requestEncode(storageId: string): void {
     if (this.#stopped) return;
     if (this.#encoding.has(storageId)) {
-      // An encode is already running for this conversation. Remember to run
-      // again once it finishes so activity that arrived mid-encode (after the
-      // running pass read the transcript) is still captured.
+      // Already running for this conversation; run again once it finishes so
+      // activity that arrived mid-encode is still captured.
       this.#pendingEncode.add(storageId);
       return;
     }
+    if (this.#queuedEncode.has(storageId)) return;
+    this.#queuedEncode.add(storageId);
+    this.#encodeQueue.push(storageId);
+    this.#pumpEncodeQueue();
+  }
+
+  #pumpEncodeQueue(): void {
+    while (
+      !this.#stopped &&
+      this.#encoding.size < MAX_CONCURRENT_ENCODES &&
+      this.#encodeQueue.length > 0
+    ) {
+      const storageId = this.#encodeQueue.shift();
+      if (storageId === undefined) break;
+      this.#queuedEncode.delete(storageId);
+      void this.#encodeConversation(storageId);
+    }
+  }
+
+  async #encodeConversation(storageId: string): Promise<void> {
+    if (this.#stopped) return;
     this.#encoding.add(storageId);
     try {
       const manifest = await this.#input.conversations.get(storageId);
@@ -279,8 +319,9 @@ class DreamingService {
     } finally {
       this.#encoding.delete(storageId);
       if (this.#pendingEncode.delete(storageId) && !this.#stopped) {
-        this.#scheduleIdleEncode(storageId);
+        this.#requestEncode(storageId);
       }
+      this.#pumpEncodeQueue();
     }
   }
 

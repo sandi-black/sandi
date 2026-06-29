@@ -75,7 +75,15 @@ export async function encodeConversation(
   });
 
   const recap = response.text.trim();
-  if (!recap) return { written: false };
+  if (!recap) {
+    // Empty provider output means this idle encode produced no recap. Surface it
+    // rather than treat the dropped recap as a successful no-op; the next idle
+    // encode for this conversation will try again.
+    input.logger.warn("encode produced no recap", {
+      conversationId: input.manifest.canonicalId,
+    });
+    return { written: false };
+  }
 
   const ref = episodicNoteRef(prefix, input.now);
   await writeEpisodicNote({

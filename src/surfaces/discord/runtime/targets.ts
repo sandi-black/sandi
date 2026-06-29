@@ -29,6 +29,67 @@ export const DeleteMessageInputSchema = z.object({
   reason: z.string().optional(),
 });
 
+const DiscordHistoryLimitSchema = z.number().finite().int().positive();
+const DiscordSearchQuerySchema = z
+  .string()
+  .trim()
+  .min(1, "search query must not be empty");
+const DiscordMessageContentSchema = z
+  .string()
+  .trim()
+  .min(1, "message content must not be empty");
+const MimeTypeSchema = z
+  .string()
+  .trim()
+  .regex(
+    /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*(?:;[A-Za-z0-9!#$&^_.+-]+=[A-Za-z0-9!#$&^_.+-]+)*$/u,
+    "mimeType must be a header-safe MIME content type",
+  );
+
+export const ReadChannelHistoryInputSchema = z
+  .object({
+    channel: DiscordChannelRefSchema.optional(),
+    limit: DiscordHistoryLimitSchema.optional(),
+    beforeMessageId: DiscordMessageIdSchema.optional(),
+    afterMessageId: DiscordMessageIdSchema.optional(),
+  })
+  .refine(
+    (input) => !(input.beforeMessageId && input.afterMessageId),
+    "readChannelHistory accepts beforeMessageId or afterMessageId, not both",
+  );
+
+export const SearchChannelHistoryInputSchema = z.object({
+  channel: DiscordChannelRefSchema.optional(),
+  query: DiscordSearchQuerySchema,
+  limit: DiscordHistoryLimitSchema.optional(),
+  maxMessages: DiscordHistoryLimitSchema.optional(),
+  beforeMessageId: DiscordMessageIdSchema.optional(),
+  caseSensitive: z.boolean().optional(),
+});
+
+export const SendMessageInputSchema = z.object({
+  channel: DiscordChannelRefSchema.optional(),
+  content: DiscordMessageContentSchema,
+  replyToMessageId: DiscordMessageIdSchema.optional(),
+  allowMentions: z.boolean().optional(),
+});
+
+export const SendFileInputSchema = SendMessageInputSchema.extend({
+  path: z.string().trim().min(1, "file path must not be empty"),
+  filename: z.string().trim().min(1, "filename must not be empty").optional(),
+  mimeType: MimeTypeSchema.optional(),
+});
+
+export const SendImageInputSchema = SendMessageInputSchema.extend({
+  path: z.string().trim().min(1, "image path must not be empty"),
+});
+
+export const ReadAttachmentInputSchema = z.object({
+  channel: DiscordChannelRefSchema.optional(),
+  messageId: DiscordMessageIdSchema.optional(),
+  attachmentId: DiscordMessageIdSchema.optional(),
+});
+
 export type DiscordChannelTarget =
   | { kind: "current" }
   | { kind: "parent" }

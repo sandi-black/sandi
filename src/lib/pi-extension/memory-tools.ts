@@ -134,7 +134,7 @@ export default function memoryToolsExtension(pi: ExtensionAPI): void {
       description:
         "Create, replace, or append to a Sandi memory file by logical ref. Use this for clear, relevant continuity.",
       promptSnippet:
-        "You usually do not need to write memory during a conversation: your memory consolidates on its own while you rest. Write in the moment only when someone explicitly asks you to remember (or forget) something, or a detail is important and time-sensitive. When you do, mention it only if it is useful for the participant to know.",
+        "You usually do not need to write memory during a conversation because your memory consolidates on its own while you rest. Write in the moment only when someone explicitly asks you to remember or forget something, or a detail is important and time-sensitive. When you do, mention it only if it is useful for the participant to know.",
       parameters: Type.Object({
         ref: RefParam,
         summary: Type.Optional(

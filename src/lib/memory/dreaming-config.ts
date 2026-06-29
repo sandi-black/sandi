@@ -1,9 +1,13 @@
+import { Cron } from "croner";
+
 import { readEnv } from "@/lib/config/env";
 
 // How automatic memory consolidation is paced. Short-term encoding fires after a
 // conversation has been quiet for idleMs; the deeper overnight dream runs on
 // nightlyCron. Everything has a sensible default so the feature works with no
-// configuration, and can be turned off entirely.
+// configuration, and can be turned off entirely. Every value is validated at the
+// env boundary so an invalid setting fails loudly at startup rather than deep in
+// the scheduler.
 export type DreamingConfig = {
   enabled: boolean;
   idleMs: number;
@@ -14,39 +18,68 @@ export type DreamingConfig = {
 
 const DEFAULT_IDLE_MINUTES = 10;
 const DEFAULT_NIGHTLY_CRON = "0 4 * * *";
+const DEFAULT_TIMEZONE = "UTC";
 const DEFAULT_TRANSCRIPT_CHARS = 24_000;
 
 export function loadDreamingConfig(): DreamingConfig {
+  const idleMinutes = readStrictPositiveInt(
+    "SANDI_DREAMING_IDLE_MINUTES",
+    DEFAULT_IDLE_MINUTES,
+  );
   return {
     enabled: readBooleanEnv(["SANDI_DREAMING_ENABLED"], true),
-    idleMs:
-      readPositiveIntEnv(
-        ["SANDI_DREAMING_IDLE_MINUTES"],
-        DEFAULT_IDLE_MINUTES,
-      ) *
-      60 *
-      1_000,
-    nightlyCron:
+    idleMs: idleMinutes * 60 * 1_000,
+    nightlyCron: parseCron(
       readEnv(["SANDI_DREAMING_NIGHTLY_CRON"]) ?? DEFAULT_NIGHTLY_CRON,
-    timezone: readEnv(["SANDI_DREAMING_TIMEZONE", "TZ"]) ?? "UTC",
-    transcriptCharBudget: readPositiveIntEnv(
-      ["SANDI_DREAMING_TRANSCRIPT_CHARS"],
+    ),
+    timezone: parseTimezone(
+      readEnv(["SANDI_DREAMING_TIMEZONE", "TZ"]) ?? DEFAULT_TIMEZONE,
+    ),
+    transcriptCharBudget: readStrictPositiveInt(
+      "SANDI_DREAMING_TRANSCRIPT_CHARS",
       DEFAULT_TRANSCRIPT_CHARS,
     ),
   };
 }
 
-function readPositiveIntEnv(
-  names: readonly string[],
-  defaultValue: number,
-): number {
-  const value = readEnv(names);
+// Accepts only a base-10 positive integer; "10abc", "1.5", and "0" are rejected
+// rather than silently coerced.
+function readStrictPositiveInt(name: string, defaultValue: number): number {
+  const value = readEnv([name]);
   if (!value) return defaultValue;
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`${name} must be a positive integer`);
+  }
   const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed) || parsed <= 0) {
-    throw new Error(`${names[0]} must be a positive integer`);
+  if (parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
   }
   return parsed;
+}
+
+// Rejects an invalid cron expression at load time by constructing a paused Cron,
+// which parses the pattern without scheduling anything.
+function parseCron(value: string): string {
+  try {
+    new Cron(value, { paused: true }).stop();
+  } catch {
+    throw new Error(
+      `SANDI_DREAMING_NIGHTLY_CRON is not a valid cron expression: ${value}`,
+    );
+  }
+  return value;
+}
+
+// Rejects an unknown IANA time zone; Intl throws a RangeError for an invalid one.
+function parseTimezone(value: string): string {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+  } catch {
+    throw new Error(
+      `SANDI_DREAMING_TIMEZONE is not a valid IANA time zone: ${value}`,
+    );
+  }
+  return value;
 }
 
 function readBooleanEnv(

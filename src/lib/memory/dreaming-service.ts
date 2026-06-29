@@ -80,7 +80,7 @@ class DreamingService {
   }
 
   start(): void {
-    void this.#initWatchers();
+    this.#fireAndLog(this.#initWatchers(), "dreaming watcher init failed");
     this.#cron = new Cron(
       this.#input.config.nightlyCron,
       { timezone: this.#input.config.timezone },
@@ -106,6 +106,15 @@ class DreamingService {
     this.#cron = undefined;
   }
 
+  // Runs background work that is intentionally not awaited (watcher setup fired
+  // from a constructor or fs.watch callback) while still surfacing a rejection,
+  // so a failure is logged rather than becoming an unhandled promise rejection.
+  #fireAndLog(work: Promise<void>, message: string): void {
+    void work.catch((error: unknown) => {
+      this.#input.logger.error(message, { error: errorMessage(error) });
+    });
+  }
+
   // Watches the conversations directory for new conversations (root watcher) and
   // each conversation's manifest for turn activity. fs.watch is not reliably
   // recursive on Linux, so each subdirectory is watched directly, the same way
@@ -119,7 +128,10 @@ class DreamingService {
           this.#conversationsDir,
           { persistent: true },
           () => {
-            void this.#refreshConversationWatchers();
+            this.#fireAndLog(
+              this.#refreshConversationWatchers(),
+              "dreaming watcher refresh failed",
+            );
           },
         );
       } catch (error) {
@@ -142,7 +154,13 @@ class DreamingService {
       storageIds = entries
         .filter((entry) => entry.isDirectory())
         .map((entry) => entry.name);
-    } catch {
+    } catch (error) {
+      // A failure listing the conversations directory leaves idle encoding
+      // disabled, so surface it rather than silently treating it as "no
+      // conversations to watch".
+      this.#input.logger.error("dreaming watcher refresh could not list", {
+        error: errorMessage(error),
+      });
       return;
     }
     for (const storageId of storageIds) {
@@ -216,12 +234,19 @@ class DreamingService {
     this.#dreaming = true;
     const startedAt = new Date();
     try {
-      const since = await this.#dreamState.lastDreamAt();
       const manifests = await this.#input.conversations.list();
       let dreamed = 0;
+      let failed = 0;
       for (const manifest of manifests) {
         if (this.#stopped) break;
         try {
+          // The dream watermark is per conversation: a conversation is only
+          // advanced past its fresh notes once its dream succeeds, so a failed
+          // or skipped consolidation retries on the next sweep instead of being
+          // silently lost.
+          const since = await this.#dreamState.lastDreamAt(
+            manifest.canonicalId,
+          );
           const notes = await freshNotesForConversation({
             memoryRoot: this.#memoryRoot,
             manifest,
@@ -237,18 +262,22 @@ class DreamingService {
             transcriptCharBudget: this.#input.config.transcriptCharBudget,
             logger: this.#input.logger,
           });
-          if (result.dreamed) dreamed += 1;
+          if (result.dreamed) {
+            dreamed += 1;
+            await this.#dreamState.markDreamed(manifest.canonicalId, startedAt);
+          }
         } catch (error) {
+          failed += 1;
           this.#input.logger.error("dream failed for conversation", {
             conversationId: manifest.canonicalId,
             error: errorMessage(error),
           });
         }
       }
-      await this.#dreamState.setLastDreamAt(startedAt);
       this.#input.logger.info("dream sweep complete", {
         conversations: manifests.length,
         dreamed,
+        failed,
       });
     } catch (error) {
       this.#input.logger.error("dream sweep failed", {

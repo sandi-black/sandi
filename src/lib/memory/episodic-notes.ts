@@ -34,6 +34,10 @@ export function episodicScopePrefix(
   return chosen?.refPrefix;
 }
 
+// One recap per conversation per day. Each encode re-summarizes the whole
+// conversation, so a second encode on the same day replaces the day's note with
+// a fresh superset rather than losing earlier content, while distinct days are
+// preserved as their own notes.
 export function episodicNoteRef(prefix: string, date: Date): string {
   return `${prefix}/episodes/${isoDate(date)}.md`;
 }
@@ -93,8 +97,11 @@ export async function listEpisodicNotes(
   let entries: Dirent[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
+  } catch (error) {
+    // A conversation with no episodes directory simply has no notes yet; any
+    // other read failure is surfaced rather than masked as "no fresh notes".
+    if (isMissingFileError(error)) return [];
+    throw error;
   }
   const notes: EpisodicNote[] = [];
   for (const entry of entries) {
@@ -120,4 +127,13 @@ export function notesTouchedSince(
 ): EpisodicNote[] {
   if (!since) return notes;
   return notes.filter((note) => note.updatedAt.getTime() > since.getTime());
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ENOENT"
+  );
 }

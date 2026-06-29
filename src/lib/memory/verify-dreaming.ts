@@ -10,6 +10,8 @@ import {
   freshNotesForConversation,
   runDreamForConversation,
 } from "@/lib/memory/consolidation";
+import { DreamStateStore } from "@/lib/memory/dream-state";
+import { loadDreamingConfig } from "@/lib/memory/dreaming-config";
 import {
   episodicNoteRef,
   episodicScopePrefix,
@@ -267,6 +269,98 @@ const SESSION_JSONL = [
     assert.match(request.input, /Fresh notes/);
     assert.match(request.input, /raised beds/);
     assert.equal(request.accountRouting?.identityId, "jess-human");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+// 5. The dream watermark is tracked and advanced per conversation.
+{
+  const tempRoot = await mkdtemp(join(tmpdir(), "sandi-state-"));
+  try {
+    const store = new DreamStateStore(join(tempRoot, "data"));
+    assert.equal(await store.lastDreamAt("c1"), null);
+
+    const when = new Date("2026-06-29T04:00:00.000Z");
+    await store.markDreamed("c1", when);
+    const got = await store.lastDreamAt("c1");
+    assert.ok(got);
+    assert.equal(got.toISOString(), when.toISOString());
+    // A second conversation is independent: marking one never advances another.
+    assert.equal(await store.lastDreamAt("c2"), null);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+// 6. Dreaming config strictly validates its env boundary.
+{
+  const keys = [
+    "SANDI_DREAMING_IDLE_MINUTES",
+    "SANDI_DREAMING_NIGHTLY_CRON",
+    "SANDI_DREAMING_TIMEZONE",
+    "SANDI_DREAMING_TRANSCRIPT_CHARS",
+    "SANDI_DREAMING_ENABLED",
+  ];
+  const saved = new Map(keys.map((key) => [key, process.env[key]]));
+  const restore = () => {
+    for (const key of keys) {
+      const value = saved.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+  try {
+    process.env["SANDI_DREAMING_NIGHTLY_CRON"] = "0 3 * * *";
+    process.env["SANDI_DREAMING_TIMEZONE"] = "UTC";
+
+    process.env["SANDI_DREAMING_IDLE_MINUTES"] = "10abc";
+    assert.throws(() => loadDreamingConfig());
+
+    process.env["SANDI_DREAMING_IDLE_MINUTES"] = "15";
+    process.env["SANDI_DREAMING_TRANSCRIPT_CHARS"] = "1000";
+    const config = loadDreamingConfig();
+    assert.equal(config.idleMs, 15 * 60 * 1_000);
+    assert.equal(config.nightlyCron, "0 3 * * *");
+    assert.equal(config.transcriptCharBudget, 1_000);
+
+    process.env["SANDI_DREAMING_NIGHTLY_CRON"] = "not a cron";
+    assert.throws(() => loadDreamingConfig());
+    process.env["SANDI_DREAMING_NIGHTLY_CRON"] = "0 3 * * *";
+
+    process.env["SANDI_DREAMING_TIMEZONE"] = "Not/AZone";
+    assert.throws(() => loadDreamingConfig());
+  } finally {
+    restore();
+  }
+}
+
+// 7. A non-missing transcript read error is surfaced, not treated as empty.
+{
+  const tempRoot = await mkdtemp(join(tmpdir(), "sandi-readerr-"));
+  try {
+    const dataDir = join(tempRoot, "data");
+    const sessionDir = join(dataDir, "pi-sessions");
+    const manifest = manifestFor();
+    // Make the session path a directory so reading it fails with EISDIR rather
+    // than the benign ENOENT.
+    await mkdir(piSessionFilePath(sessionDir, manifest.canonicalId), {
+      recursive: true,
+    });
+
+    const provider = new FakeProvider();
+    await assert.rejects(() =>
+      encodeConversation({
+        provider,
+        dataDir,
+        sessionDir,
+        manifest,
+        now: new Date("2026-06-29T12:00:00Z"),
+        transcriptCharBudget: 10_000,
+        logger,
+      }),
+    );
+    assert.equal(provider.requests.length, 0);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

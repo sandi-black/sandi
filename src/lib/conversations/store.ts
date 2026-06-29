@@ -8,7 +8,10 @@ import type {
   ConversationParticipant,
 } from "@/lib/conversations/types";
 import { participantRef } from "@/lib/conversations/types";
+import { createLogger } from "@/lib/logging";
 import { JsonFileStore } from "@/lib/state/file-store";
+
+const log = createLogger("conversation-store");
 
 const ParticipantSchema = z
   .object({
@@ -94,9 +97,14 @@ export class ConversationStore {
       try {
         const manifest = await this.get(entry.name);
         if (manifest) manifests.push(manifest);
-      } catch {
-        // Skip a manifest that fails to read or parse; one bad conversation
-        // should not stop the rest from being consolidated.
+      } catch (error) {
+        // Skip a manifest that fails to read or parse so one bad conversation
+        // does not stop the rest from being consolidated, but log it so the
+        // skipped conversation is visible rather than silently absent.
+        log.warn("skipping unreadable conversation manifest", {
+          storageId: entry.name,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
     return manifests;

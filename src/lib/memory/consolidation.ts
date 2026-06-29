@@ -148,8 +148,12 @@ async function readTranscript(input: {
   let jsonl: string;
   try {
     jsonl = await readFile(path, "utf8");
-  } catch {
-    return "";
+  } catch (error) {
+    // A missing session file just means the conversation has no transcript yet;
+    // any other read failure (permissions, corruption) is surfaced rather than
+    // silently treated as an empty transcript.
+    if (isMissingFileError(error)) return "";
+    throw error;
   }
   const turns = parsePiSessionTranscript(jsonl);
   return formatTranscript(turns, { maxChars: input.transcriptCharBudget });
@@ -188,6 +192,15 @@ function routingParticipant(
     (participant) => participant.identityId,
   );
   return withIdentity ?? starter ?? manifest.participants[0];
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ENOENT"
+  );
 }
 
 function recapSummary(recap: string): string {

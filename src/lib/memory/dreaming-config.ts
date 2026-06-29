@@ -21,10 +21,18 @@ const DEFAULT_NIGHTLY_CRON = "0 4 * * *";
 const DEFAULT_TIMEZONE = "UTC";
 const DEFAULT_TRANSCRIPT_CHARS = 24_000;
 
+// Upper bounds keep each value finite and usable: idle minutes stay well within
+// setTimeout's 32-bit millisecond range (24h is far more than any "idle" wait),
+// and the transcript budget stays a real char count rather than Infinity (which
+// would disable trimming).
+const MAX_IDLE_MINUTES = 1_440;
+const MAX_TRANSCRIPT_CHARS = 2_000_000;
+
 export function loadDreamingConfig(): DreamingConfig {
-  const idleMinutes = readStrictPositiveInt(
+  const idleMinutes = readBoundedPositiveInt(
     "SANDI_DREAMING_IDLE_MINUTES",
     DEFAULT_IDLE_MINUTES,
+    MAX_IDLE_MINUTES,
   );
   return {
     enabled: readBooleanEnv(["SANDI_DREAMING_ENABLED"], true),
@@ -35,24 +43,30 @@ export function loadDreamingConfig(): DreamingConfig {
     timezone: parseTimezone(
       readEnv(["SANDI_DREAMING_TIMEZONE", "TZ"]) ?? DEFAULT_TIMEZONE,
     ),
-    transcriptCharBudget: readStrictPositiveInt(
+    transcriptCharBudget: readBoundedPositiveInt(
       "SANDI_DREAMING_TRANSCRIPT_CHARS",
       DEFAULT_TRANSCRIPT_CHARS,
+      MAX_TRANSCRIPT_CHARS,
     ),
   };
 }
 
-// Accepts only a base-10 positive integer; "10abc", "1.5", and "0" are rejected
-// rather than silently coerced.
-function readStrictPositiveInt(name: string, defaultValue: number): number {
+// Accepts only a base-10 positive integer within [1, max]. "10abc", "1.5", "0",
+// and digit strings so large they parse to an unsafe integer or Infinity are all
+// rejected rather than silently coerced into an overflowing delay or budget.
+function readBoundedPositiveInt(
+  name: string,
+  defaultValue: number,
+  max: number,
+): number {
   const value = readEnv([name]);
   if (!value) return defaultValue;
   if (!/^\d+$/.test(value)) {
     throw new Error(`${name} must be a positive integer`);
   }
   const parsed = Number.parseInt(value, 10);
-  if (parsed <= 0) {
-    throw new Error(`${name} must be a positive integer`);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > max) {
+    throw new Error(`${name} must be a positive integer between 1 and ${max}`);
   }
   return parsed;
 }

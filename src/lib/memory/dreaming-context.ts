@@ -3,38 +3,19 @@ import {
   UNIFIED_RUNTIME_ENTRY,
 } from "@/lib/surface-context";
 
-// Background consolidation turns run with pi's builtin file and shell tools off
-// and server-side code execution (sandi_js_run) excluded, so reading potentially
-// adversarial conversation content can never reach the server's filesystem,
-// shell, or code runtime. This mirrors the trust boundary the api surface uses.
-// They are not tied to any human-facing surface, so they expose no surface
-// skills and the runtime entry is only a placeholder (sandi_js_run is excluded).
-const BACKGROUND_BASE = {
+// Surface context for the background consolidation turns (encode and dream).
+//
+// These turns get Sandi's full toolset, the same as a normal turn: dreaming is
+// her own reflective pass and she keeps full agency over her memory, skills, and
+// runtime while she does it. The material they read (a conversation transcript)
+// has already been processed live by a full-tool turn, so re-reading it in the
+// background opens no injection surface that did not already exist during the
+// original conversation. This context exists only to wire the unified runtime so
+// those tools compose; it is not tied to any human-facing surface, so it exposes
+// no surface-specific skills.
+export const DREAMING_SURFACE_CONTEXT: SandiSurfaceContext = {
   name: "dreaming",
   skillsSurface: "dreaming",
   runtimeImport: UNIFIED_RUNTIME_ENTRY,
   runtimeEntry: UNIFIED_RUNTIME_ENTRY,
-  disableBuiltinTools: true,
-};
-
-// The idle encode pass only summarizes and returns text; the recap is written
-// from that text by the harness, so it needs no tools at all. Exclude server
-// code execution and every memory tool.
-export const ENCODE_SURFACE_CONTEXT: SandiSurfaceContext = {
-  ...BACKGROUND_BASE,
-  excludeTools: [
-    "sandi_js_run",
-    "memory_list",
-    "memory_read",
-    "memory_search",
-    "memory_write",
-    "memory_forget",
-  ],
-};
-
-// The dream consolidates using the memory tools, but never server-side code
-// execution.
-export const DREAM_SURFACE_CONTEXT: SandiSurfaceContext = {
-  ...BACKGROUND_BASE,
-  excludeTools: ["sandi_js_run"],
 };

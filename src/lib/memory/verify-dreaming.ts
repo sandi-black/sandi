@@ -248,11 +248,11 @@ const SESSION_JSONL = [
     assert.equal(request.instructions, ENCODE_SYSTEM_PROMPT);
     assert.match(request.input, /vegetable garden/);
     assert.equal(request.accountRouting?.identityId, "jess-human");
-    // Encoding runs with builtin file/shell tools off, server code execution
-    // excluded, and no memory tools (the recap is written from its text).
-    assert.equal(request.surfaceContext?.disableBuiltinTools, true);
-    assert.ok(request.surfaceContext?.excludeTools?.includes("sandi_js_run"));
-    assert.ok(request.surfaceContext?.excludeTools?.includes("memory_write"));
+    // Background turns keep Sandi's full toolset: nothing is disabled or
+    // excluded; the context only wires the runtime.
+    assert.equal(request.surfaceContext?.name, "dreaming");
+    assert.notEqual(request.surfaceContext?.disableBuiltinTools, true);
+    assert.equal(request.surfaceContext?.excludeTools, undefined);
 
     const notePath = join(dataDir, "memory", NOTE_REF);
     const written = await readFile(notePath, "utf8");
@@ -305,14 +305,10 @@ const SESSION_JSONL = [
     assert.match(request.input, /Fresh notes/);
     assert.match(request.input, /raised beds/);
     assert.equal(request.accountRouting?.identityId, "jess-human");
-    // Dreaming keeps its memory tools but never server-side code execution or
-    // builtin file/shell tools.
-    assert.equal(request.surfaceContext?.disableBuiltinTools, true);
-    assert.ok(request.surfaceContext?.excludeTools?.includes("sandi_js_run"));
-    assert.equal(
-      request.surfaceContext?.excludeTools?.includes("memory_write"),
-      false,
-    );
+    // Dreaming runs with Sandi's full toolset; nothing is disabled or excluded.
+    assert.equal(request.surfaceContext?.name, "dreaming");
+    assert.notEqual(request.surfaceContext?.disableBuiltinTools, true);
+    assert.equal(request.surfaceContext?.excludeTools, undefined);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -371,7 +367,14 @@ const SESSION_JSONL = [
     process.env["SANDI_DREAMING_IDLE_MINUTES"] = "10abc";
     assert.throws(() => loadDreamingConfig());
 
+    // Out-of-range and unsafe-magnitude integers are rejected, not coerced into
+    // an overflowing setTimeout delay or an Infinity budget.
+    process.env["SANDI_DREAMING_IDLE_MINUTES"] = "100000";
+    assert.throws(() => loadDreamingConfig());
     process.env["SANDI_DREAMING_IDLE_MINUTES"] = "15";
+    process.env["SANDI_DREAMING_TRANSCRIPT_CHARS"] = "9".repeat(400);
+    assert.throws(() => loadDreamingConfig());
+
     process.env["SANDI_DREAMING_TRANSCRIPT_CHARS"] = "1000";
     const config = loadDreamingConfig();
     assert.equal(config.idleMs, 15 * 60 * 1_000);

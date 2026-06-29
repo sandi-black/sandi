@@ -7,10 +7,7 @@ import type {
 } from "@/lib/conversations/types";
 import { participantRef } from "@/lib/conversations/types";
 import type { Logger } from "@/lib/logging";
-import {
-  DREAM_SURFACE_CONTEXT,
-  ENCODE_SURFACE_CONTEXT,
-} from "@/lib/memory/dreaming-context";
+import { DREAMING_SURFACE_CONTEXT } from "@/lib/memory/dreaming-context";
 import {
   type EpisodicNote,
   episodicNoteRef,
@@ -69,7 +66,7 @@ export async function encodeConversation(
     sessionMode: "none",
     thinking: "low",
     memoryContext,
-    surfaceContext: ENCODE_SURFACE_CONTEXT,
+    surfaceContext: DREAMING_SURFACE_CONTEXT,
     accountRouting: routingFor(input.manifest),
   });
 
@@ -135,7 +132,7 @@ export async function runDreamForConversation(
     sessionMode: "none",
     thinking: "high",
     memoryContext,
-    surfaceContext: DREAM_SURFACE_CONTEXT,
+    surfaceContext: DREAMING_SURFACE_CONTEXT,
     accountRouting: routingFor(input.manifest),
   });
   input.logger.info("dreamed over conversation", {

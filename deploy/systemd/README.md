@@ -71,3 +71,8 @@ sudo systemctl restart sandi-github.service   # if installed
 The units invoke `tsx` directly rather than using `npm run start` wrappers. This
 keeps routine systemd stop signals aimed at the long-running Node process and
 avoids npm reporting clean Sandi shutdowns as failed signal exits.
+
+The units also set `SuccessExitStatus=130`. Node/tsx can still report an
+intentional `SIGINT` shutdown as exit code 130 (`128 + SIGINT`) after Sandi's
+signal handler has stopped surfaces cleanly; systemd should treat that specific
+code as a normal restart/stop result, not as a service failure.

@@ -38,6 +38,9 @@ type ConsolidationBase = {
   manifest: ConversationManifest;
   transcriptCharBudget: number;
   logger: Logger;
+  // Aborts the underlying provider turn, so a host shutdown can stop an in-flight
+  // background pass instead of waiting out the provider timeout.
+  signal?: AbortSignal;
 };
 
 /**
@@ -68,6 +71,7 @@ export async function encodeConversation(
     memoryContext,
     surfaceContext: DREAMING_SURFACE_CONTEXT,
     accountRouting: routingFor(input.manifest),
+    ...(input.signal ? { signal: input.signal } : {}),
   });
 
   const recap = response.text.trim();
@@ -103,6 +107,28 @@ export async function freshNotesForConversation(input: {
 }
 
 /**
+ * Whether a conversation has activity that no episodic note has captured yet:
+ * it has no recap at all, or its manifest was updated more recently than its
+ * newest recap. Used at startup to arm an encode for a conversation that went
+ * quiet during a restart (after its last turn but before its idle timer fired),
+ * which no later filesystem event would otherwise re-arm. On the first run with
+ * dreaming enabled no conversation has a recap, so all of them qualify.
+ */
+export async function conversationHasUnencodedActivity(input: {
+  memoryRoot: string;
+  manifest: ConversationManifest;
+}): Promise<boolean> {
+  const prefix = episodicScopePrefix(input.manifest);
+  if (!prefix) return false;
+  const notes = await listEpisodicNotes(input.memoryRoot, prefix);
+  const newest = notes.length > 0 ? notes[notes.length - 1] : undefined;
+  if (!newest) return true;
+  return (
+    new Date(input.manifest.updatedAt).getTime() > newest.updatedAt.getTime()
+  );
+}
+
+/**
  * The overnight "dream" pass for a single conversation. Sandi reviews the fresh
  * notes with the main model on high thinking and consolidates them into durable
  * memory using her own memory tools, scoped to this conversation's allowed
@@ -134,6 +160,7 @@ export async function runDreamForConversation(
     memoryContext,
     surfaceContext: DREAMING_SURFACE_CONTEXT,
     accountRouting: routingFor(input.manifest),
+    ...(input.signal ? { signal: input.signal } : {}),
   });
   input.logger.info("dreamed over conversation", {
     conversationId: input.manifest.canonicalId,

@@ -7,6 +7,7 @@ import { Cron } from "croner";
 import type { ConversationStore } from "@/lib/conversations/store";
 import type { Logger } from "@/lib/logging";
 import {
+  conversationHasUnencodedActivity,
   encodeConversation,
   freshNotesForConversation,
   runDreamForConversation,
@@ -69,7 +70,7 @@ class DreamingService {
   readonly #encoding = new Set<string>();
   readonly #pendingEncode = new Set<string>();
   readonly #knownConversations = new Set<string>();
-  #conversationsDiscovered = false;
+  readonly #abort = new AbortController();
   #rootWatcher: FSWatcher | undefined;
   #cron: Cron | undefined;
   #stopped = false;
@@ -100,6 +101,9 @@ class DreamingService {
 
   stop(): void {
     this.#stopped = true;
+    // Abort any encode or dream currently inside a provider turn so shutdown does
+    // not block on the pi child until the provider timeout.
+    this.#abort.abort();
     for (const timer of this.#idleTimers.values()) clearTimeout(timer);
     this.#idleTimers.clear();
     this.#pendingEncode.clear();
@@ -190,27 +194,42 @@ class DreamingService {
         });
       }
     }
-    this.#armEncodesForNewConversations(storageIds);
+    await this.#armEncodesForDiscoveredConversations(storageIds);
   }
 
-  // A conversation directory is created by the manifest write that starts it, so
-  // the root watcher discovers it only after that write has already fired its own
-  // (not-yet-existing) directory watcher. Arm an encode for any conversation that
-  // appears after the initial scan so a brand-new conversation that then goes
-  // quiet still gets a recap without waiting for a later manifest write. The
-  // initial scan only records what already exists, to avoid re-encoding every
-  // conversation at startup.
-  #armEncodesForNewConversations(storageIds: string[]): void {
-    if (this.#conversationsDiscovered) {
-      for (const storageId of storageIds) {
-        if (!this.#knownConversations.has(storageId)) {
-          this.#scheduleIdleEncode(storageId);
-        }
+  // Arms an idle encode for each newly-seen conversation that has activity no
+  // recap has captured yet. This covers two cases a filesystem event alone would
+  // miss: a conversation directory created after startup (the root watcher
+  // discovers it only after the creating manifest write already fired its own
+  // not-yet-existing directory watcher), and a conversation that went quiet
+  // during a host restart (after its last turn but before its idle timer fired).
+  // On the first run with dreaming enabled, nothing has a recap yet, so every
+  // conversation is armed; this batch is expected.
+  async #armEncodesForDiscoveredConversations(
+    storageIds: string[],
+  ): Promise<void> {
+    for (const storageId of storageIds) {
+      if (this.#stopped) return;
+      if (this.#knownConversations.has(storageId)) continue;
+      this.#knownConversations.add(storageId);
+      try {
+        const manifest = await this.#input.conversations.get(storageId);
+        if (!manifest) continue;
+        const pending = await conversationHasUnencodedActivity({
+          memoryRoot: this.#memoryRoot,
+          manifest,
+        });
+        if (pending) this.#scheduleIdleEncode(storageId);
+      } catch (error) {
+        this.#input.logger.warn("dreaming startup encode check failed", {
+          storageId,
+          error: errorMessage(error),
+        });
       }
     }
-    this.#knownConversations.clear();
-    for (const storageId of storageIds) this.#knownConversations.add(storageId);
-    this.#conversationsDiscovered = true;
+    for (const known of [...this.#knownConversations]) {
+      if (!storageIds.includes(known)) this.#knownConversations.delete(known);
+    }
   }
 
   #closeConversationWatchers(): void {
@@ -250,6 +269,7 @@ class DreamingService {
         now: new Date(),
         transcriptCharBudget: this.#input.config.transcriptCharBudget,
         logger: this.#input.logger,
+        signal: this.#abort.signal,
       });
     } catch (error) {
       this.#input.logger.error("conversation encode failed", {
@@ -296,6 +316,7 @@ class DreamingService {
             notes,
             transcriptCharBudget: this.#input.config.transcriptCharBudget,
             logger: this.#input.logger,
+            signal: this.#abort.signal,
           });
           if (result.dreamed) {
             dreamed += 1;

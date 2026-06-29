@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { ConversationManifest } from "@/lib/conversations/types";
 import { createLogger } from "@/lib/logging";
 import {
+  conversationHasUnencodedActivity,
   encodeConversation,
   freshNotesForConversation,
   runDreamForConversation,
@@ -230,6 +231,7 @@ const SESSION_JSONL = [
     await writeFile(sessionFile, SESSION_JSONL, "utf8");
 
     const provider = new FakeProvider();
+    const controller = new AbortController();
     const result = await encodeConversation({
       provider,
       dataDir,
@@ -238,6 +240,7 @@ const SESSION_JSONL = [
       now: new Date("2026-06-29T12:00:00Z"),
       transcriptCharBudget: 10_000,
       logger,
+      signal: controller.signal,
     });
     assert.equal(result.written, true);
 
@@ -248,6 +251,8 @@ const SESSION_JSONL = [
     assert.equal(request.instructions, ENCODE_SYSTEM_PROMPT);
     assert.match(request.input, /vegetable garden/);
     assert.equal(request.accountRouting?.identityId, "jess-human");
+    // The abort signal is threaded through so a shutdown can cancel the turn.
+    assert.equal(request.signal, controller.signal);
     // Background turns keep Sandi's full toolset: nothing is disabled or
     // excluded; the context only wires the runtime.
     assert.equal(request.surfaceContext?.name, "dreaming");
@@ -418,6 +423,52 @@ const SESSION_JSONL = [
       }),
     );
     assert.equal(provider.requests.length, 0);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+// 8. conversationHasUnencodedActivity drives the startup/restart-window encode.
+{
+  const tempRoot = await mkdtemp(join(tmpdir(), "sandi-pending-"));
+  try {
+    const memoryRoot = join(tempRoot, "memory");
+
+    // No recap yet: pending (covers the first run with dreaming enabled).
+    const manifest = manifestFor();
+    manifest.updatedAt = "2020-01-01T00:00:00.000Z";
+    assert.equal(
+      await conversationHasUnencodedActivity({ memoryRoot, manifest }),
+      true,
+    );
+
+    // A recap written now is newer than that manifest update: not pending.
+    await writeEpisodicNote({
+      memoryRoot,
+      ref: NOTE_REF,
+      summary: "Recap",
+      body: "Recap body.",
+    });
+    assert.equal(
+      await conversationHasUnencodedActivity({ memoryRoot, manifest }),
+      false,
+    );
+
+    // A manifest updated after the newest recap is pending again.
+    const active = manifestFor();
+    active.updatedAt = "2999-01-01T00:00:00.000Z";
+    assert.equal(
+      await conversationHasUnencodedActivity({ memoryRoot, manifest: active }),
+      true,
+    );
+
+    // A conversation with no scope cannot host a recap, so it is never pending.
+    const noScope = manifestFor();
+    noScope.memoryScopes = [];
+    assert.equal(
+      await conversationHasUnencodedActivity({ memoryRoot, manifest: noScope }),
+      false,
+    );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -155,6 +155,25 @@ const SESSION_JSONL = [
     JSON.stringify({ type: "message", message: { bogus: true } }),
   );
   assert.equal(malformed.malformedMessages, 1);
+
+  // A structurally valid message whose content block announces a known type but
+  // fails it (a text block with a non-string text) is counted, not dropped.
+  const malformedBlock = parsePiSessionTranscript(
+    JSON.stringify({
+      type: "message",
+      message: { role: "assistant", content: [{ type: "text", text: 123 }] },
+    }),
+  );
+  assert.equal(malformedBlock.malformedMessages, 1);
+
+  // A known text-free block (thinking) is not flagged as malformed.
+  const thinkingOnly = parsePiSessionTranscript(
+    JSON.stringify({
+      type: "message",
+      message: { role: "assistant", content: [{ type: "thinking" }] },
+    }),
+  );
+  assert.equal(thinkingOnly.malformedMessages, 0);
 }
 
 // 2. Episodic note refs, path safety, and round-tripping through disk.

@@ -68,6 +68,8 @@ class DreamingService {
   readonly #conversationWatchers: FSWatcher[] = [];
   readonly #encoding = new Set<string>();
   readonly #pendingEncode = new Set<string>();
+  readonly #knownConversations = new Set<string>();
+  #conversationsDiscovered = false;
   #rootWatcher: FSWatcher | undefined;
   #cron: Cron | undefined;
   #stopped = false;
@@ -188,6 +190,27 @@ class DreamingService {
         });
       }
     }
+    this.#armEncodesForNewConversations(storageIds);
+  }
+
+  // A conversation directory is created by the manifest write that starts it, so
+  // the root watcher discovers it only after that write has already fired its own
+  // (not-yet-existing) directory watcher. Arm an encode for any conversation that
+  // appears after the initial scan so a brand-new conversation that then goes
+  // quiet still gets a recap without waiting for a later manifest write. The
+  // initial scan only records what already exists, to avoid re-encoding every
+  // conversation at startup.
+  #armEncodesForNewConversations(storageIds: string[]): void {
+    if (this.#conversationsDiscovered) {
+      for (const storageId of storageIds) {
+        if (!this.#knownConversations.has(storageId)) {
+          this.#scheduleIdleEncode(storageId);
+        }
+      }
+    }
+    this.#knownConversations.clear();
+    for (const storageId of storageIds) this.#knownConversations.add(storageId);
+    this.#conversationsDiscovered = true;
   }
 
   #closeConversationWatchers(): void {

@@ -1,9 +1,14 @@
 import type { Dirent } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import type { ConversationManifest } from "@/lib/conversations/types";
 import { parseFrontmatter } from "@/lib/pi-extension/memory-common";
+import { withManagedWrite } from "@/lib/state/managed-write";
+import {
+  chmodPrivateFile,
+  writePrivateTextFile,
+} from "@/lib/state/private-files";
 
 // An episodic recap note as it lives on disk under the memory root. These are
 // short-term memory: Sandi's quick "what happened" snapshots that the overnight
@@ -80,8 +85,18 @@ export async function writeEpisodicNote(input: {
   body: string;
 }): Promise<void> {
   const path = resolveMemoryPath(input.memoryRoot, input.ref);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, formatEpisodicNote(input.summary, input.body), "utf8");
+  const content = formatEpisodicNote(input.summary, input.body);
+  // Written through the same private, atomic, lock-protected path as memory and
+  // state files: a temp file with owner-only permissions is renamed into place,
+  // so a dream never reads a half-written recap and notes are never left
+  // world-readable.
+  await withManagedWrite(path, async () => {
+    await mkdir(dirname(path), { recursive: true });
+    const tempPath = `${path}.tmp`;
+    await writePrivateTextFile(tempPath, content);
+    await rename(tempPath, path);
+    await chmodPrivateFile(path);
+  });
 }
 
 /**

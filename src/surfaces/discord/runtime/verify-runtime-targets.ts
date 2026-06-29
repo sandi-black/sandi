@@ -7,6 +7,12 @@ import {
   explicitChannelId,
   GetMessageInputSchema,
   parseChannelTarget,
+  ReadAttachmentInputSchema,
+  ReadChannelHistoryInputSchema,
+  SearchChannelHistoryInputSchema,
+  SendFileInputSchema,
+  SendImageInputSchema,
+  SendMessageInputSchema,
 } from "@/surfaces/discord/runtime/targets";
 
 const CHANNEL = "123456789012345678";
@@ -62,6 +68,113 @@ assert.deepEqual(
   { messageId: MESSAGE, reason: "spam" },
 );
 assert.throws(() => DeleteMessageInputSchema.parse({ channel: "" }));
+
+// History and search helpers parse their channel/message cursor boundaries and
+// reject malformed numeric knobs before route/query construction.
+assert.deepEqual(
+  ReadChannelHistoryInputSchema.parse({
+    channel: `#general`,
+    limit: 25,
+    beforeMessageId: MESSAGE,
+  }),
+  {
+    channel: `#general`,
+    limit: 25,
+    beforeMessageId: MESSAGE,
+  },
+);
+assert.throws(() => ReadChannelHistoryInputSchema.parse({ limit: 1.5 }));
+assert.throws(() =>
+  ReadChannelHistoryInputSchema.parse({ beforeMessageId: "abc" }),
+);
+assert.throws(() =>
+  ReadChannelHistoryInputSchema.parse({
+    beforeMessageId: MESSAGE,
+    afterMessageId: CHANNEL,
+  }),
+);
+assert.deepEqual(
+  SearchChannelHistoryInputSchema.parse({
+    query: " needle ",
+    maxMessages: 100,
+    caseSensitive: true,
+  }),
+  { query: "needle", maxMessages: 100, caseSensitive: true },
+);
+assert.throws(() =>
+  SearchChannelHistoryInputSchema.parse({ query: "needle", maxMessages: -1 }),
+);
+assert.throws(() =>
+  SearchChannelHistoryInputSchema.parse({
+    query: "needle",
+    caseSensitive: "yes",
+  }),
+);
+assert.throws(() => SearchChannelHistoryInputSchema.parse({ query: "   " }));
+
+// Send helpers parse content, reply targets, file/image paths, and optional
+// upload metadata at the runtime-helper boundary.
+assert.deepEqual(
+  SendMessageInputSchema.parse({
+    content: " hello ",
+    replyToMessageId: MESSAGE,
+    allowMentions: false,
+  }),
+  { content: "hello", replyToMessageId: MESSAGE, allowMentions: false },
+);
+assert.throws(() =>
+  SendMessageInputSchema.parse({ content: "hello", replyToMessageId: "abc" }),
+);
+assert.throws(() => SendMessageInputSchema.parse({ content: "   " }));
+assert.deepEqual(
+  SendFileInputSchema.parse({
+    content: "file",
+    path: " /tmp/example.txt ",
+    filename: " example.txt ",
+    mimeType: " text/plain ",
+  }),
+  {
+    content: "file",
+    path: "/tmp/example.txt",
+    filename: "example.txt",
+    mimeType: "text/plain",
+  },
+);
+assert.throws(() => SendFileInputSchema.parse({ content: "file", path: "" }));
+assert.throws(() =>
+  SendFileInputSchema.parse({
+    content: "file",
+    path: "/tmp/example.txt",
+    mimeType: 'text/plain"\r\nX-Bad: yes',
+  }),
+);
+assert.deepEqual(
+  SendImageInputSchema.parse({ content: "image", path: " out.png " }),
+  {
+    content: "image",
+    path: "out.png",
+  },
+);
+assert.throws(() =>
+  SendImageInputSchema.parse({
+    content: "image",
+    path: "out.png",
+    allowMentions: "no",
+  }),
+);
+
+// Attachment helpers share the message target schema and parse the optional
+// attachment snowflake before selecting/downloading the attachment.
+assert.deepEqual(
+  ReadAttachmentInputSchema.parse({
+    messageId: MESSAGE,
+    attachmentId: CHANNEL,
+  }),
+  { messageId: MESSAGE, attachmentId: CHANNEL },
+);
+assert.throws(() =>
+  ReadAttachmentInputSchema.parse({ attachmentId: "not-id" }),
+);
 
 // resolveGuildId parses both the per-turn context guild and (in its absence) the
 // configured fallback through the snowflake schema, so a malformed guild id never

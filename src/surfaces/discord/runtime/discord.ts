@@ -23,9 +23,14 @@ import { readDiscordPlatformContext } from "@/surfaces/discord/runtime/context";
 import { resolveGuildId as resolveGuildIdFor } from "@/surfaces/discord/runtime/guild";
 import {
   DeleteMessageInputSchema,
-  DiscordMessageIdSchema,
   GetMessageInputSchema,
   parseChannelTarget,
+  ReadAttachmentInputSchema,
+  ReadChannelHistoryInputSchema,
+  SearchChannelHistoryInputSchema,
+  SendFileInputSchema,
+  SendImageInputSchema,
+  SendMessageInputSchema,
 } from "@/surfaces/discord/runtime/targets";
 
 const MAX_DISCORD_FILE_BYTES = 24 * 1024 * 1024;
@@ -95,21 +100,13 @@ export type DiscordContext = z.infer<typeof DiscordContextSchema>;
 export type DiscordMessage = z.infer<typeof DiscordMessageSchema>;
 export type DiscordChannel = z.infer<typeof DiscordChannelSchema>;
 
-export type ReadChannelHistoryInput = {
-  channel?: string;
-  limit?: number;
-  beforeMessageId?: string;
-  afterMessageId?: string;
-};
+export type ReadChannelHistoryInput = z.infer<
+  typeof ReadChannelHistoryInputSchema
+>;
 
-export type SearchChannelHistoryInput = {
-  channel?: string;
-  query: string;
-  limit?: number;
-  maxMessages?: number;
-  beforeMessageId?: string;
-  caseSensitive?: boolean;
-};
+export type SearchChannelHistoryInput = z.infer<
+  typeof SearchChannelHistoryInputSchema
+>;
 
 export type DiscordHistoryMatch = {
   message: DiscordMessage;
@@ -125,34 +122,17 @@ export type SearchChannelHistoryResult = {
   oldestMessageId?: string;
 };
 
-export type SendMessageInput = {
-  channel?: string;
-  content: string;
-  replyToMessageId?: string;
-  allowMentions?: boolean;
-};
+export type SendMessageInput = z.infer<typeof SendMessageInputSchema>;
 
-export type DeleteMessageInput = {
-  channel?: string;
-  messageId?: string;
-  reason?: string;
-};
+export type DeleteMessageInput = z.infer<typeof DeleteMessageInputSchema>;
 
-export type SendFileInput = SendMessageInput & {
-  path: string;
-  filename?: string;
-  mimeType?: string;
-};
+type GetMessageInput = z.infer<typeof GetMessageInputSchema>;
 
-export type SendImageInput = SendMessageInput & {
-  path: string;
-};
+export type SendFileInput = z.infer<typeof SendFileInputSchema>;
 
-export type ReadAttachmentInput = {
-  channel?: string;
-  messageId?: string;
-  attachmentId?: string;
-};
+export type SendImageInput = z.infer<typeof SendImageInputSchema>;
+
+export type ReadAttachmentInput = z.infer<typeof ReadAttachmentInputSchema>;
 
 export type ReadAttachmentResult = {
   savedPath: string;
@@ -179,18 +159,19 @@ export async function listChannels(): Promise<DiscordChannel[]> {
 export async function readChannelHistory(
   input: ReadChannelHistoryInput = {},
 ): Promise<DiscordMessage[]> {
+  const parsed = ReadChannelHistoryInputSchema.parse(input);
   const rest = createRest();
   const context = optionalContext();
   const channelId = await resolveChannelId(
-    input.channel ?? "current",
+    parsed.channel ?? "current",
     context,
     rest,
   );
   const query = new URLSearchParams({
-    limit: String(clamp(input.limit, 50, 1, 100)),
+    limit: String(clamp(parsed.limit, 50, 1, 100)),
   });
-  if (input.beforeMessageId) query.set("before", input.beforeMessageId);
-  if (input.afterMessageId) query.set("after", input.afterMessageId);
+  if (parsed.beforeMessageId) query.set("before", parsed.beforeMessageId);
+  if (parsed.afterMessageId) query.set("after", parsed.afterMessageId);
   return discordGet(
     rest,
     Routes.channelMessages(channelId),
@@ -202,19 +183,20 @@ export async function readChannelHistory(
 export async function searchChannelHistory(
   input: SearchChannelHistoryInput,
 ): Promise<SearchChannelHistoryResult> {
-  const search = buildSearch(input.query, input.caseSensitive ?? false);
+  const parsed = SearchChannelHistoryInputSchema.parse(input);
+  const search = buildSearch(parsed.query, parsed.caseSensitive ?? false);
   const rest = createRest();
   const context = optionalContext();
   const channelId = await resolveChannelId(
-    input.channel ?? "current",
+    parsed.channel ?? "current",
     context,
     rest,
   );
-  const limit = clamp(input.limit, 10, 1, MAX_SEARCH_RESULTS);
-  const maxMessages = clamp(input.maxMessages, 500, 1, MAX_SEARCH_MESSAGES);
+  const limit = clamp(parsed.limit, 10, 1, MAX_SEARCH_RESULTS);
+  const maxMessages = clamp(parsed.maxMessages, 500, 1, MAX_SEARCH_MESSAGES);
   const matches: DiscordHistoryMatch[] = [];
   let searchedMessages = 0;
-  let beforeMessageId = input.beforeMessageId;
+  let beforeMessageId = parsed.beforeMessageId;
   let oldestMessageId: string | undefined;
   let reachedEnd = false;
 
@@ -357,15 +339,20 @@ function normalizeSearchText(text: string, caseSensitive: boolean): string {
 export async function getMessage(
   input: { channel?: string; messageId?: string } = {},
 ): Promise<DiscordMessage> {
-  const parsed = GetMessageInputSchema.parse(input);
+  return getMessageByTarget(GetMessageInputSchema.parse(input));
+}
+
+async function getMessageByTarget(
+  input: GetMessageInput,
+): Promise<DiscordMessage> {
   const rest = createRest();
   const context = optionalContext();
   const channelId = await resolveChannelId(
-    parsed.channel ?? "current",
+    input.channel ?? "current",
     context,
     rest,
   );
-  const messageId = parsed.messageId ?? context?.messageId;
+  const messageId = input.messageId ?? context?.messageId;
   if (!messageId) {
     throw new Error(
       "There is no current Discord message on this turn; pass an explicit messageId.",
@@ -381,20 +368,21 @@ export async function getMessage(
 export async function sendMessage(
   input: SendMessageInput,
 ): Promise<DiscordMessage> {
+  const parsed = SendMessageInputSchema.parse(input);
   const rest = createRest();
   const context = optionalContext();
   const channelId = await resolveChannelId(
-    input.channel ?? "current",
+    parsed.channel ?? "current",
     context,
     rest,
   );
   const body: Record<string, unknown> = {
-    content: limitDiscordContent(input.content),
-    allowed_mentions: allowedMentions(input.allowMentions),
+    content: limitDiscordContent(parsed.content),
+    allowed_mentions: allowedMentions(parsed.allowMentions),
   };
-  if (input.replyToMessageId) {
+  if (parsed.replyToMessageId) {
     body["message_reference"] = messageReferenceBody(
-      input.replyToMessageId,
+      parsed.replyToMessageId,
       channelId,
     );
   }
@@ -433,12 +421,13 @@ export async function deleteMessage(input: DeleteMessageInput = {}): Promise<{
 }
 
 export async function sendFile(input: SendFileInput): Promise<DiscordMessage> {
-  const path = resolveAllowedFilePath(input.path);
-  const filename = input.filename ?? basename(path);
+  const parsed = SendFileInputSchema.parse(input);
+  const path = resolveAllowedFilePath(parsed.path);
+  const filename = parsed.filename ?? basename(path);
   const mimeType =
-    input.mimeType ?? (await fileMimeType(path)) ?? mimeFromPath(path);
+    parsed.mimeType ?? (await fileMimeType(path)) ?? mimeFromPath(path);
   return sendLocalFile({
-    input,
+    input: parsed,
     path,
     filename,
     mimeType,
@@ -450,9 +439,10 @@ export async function sendFile(input: SendFileInput): Promise<DiscordMessage> {
 export async function sendImage(
   input: SendImageInput,
 ): Promise<DiscordMessage> {
-  const path = resolveAllowedImagePath(input.path);
+  const parsed = SendImageInputSchema.parse(input);
+  const path = resolveAllowedImagePath(parsed.path);
   return sendLocalFile({
-    input,
+    input: parsed,
     path,
     filename: basename(path),
     mimeType: mimeFromPath(path),
@@ -506,13 +496,14 @@ async function sendLocalFile(input: {
 export async function readAttachment(
   input: ReadAttachmentInput = {},
 ): Promise<ReadAttachmentResult> {
+  const parsed = ReadAttachmentInputSchema.parse(input);
   const messageInput: { channel?: string; messageId?: string } = {};
-  if (input.channel) messageInput.channel = input.channel;
-  if (input.messageId) messageInput.messageId = input.messageId;
-  const message = await getMessage(messageInput);
+  if (parsed.channel) messageInput.channel = parsed.channel;
+  if (parsed.messageId) messageInput.messageId = parsed.messageId;
+  const message = await getMessageByTarget(messageInput);
   const attachment = selectAttachment(
     message.attachments ?? [],
-    input.attachmentId,
+    parsed.attachmentId,
   );
   const downloaded = await downloadAttachment(attachment, message.id);
   return publicAttachmentResult(downloaded);
@@ -526,13 +517,14 @@ export async function readImageAttachment(
   size: number;
   base64: string;
 }> {
+  const parsed = ReadAttachmentInputSchema.parse(input);
   const messageInput: { channel?: string; messageId?: string } = {};
-  if (input.channel) messageInput.channel = input.channel;
-  if (input.messageId) messageInput.messageId = input.messageId;
-  const message = await getMessage(messageInput);
+  if (parsed.channel) messageInput.channel = parsed.channel;
+  if (parsed.messageId) messageInput.messageId = parsed.messageId;
+  const message = await getMessageByTarget(messageInput);
   const attachment = selectImageAttachment(
     message.attachments ?? [],
-    input.attachmentId,
+    parsed.attachmentId,
   );
   const downloaded = await downloadAttachment(attachment, message.id);
   if (!downloaded.mimeType.startsWith("image/")) {
@@ -553,7 +545,7 @@ function messageReferenceBody(
   channelId: string,
 ): Record<string, unknown> {
   return {
-    message_id: DiscordMessageIdSchema.parse(replyToMessageId),
+    message_id: replyToMessageId,
     channel_id: channelId,
     fail_if_not_exists: false,
   };

@@ -1,0 +1,261 @@
+import { type FSWatcher, watch } from "node:fs";
+import { mkdir, readdir } from "node:fs/promises";
+import { join } from "node:path";
+
+import { Cron } from "croner";
+
+import type { ConversationStore } from "@/lib/conversations/store";
+import type { Logger } from "@/lib/logging";
+import {
+  encodeConversation,
+  freshNotesForConversation,
+  runDreamForConversation,
+} from "@/lib/memory/consolidation";
+import { DreamStateStore } from "@/lib/memory/dream-state";
+import type { DreamingConfig } from "@/lib/memory/dreaming-config";
+import type { ModelProviderClient } from "@/lib/provider/pi-cli-client";
+
+export type MemoryDreaming = {
+  stop(): void;
+};
+
+export type MemoryDreamingInput = {
+  dataDir: string;
+  sessionDir: string;
+  provider: ModelProviderClient;
+  conversations: ConversationStore;
+  config: DreamingConfig;
+  logger: Logger;
+};
+
+/**
+ * Starts automatic memory consolidation. Two rhythms run in the background, both
+ * reusing the normal provider turn machinery:
+ *  - short-term encoding: a debounced timer fires ~idleMs after a conversation
+ *    goes quiet (detected by watching its manifest), summarizing it into an
+ *    episodic note.
+ *  - the overnight dream: a nightly cron consolidates the notes written since
+ *    the last dream into durable memory, one conversation at a time.
+ * Returns a handle whose stop() tears every watcher and timer down for graceful
+ * shutdown. A disabled config is a no-op.
+ */
+export function startMemoryDreaming(
+  input: MemoryDreamingInput,
+): MemoryDreaming {
+  if (!input.config.enabled) {
+    input.logger.info("memory dreaming disabled");
+    return {
+      stop() {
+        /* nothing was scheduled */
+      },
+    };
+  }
+  const service = new DreamingService(input);
+  service.start();
+  return { stop: () => service.stop() };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+class DreamingService {
+  readonly #input: MemoryDreamingInput;
+  readonly #conversationsDir: string;
+  readonly #memoryRoot: string;
+  readonly #dreamState: DreamStateStore;
+  readonly #idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  readonly #conversationWatchers: FSWatcher[] = [];
+  readonly #encoding = new Set<string>();
+  #rootWatcher: FSWatcher | undefined;
+  #cron: Cron | undefined;
+  #stopped = false;
+  #dreaming = false;
+
+  constructor(input: MemoryDreamingInput) {
+    this.#input = input;
+    this.#conversationsDir = join(input.dataDir, "conversations");
+    this.#memoryRoot = join(input.dataDir, "memory");
+    this.#dreamState = new DreamStateStore(input.dataDir);
+  }
+
+  start(): void {
+    void this.#initWatchers();
+    this.#cron = new Cron(
+      this.#input.config.nightlyCron,
+      { timezone: this.#input.config.timezone },
+      () => {
+        void this.#runDreamSweep();
+      },
+    );
+    this.#input.logger.info("memory dreaming started", {
+      idleMs: this.#input.config.idleMs,
+      nightlyCron: this.#input.config.nightlyCron,
+      timezone: this.#input.config.timezone,
+    });
+  }
+
+  stop(): void {
+    this.#stopped = true;
+    for (const timer of this.#idleTimers.values()) clearTimeout(timer);
+    this.#idleTimers.clear();
+    this.#rootWatcher?.close();
+    this.#rootWatcher = undefined;
+    this.#closeConversationWatchers();
+    this.#cron?.stop();
+    this.#cron = undefined;
+  }
+
+  // Watches the conversations directory for new conversations (root watcher) and
+  // each conversation's manifest for turn activity. fs.watch is not reliably
+  // recursive on Linux, so each subdirectory is watched directly, the same way
+  // the embedding index maintainer does it.
+  async #initWatchers(): Promise<void> {
+    if (this.#stopped) return;
+    await mkdir(this.#conversationsDir, { recursive: true });
+    if (!this.#rootWatcher) {
+      try {
+        this.#rootWatcher = watch(
+          this.#conversationsDir,
+          { persistent: true },
+          () => {
+            void this.#refreshConversationWatchers();
+          },
+        );
+      } catch (error) {
+        this.#input.logger.warn("dreaming root watch failed", {
+          error: errorMessage(error),
+        });
+      }
+    }
+    await this.#refreshConversationWatchers();
+  }
+
+  async #refreshConversationWatchers(): Promise<void> {
+    if (this.#stopped) return;
+    this.#closeConversationWatchers();
+    let storageIds: string[];
+    try {
+      const entries = await readdir(this.#conversationsDir, {
+        withFileTypes: true,
+      });
+      storageIds = entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+    } catch {
+      return;
+    }
+    for (const storageId of storageIds) {
+      try {
+        const watcher = watch(
+          join(this.#conversationsDir, storageId),
+          { persistent: true },
+          (_event, filename) => {
+            if (
+              typeof filename === "string" &&
+              !filename.startsWith("manifest")
+            ) {
+              return;
+            }
+            this.#scheduleIdleEncode(storageId);
+          },
+        );
+        this.#conversationWatchers.push(watcher);
+      } catch (error) {
+        this.#input.logger.warn("dreaming conversation watch failed", {
+          storageId,
+          error: errorMessage(error),
+        });
+      }
+    }
+  }
+
+  #closeConversationWatchers(): void {
+    for (const watcher of this.#conversationWatchers) watcher.close();
+    this.#conversationWatchers.length = 0;
+  }
+
+  #scheduleIdleEncode(storageId: string): void {
+    if (this.#stopped) return;
+    const existing = this.#idleTimers.get(storageId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.#idleTimers.delete(storageId);
+      void this.#encodeConversation(storageId);
+    }, this.#input.config.idleMs);
+    this.#idleTimers.set(storageId, timer);
+  }
+
+  async #encodeConversation(storageId: string): Promise<void> {
+    if (this.#stopped || this.#encoding.has(storageId)) return;
+    this.#encoding.add(storageId);
+    try {
+      const manifest = await this.#input.conversations.get(storageId);
+      if (!manifest) return;
+      await encodeConversation({
+        provider: this.#input.provider,
+        dataDir: this.#input.dataDir,
+        sessionDir: this.#input.sessionDir,
+        manifest,
+        now: new Date(),
+        transcriptCharBudget: this.#input.config.transcriptCharBudget,
+        logger: this.#input.logger,
+      });
+    } catch (error) {
+      this.#input.logger.error("conversation encode failed", {
+        storageId,
+        error: errorMessage(error),
+      });
+    } finally {
+      this.#encoding.delete(storageId);
+    }
+  }
+
+  async #runDreamSweep(): Promise<void> {
+    if (this.#stopped || this.#dreaming) return;
+    this.#dreaming = true;
+    const startedAt = new Date();
+    try {
+      const since = await this.#dreamState.lastDreamAt();
+      const manifests = await this.#input.conversations.list();
+      let dreamed = 0;
+      for (const manifest of manifests) {
+        if (this.#stopped) break;
+        try {
+          const notes = await freshNotesForConversation({
+            memoryRoot: this.#memoryRoot,
+            manifest,
+            since,
+          });
+          if (notes.length === 0) continue;
+          const result = await runDreamForConversation({
+            provider: this.#input.provider,
+            dataDir: this.#input.dataDir,
+            sessionDir: this.#input.sessionDir,
+            manifest,
+            notes,
+            transcriptCharBudget: this.#input.config.transcriptCharBudget,
+            logger: this.#input.logger,
+          });
+          if (result.dreamed) dreamed += 1;
+        } catch (error) {
+          this.#input.logger.error("dream failed for conversation", {
+            conversationId: manifest.canonicalId,
+            error: errorMessage(error),
+          });
+        }
+      }
+      await this.#dreamState.setLastDreamAt(startedAt);
+      this.#input.logger.info("dream sweep complete", {
+        conversations: manifests.length,
+        dreamed,
+      });
+    } catch (error) {
+      this.#input.logger.error("dream sweep failed", {
+        error: errorMessage(error),
+      });
+    } finally {
+      this.#dreaming = false;
+    }
+  }
+}

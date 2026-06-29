@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { z } from "zod/v4";
@@ -70,6 +70,36 @@ export class ConversationStore {
       if (isMissingFileError(error)) return undefined;
       throw error;
     }
+  }
+
+  /**
+   * Reads every stored conversation manifest. Used by background work (such as
+   * memory consolidation) that needs to sweep all conversations rather than look
+   * one up by id. Unreadable or malformed manifests are skipped so one bad file
+   * never breaks the sweep.
+   */
+  async list(): Promise<ConversationManifest[]> {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await readdir(join(this.#dataDir, "conversations"), {
+        withFileTypes: true,
+      });
+    } catch (error) {
+      if (isMissingFileError(error)) return [];
+      throw error;
+    }
+    const manifests: ConversationManifest[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      try {
+        const manifest = await this.get(entry.name);
+        if (manifest) manifests.push(manifest);
+      } catch {
+        // Skip a manifest that fails to read or parse; one bad conversation
+        // should not stop the rest from being consolidated.
+      }
+    }
+    return manifests;
   }
 
   async addParticipant(input: {

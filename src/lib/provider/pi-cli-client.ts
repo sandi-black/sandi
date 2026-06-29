@@ -542,6 +542,18 @@ function sessionPath(sessionDir: string, conversationId: string): string {
   return join(sessionDir, `${safeSessionName(conversationId)}.jsonl`);
 }
 
+/**
+ * The on-disk path of a persistent conversation's Pi session file. Exposed so
+ * background work (such as memory consolidation) can read a conversation's
+ * transcript using the exact same name mapping the provider writes it under.
+ */
+export function piSessionFilePath(
+  sessionDir: string,
+  conversationId: string,
+): string {
+  return sessionPath(sessionDir, conversationId);
+}
+
 function stopFilePath(sessionDir: string, conversationId: string): string {
   return join(
     sessionDir,

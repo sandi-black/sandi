@@ -4,6 +4,8 @@ import { loadHostConfig } from "@/host/config";
 import { ContextCompiler } from "@/lib/context/context-compiler";
 import { ConversationStore } from "@/lib/conversations/store";
 import { createLogger } from "@/lib/logging";
+import { loadDreamingConfig } from "@/lib/memory/dreaming-config";
+import { startMemoryDreaming } from "@/lib/memory/dreaming-service";
 import { migrateDataDir } from "@/lib/migrations/data-dir";
 import { PiCliClient } from "@/lib/provider/pi-cli-client";
 import { ensurePiRuntimeSetup } from "@/lib/provider/pi-runtime-setup";
@@ -53,6 +55,19 @@ const embeddingMaintenance = startEmbeddingIndexMaintenance({
   skillsRoot: paths.skillsRoot,
   memoryRoot: resolve(paths.dataDir, "memory"),
   logger: createLogger("embedding-index"),
+});
+
+// Reviews recent conversations on its own schedule and writes memory without a
+// turn having to spend attention on it: short-term episodic notes when a
+// conversation goes idle, and a deeper overnight "dream" that consolidates those
+// notes into durable memory.
+const dreaming = startMemoryDreaming({
+  dataDir: paths.dataDir,
+  sessionDir: pi.sessionDir,
+  provider,
+  conversations,
+  config: loadDreamingConfig(),
+  logger: createLogger("dreaming"),
 });
 
 // The loopback broker must be listening before any bot accepts a turn that
@@ -173,6 +188,15 @@ function shutdown(signal: NodeJS.Signals): void {
     embeddingMaintenance.stop();
   } catch (error) {
     log.error("embedding maintenance shutdown failed", {
+      error: errorMessage(error),
+    });
+    process.exitCode = 1;
+  }
+
+  try {
+    dreaming.stop();
+  } catch (error) {
+    log.error("memory dreaming shutdown failed", {
       error: errorMessage(error),
     });
     process.exitCode = 1;

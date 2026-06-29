@@ -172,3 +172,15 @@ reviewers:
         own tell; one beat of personality per section is fine.
       - Apply the test: if a fact survives the rewrite and the copy got shorter, the
         cut was slop. If a rewrite would drop information, do not suggest it.
+      - Sandi is a character with a deliberate first-person voice, and that voice
+        is part of the product. Her persona and policy files (config/soul.md,
+        config/policies/**) and the model-facing prompt strings she is given (for
+        example src/lib/memory/prompts.ts and other prompt text in src/**)
+        intentionally speak as Sandi and may use warm, reflective, in-character
+        framing, including roleplay such as narrating that she is "resting" or
+        "dreaming". This roleplay voice is design, not slop: do not flag character
+        framing, aphorisms, or "every sentence doing rhetorical work" in that
+        prompt and persona text, and do not propose flattening it to neutral
+        instructions. Apply the full slop discipline above only to genuine user-
+        facing documentation: the root markdown (README, AGENTS, CONTRIBUTING,
+        SECURITY, CODE_OF_CONDUCT) and docs/**.

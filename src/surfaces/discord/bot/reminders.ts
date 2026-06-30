@@ -42,15 +42,11 @@ const CLEAN_HANDLED_CHANNEL_NAMES = new Set(readCleanHandledChannelNames());
 const CLEAN_HANDLED_CHANNEL_PREFIXES = ["todo-", "tasks-"] as const;
 const MAX_INTERACTION_RESPONSE_CHARS = 2_000;
 const SNOOZE_OPTIONS = [
-  {
-    label: "15 minutes",
-    value: "15",
-    description: "Remind again in 15 minutes",
-  },
   { label: "1 hour", value: "60", description: "Remind again in 1 hour" },
-  { label: "3 hours", value: "180", description: "Remind again in 3 hours" },
-  { label: "Tomorrow", value: "1440", description: "Remind again in 24 hours" },
-  { label: "Next week", value: "10080", description: "Remind again in 7 days" },
+  { label: "6 hours", value: "360", description: "Remind again in 6 hours" },
+  { label: "12 hours", value: "720", description: "Remind again in 12 hours" },
+  { label: "24 hours", value: "1440", description: "Remind again in 24 hours" },
+  { label: "1 week", value: "10080", description: "Remind again in 1 week" },
 ] as const;
 
 type ReminderDoneHandler = (input: {

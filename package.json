@@ -75,7 +75,7 @@
     "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.80.2",
+    "@earendil-works/pi-ai": "0.80.3",
     "@earendil-works/pi-coding-agent": "0.80.2",
     "@huggingface/transformers": "^4.2.0",
     "croner": "^10.0.1",

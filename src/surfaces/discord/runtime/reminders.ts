@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { discordChannelIdFromRef } from "@/surfaces/discord/discord/ids";
+import type { z } from "zod/v4";
 import {
   nextRecurrenceRun,
   nextReminderRecurrenceRun,
@@ -19,26 +19,20 @@ import {
   writeReminder,
 } from "@/surfaces/discord/reminders/store";
 import { readDiscordPlatformContext } from "@/surfaces/discord/runtime/context";
+import {
+  CreateReminderInputSchema,
+  ListHumanRemindersInputSchema,
+  OptionalReminderUserInputSchema,
+  ReminderRuntimeIdInputSchema,
+  SnoozeReminderInputSchema,
+} from "@/surfaces/discord/runtime/reminder-inputs";
+import { explicitChannelId } from "@/surfaces/discord/runtime/targets";
 
 const MIN_FOLLOWUP_INTERVAL_MINUTES = 60;
 
-export type CreateReminderInput = {
-  id?: string;
-  text: string;
-  at?: string;
-  followupIntervalMinutes?: number;
-  recurrence?: ReminderRecurrence;
-  audienceUserIds?: string[];
-  createdBy?: ReminderUser;
-  threadId?: string;
-  channelId?: string;
-};
+export type CreateReminderInput = z.infer<typeof CreateReminderInputSchema>;
 
-type ReminderListScope =
-  | "current_target"
-  | "current_thread"
-  | "current_channel"
-  | "all";
+type ReminderListScope = z.infer<typeof ListHumanRemindersInputSchema>["scope"];
 
 export function currentTime(): {
   iso: string;
@@ -60,32 +54,30 @@ export async function createReminder(input: CreateReminderInput): Promise<{
   id: string;
   reminder: Reminder;
 }> {
-  const target = resolveCreateTarget(input);
-  const id = normalizeReminderId(input.id ?? generatedReminderId());
+  const parsed = CreateReminderInputSchema.parse(input);
+  const target = resolveCreateTarget(parsed);
+  const id = normalizeReminderId(parsed.id ?? generatedReminderId());
   const reminder = buildReminder({
     target,
-    text: input.text,
-    at: input.at,
-    followupIntervalMinutes: input.followupIntervalMinutes,
-    recurrence: input.recurrence,
-    audienceUserIds: input.audienceUserIds,
-    createdBy: input.createdBy ?? currentDiscordReminderUser(),
+    text: parsed.text,
+    at: parsed.at,
+    followupIntervalMinutes: parsed.followupIntervalMinutes,
+    recurrence: parsed.recurrence,
+    audienceUserIds: parsed.audienceUserIds,
+    createdBy: parsed.createdBy ?? currentDiscordReminderUser(),
   });
   await writeReminder(remindersRoot(), id, reminder);
   return { id, reminder };
 }
 
 export async function listHumanReminders(
-  input: {
-    scope?: ReminderListScope;
-    threadId?: string;
-    channelId?: string;
-  } = {},
+  input: z.input<typeof ListHumanRemindersInputSchema> = {},
 ): Promise<{ id: string; reminder: Reminder }[]> {
-  const target = explicitTarget(input.threadId, input.channelId);
+  const parsed = ListHumanRemindersInputSchema.parse(input);
+  const target = explicitTarget(parsed.threadId, parsed.channelId);
   const currentTarget = currentDiscordTarget();
   const scope =
-    input.scope ?? (target || currentTarget ? "current_target" : "all");
+    parsed.scope ?? (target || currentTarget ? "current_target" : "all");
   const reminders = await listReminders(remindersRoot());
   if (scope === "all") return reminders;
 
@@ -95,16 +87,22 @@ export async function listHumanReminders(
 }
 
 export async function readHumanReminder(id: string): Promise<Reminder> {
-  return readReminder(remindersRoot(), normalizeReminderId(id));
+  return readReminder(
+    remindersRoot(),
+    normalizeReminderId(ReminderRuntimeIdInputSchema.parse(id)),
+  );
 }
 
 export async function markReminderDone(
   id: string,
   doneBy?: ReminderUser,
 ): Promise<Reminder> {
-  const normalizedId = normalizeReminderId(id);
+  const normalizedId = normalizeReminderId(
+    ReminderRuntimeIdInputSchema.parse(id),
+  );
+  const parsedDoneBy = OptionalReminderUserInputSchema.parse(doneBy);
   const reminder = await readReminder(remindersRoot(), normalizedId);
-  const updated = completedReminder(reminder, doneBy);
+  const updated = completedReminder(reminder, parsedDoneBy);
   await writeReminder(remindersRoot(), normalizedId, updated);
   return updated;
 }
@@ -113,13 +111,16 @@ export async function deleteHumanReminder(
   id: string,
   deletedBy?: ReminderUser,
 ): Promise<Reminder> {
-  const normalizedId = normalizeReminderId(id);
+  const normalizedId = normalizeReminderId(
+    ReminderRuntimeIdInputSchema.parse(id),
+  );
+  const parsedDeletedBy = OptionalReminderUserInputSchema.parse(deletedBy);
   const reminder = await readReminder(remindersRoot(), normalizedId);
   const updated: Reminder = {
     ...reminder,
     status: "deleted",
     deletedAt: new Date().toISOString(),
-    ...(deletedBy ? { deletedBy } : {}),
+    ...(parsedDeletedBy ? { deletedBy: parsedDeletedBy } : {}),
   };
   await writeReminder(remindersRoot(), normalizedId, updated);
   return updated;
@@ -127,11 +128,14 @@ export async function deleteHumanReminder(
 
 export async function snoozeReminder(
   id: string,
-  input: { until?: string; minutes?: number },
+  input: z.input<typeof SnoozeReminderInputSchema>,
 ): Promise<Reminder> {
-  const normalizedId = normalizeReminderId(id);
+  const normalizedId = normalizeReminderId(
+    ReminderRuntimeIdInputSchema.parse(id),
+  );
+  const parsed = SnoozeReminderInputSchema.parse(input);
   const reminder = await readReminder(remindersRoot(), normalizedId);
-  const nextFireAt = input.until ?? minutesFromNow(input.minutes);
+  const nextFireAt = parsed.until ?? minutesFromNow(parsed.minutes);
   const targetTime = new Date(nextFireAt).getTime();
   if (!Number.isFinite(targetTime)) {
     throw new Error(`Invalid snooze timestamp: ${nextFireAt}`);
@@ -167,12 +171,12 @@ function explicitTarget(
     throw new Error("Provide either threadId or channelId, not both.");
   }
   if (rawThreadId) {
-    return { kind: "thread", threadId: discordChannelIdFromRef(rawThreadId) };
+    return { kind: "thread", threadId: explicitChannelId(rawThreadId) };
   }
   if (rawChannelId) {
     return {
       kind: "channel",
-      channelId: discordChannelIdFromRef(rawChannelId),
+      channelId: explicitChannelId(rawChannelId),
     };
   }
   return undefined;

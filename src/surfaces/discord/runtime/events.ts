@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { discordChannelIdFromRef } from "@/surfaces/discord/discord/ids";
+import type { z } from "zod/v4";
 import type {
   EventCreator,
   EventTarget,
@@ -14,23 +14,16 @@ import {
   writeEvent,
 } from "@/surfaces/discord/events/store";
 import { readDiscordPlatformContext } from "@/surfaces/discord/runtime/context";
+import {
+  CreateEventInputSchema,
+  EventRuntimeIdInputSchema,
+  ListScheduledEventsInputSchema,
+} from "@/surfaces/discord/runtime/event-inputs";
+import { explicitChannelId } from "@/surfaces/discord/runtime/targets";
 
-export type CreateEventInput = {
-  type?: SandiEvent["type"];
-  id?: string;
-  text: string;
-  at?: string;
-  schedule?: string;
-  timezone?: string;
-  threadId?: string;
-  channelId?: string;
-};
+export type CreateEventInput = z.infer<typeof CreateEventInputSchema>;
 
-type EventListScope =
-  | "current_target"
-  | "current_thread"
-  | "current_channel"
-  | "all";
+type EventListScope = z.infer<typeof ListScheduledEventsInputSchema>["scope"];
 
 export function currentTime(): {
   iso: string;
@@ -52,29 +45,31 @@ export async function createEvent(input: CreateEventInput): Promise<{
   id: string;
   event: SandiEvent;
 }> {
-  const target = resolveCreateTarget(input);
-  const type = input.type ?? inferEventType(input.at, input.schedule);
-  const id = normalizeEventId(input.id ?? generatedEventId(type));
+  const parsed = CreateEventInputSchema.parse(input);
+  const target = resolveCreateTarget(parsed);
+  const type = parsed.type ?? inferEventType(parsed.at, parsed.schedule);
+  const id = normalizeEventId(parsed.id ?? generatedEventId(type));
   const event = buildEvent({
     type,
     target,
-    text: input.text,
+    text: parsed.text,
     createdBy: currentDiscordCreator(),
-    at: input.at,
-    schedule: input.schedule,
-    timezone: input.timezone,
+    at: parsed.at,
+    schedule: parsed.schedule,
+    timezone: parsed.timezone,
   });
   await writeEvent(eventsRoot(), id, event);
   return { id, event };
 }
 
 export async function listScheduledEvents(
-  input: { scope?: EventListScope; threadId?: string; channelId?: string } = {},
+  input: z.input<typeof ListScheduledEventsInputSchema> = {},
 ): Promise<{ id: string; event: SandiEvent }[]> {
-  const target = explicitTarget(input.threadId, input.channelId);
+  const parsed = ListScheduledEventsInputSchema.parse(input);
+  const target = explicitTarget(parsed.threadId, parsed.channelId);
   const currentTarget = currentDiscordTarget();
   const scope =
-    input.scope ?? (target || currentTarget ? "current_target" : "all");
+    parsed.scope ?? (target || currentTarget ? "current_target" : "all");
   const events = await listEvents(eventsRoot());
   if (scope === "all") return events;
 
@@ -84,11 +79,17 @@ export async function listScheduledEvents(
 }
 
 export async function readScheduledEvent(id: string): Promise<SandiEvent> {
-  return readEvent(eventsRoot(), normalizeEventId(id));
+  return readEvent(
+    eventsRoot(),
+    normalizeEventId(EventRuntimeIdInputSchema.parse(id)),
+  );
 }
 
 export async function cancelEvent(id: string): Promise<void> {
-  await deleteEvent(eventsRoot(), normalizeEventId(id));
+  await deleteEvent(
+    eventsRoot(),
+    normalizeEventId(EventRuntimeIdInputSchema.parse(id)),
+  );
 }
 
 function resolveCreateTarget(input: CreateEventInput): EventTarget {
@@ -112,12 +113,12 @@ function explicitTarget(
     throw new Error("Provide either threadId or channelId, not both.");
   }
   if (rawThreadId) {
-    return { kind: "thread", threadId: discordChannelIdFromRef(rawThreadId) };
+    return { kind: "thread", threadId: explicitChannelId(rawThreadId) };
   }
   if (rawChannelId) {
     return {
       kind: "channel",
-      channelId: discordChannelIdFromRef(rawChannelId),
+      channelId: explicitChannelId(rawChannelId),
     };
   }
   return undefined;

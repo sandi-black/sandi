@@ -1,11 +1,13 @@
 name: Package
 
 # Builds the Windows desktop artifacts (NSIS installer + portable exe) and
-# attaches them to the GitHub Release for the tag that triggered the run. This
-# is the one job that runs the real electron-builder pipeline on a Windows
-# runner, so it is also what catches packaging-only breakage (a bad
-# electron-builder.yml, a missing icon, an asar path problem) that the fast
-# ubuntu checks cannot see.
+# attaches them to the GitHub Release for the tag that triggered the run,
+# together with the auto-update feed (latest.yml plus the .blockmap files)
+# that installed apps poll via electron-updater; missing feed files here mean
+# existing installs silently stop updating. This is the one job that runs the
+# real electron-builder pipeline on a Windows runner, so it is also what
+# catches packaging-only breakage (a bad electron-builder.yml, a missing
+# icon, an asar path problem) that the fast ubuntu checks cannot see.
 #
 # Triggered only by a version tag push. workflow_dispatch is kept so the
 # pipeline can be exercised by hand without cutting a throwaway tag; a manual
@@ -101,19 +103,25 @@ jobs:
           name: sandi-windows-${{ steps.version.outputs.value }}
           path: |
             app/release/*.exe
+            app/release/*.blockmap
+            app/release/latest.yml
           if-no-files-found: error
 
       # Only a tag has a release to attach to; a manual run stops at the
-      # uploaded build artifact above.
+      # uploaded build artifact above. latest.yml and the blockmaps ride along
+      # with the installers: latest.yml is the feed electron-updater polls
+      # (without it, installed apps never see this release), and the blockmaps
+      # let it download only the changed blocks of the installer.
       - name: Attach installers to the release
         if: github.ref_type == 'tag'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          assets=(app/release/*.exe app/release/*.blockmap app/release/latest.yml)
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" app/release/*.exe --clobber
+            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" app/release/*.exe \
+            gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
               --title "${GITHUB_REF_NAME}" --generate-notes
           fi

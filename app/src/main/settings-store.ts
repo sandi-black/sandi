@@ -18,6 +18,7 @@ const SettingsSchema = z.object({
   outfit: z.enum(["classic", "alternate"]).default("classic"),
   wander: z.boolean().default(false),
   autoLaunch: z.boolean().default(false),
+  autoUpdate: z.boolean().default(true),
   showThinking: z.boolean().default(false),
 });
 

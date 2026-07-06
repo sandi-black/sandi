@@ -3,6 +3,7 @@ import { type JSX, useCallback, useEffect, useState } from "react";
 import { Composer } from "./Composer";
 import { guard } from "./guard";
 import { PairingCard } from "./PairingCard";
+import { ResizeGrips } from "./ResizeGrips";
 import { SessionDrawer } from "./SessionDrawer";
 import { StatusBar } from "./StatusBar";
 import { useChatStore } from "./store";
@@ -293,6 +294,8 @@ export function ChatApp(): JSX.Element {
           )
         }
       />
+
+      <ResizeGrips />
     </div>
   );
 }

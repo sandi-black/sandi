@@ -95,7 +95,7 @@ async function main(): Promise<void> {
   let wander: WanderScheduler | undefined;
   let fidget: IdleFidgetScheduler | undefined;
 
-  const chat = createChatWindow({ isQuitting: () => quitting });
+  const chat = createChatWindow({ isQuitting: () => quitting, settings });
   const pet = createPetWindow({
     settings,
     onOpenChat: () => {

@@ -45,6 +45,9 @@ export type WanderOptions = {
 
 export type WanderScheduler = {
   setEnabled(enabled: boolean): void;
+  // True while a stroll is underway, so the idle-fidget scheduler can hold off
+  // rather than fire a fidget one-shot into the middle of a walk.
+  isStrolling(): boolean;
   // Cancel an in-progress stroll (position is saved) and rearm the pause.
   // A no-op while already paused.
   interrupt(): void;
@@ -154,6 +157,9 @@ export function createWanderScheduler(
         endStroll();
         clearTimers();
       }
+    },
+    isStrolling() {
+      return tickTimer !== undefined;
     },
     interrupt() {
       endStroll();

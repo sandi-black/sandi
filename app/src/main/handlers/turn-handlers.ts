@@ -48,11 +48,17 @@ export function registerTurnHandlers(input: {
     });
     // Name a fresh conversation from its opening message, in the background:
     // the guard inside only titles a still-unnamed conversation once, so this
-    // is a no-op on every later message.
-    void autoTitler.maybeTitle({
-      conversationId: parsed.conversationId,
-      message: parsed.text,
-    });
+    // is a no-op on every later message. Fire-and-forget, so a preflight
+    // rejection (an unreadable session index, say) is caught and logged here
+    // rather than surfacing as an unhandled rejection off the IPC handler.
+    autoTitler
+      .maybeTitle({
+        conversationId: parsed.conversationId,
+        message: parsed.text,
+      })
+      .catch((error: unknown) => {
+        console.error("auto-title failed", error);
+      });
     return { turnId };
   });
 

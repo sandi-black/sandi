@@ -25,7 +25,12 @@ export function registerAttachmentHandlers(input: {
     if (picked.canceled) return [];
     const staged: StagedAttachment[] = [];
     for (const path of picked.filePaths) {
-      const attachment = await staging.stagePath(path);
+      // Same boundary discipline as a dropped path: the dialog's strings are
+      // external values and must parse as bounded absolute paths before
+      // anything stats them.
+      const parsed = AttachmentPathSchema.safeParse(path);
+      if (!parsed.success) continue;
+      const attachment = await staging.stagePath(parsed.data);
       if (attachment) staged.push(attachment);
     }
     return staged;

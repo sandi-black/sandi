@@ -75,20 +75,38 @@ export function invalidParamsResult(reason: string): AttachToReplyResult {
   };
 }
 
-// Exported for tests: validates the model's parameters into the exact shape
+// The parsed shape of an attach_to_reply call: what validateAttachParams
+// produces and the only thing execute() may hand to the broker.
+export type AttachToReplyParams = {
+  path: string;
+  name?: string;
+};
+
+// Exported for tests: parses the model's raw parameters (an agent boundary,
+// so `unknown` in and a bounded AttachToReplyParams out) into the exact shape
 // the broker's ResponseAttachmentSchema accepts (restated here because this
 // file loads outside the alias-aware runtime, like the env names above).
 // `path` is a bounded path, absolute or desktop-relative; `name` must be a
 // single bounded filename since the desktop offers it as a save-as name.
-export function validateAttachParams(params: {
-  path: string;
-  name?: string;
-}): { ok: true; path: string; name?: string } | { ok: false; reason: string } {
-  const path = params.path.trim();
+export function validateAttachParams(
+  raw: unknown,
+): { ok: true; params: AttachToReplyParams } | { ok: false; reason: string } {
+  if (typeof raw !== "object" || raw === null) {
+    return { ok: false, reason: "params must be an object" };
+  }
+  const rawPath = "path" in raw ? raw.path : undefined;
+  if (typeof rawPath !== "string") {
+    return { ok: false, reason: "path must be a string" };
+  }
+  const path = rawPath.trim();
   if (path.length === 0 || path.length > 4096) {
     return { ok: false, reason: "path must be 1 to 4096 characters" };
   }
-  const name = params.name?.trim();
+  const rawName = "name" in raw ? raw.name : undefined;
+  if (rawName !== undefined && typeof rawName !== "string") {
+    return { ok: false, reason: "name must be a string when present" };
+  }
+  const name = rawName?.trim();
   if (name !== undefined) {
     if (name.length === 0 || name.length > 200) {
       return { ok: false, reason: "name must be 1 to 200 characters" };
@@ -100,7 +118,10 @@ export function validateAttachParams(params: {
       };
     }
   }
-  return { ok: true, path, ...(name !== undefined ? { name } : {}) };
+  return {
+    ok: true,
+    params: { path, ...(name !== undefined ? { name } : {}) },
+  };
 }
 
 export default function attachToReplyToolExtension(pi: ExtensionAPI): void {
@@ -117,11 +138,15 @@ export default function attachToReplyToolExtension(pi: ExtensionAPI): void {
         "Attach a file already on the human's desktop to your current reply, so the desktop client surfaces it alongside your answer. Write the file with your local_* tools first, then call this with its path.",
       parameters: Type.Object({
         path: Type.String({
+          minLength: 1,
+          maxLength: 4096,
           description:
             "Absolute or desktop-relative path to the file to attach.",
         }),
         name: Type.Optional(
           Type.String({
+            minLength: 1,
+            maxLength: 200,
             description:
               "Display name for the attachment (defaults to the file name).",
           }),
@@ -134,11 +159,13 @@ export default function attachToReplyToolExtension(pi: ExtensionAPI): void {
         const attachment = {
           turnId: target.turnId,
           seq: seq++,
-          path: validated.path,
-          ...(validated.name !== undefined ? { name: validated.name } : {}),
+          path: validated.params.path,
+          ...(validated.params.name !== undefined
+            ? { name: validated.params.name }
+            : {}),
         };
         await postAttachment(target, attachment);
-        return attachedResult(validated.name ?? validated.path);
+        return attachedResult(validated.params.name ?? validated.params.path);
       },
     }),
   );

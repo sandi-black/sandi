@@ -22,6 +22,7 @@ import { registerFileHandlers } from "./handlers/file-handlers";
 import { registerPairingHandlers } from "./handlers/pairing-handlers";
 import { registerSessionHandlers } from "./handlers/session-handlers";
 import { registerTurnHandlers } from "./handlers/turn-handlers";
+import { ReplyAttachmentSchema } from "./ipc-schemas";
 import { createLinkManager } from "./link-manager";
 import { createPetWindow } from "./pet-window";
 import { createSettingsStore } from "./settings-store";
@@ -178,14 +179,30 @@ async function main(): Promise<void> {
         // The tool's contract allows desktop-relative paths; everything
         // app-side (transcript, sandi-asset rendering, save-as) requires
         // absolute, so resolve here against the same root the link's tools
-        // run under.
-        const entry: ReplyAttachment = {
+        // run under, then parse the resolved entry against the app's own
+        // ReplyAttachment boundary before it reaches the transcript, the
+        // renderer, or save-as.
+        const parsed = ReplyAttachmentSchema.safeParse({
           path: isAbsolute(attachment.path)
             ? attachment.path
             : join(app.getPath("home"), attachment.path),
           ...(attachment.name !== undefined ? { name: attachment.name } : {}),
           ...(attachment.mimeType !== undefined
             ? { mimeType: attachment.mimeType }
+            : {}),
+        });
+        if (!parsed.success) {
+          console.error(
+            "dropped a reply attachment that failed to parse",
+            parsed.error,
+          );
+          return;
+        }
+        const entry: ReplyAttachment = {
+          path: parsed.data.path,
+          ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+          ...(parsed.data.mimeType !== undefined
+            ? { mimeType: parsed.data.mimeType }
             : {}),
         };
         const list = replyAttachments.get(attachment.turnId) ?? [];

@@ -34,11 +34,25 @@ export const SUPPORTED_ATTACHMENT_MIME_TYPES = [
   "application/octet-stream",
 ] as const;
 
-const SUPPORTED_MIME_SET = new Set<string>(SUPPORTED_ATTACHMENT_MIME_TYPES);
+// The boundary schemas for the two upload headers, owned here alongside the
+// sidecar schema they feed so the wire shape and the stored shape cannot
+// drift: a supported mime type, and a single bounded filename (it becomes a
+// materialized file's basename, so path separators are rejected outright).
+export const SupportedAttachmentMimeTypeSchema = z.enum(
+  SUPPORTED_ATTACHMENT_MIME_TYPES,
+);
+export type SupportedAttachmentMimeType = z.infer<
+  typeof SupportedAttachmentMimeTypeSchema
+>;
 
-export function isSupportedAttachmentMimeType(value: string): boolean {
-  return SUPPORTED_MIME_SET.has(value);
-}
+export const AttachmentNameSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine(
+    (value) => !value.includes("/") && !value.includes("\\"),
+    "name must be a single filename, not a path",
+  );
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 

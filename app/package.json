@@ -26,8 +26,9 @@
     "verify:transcript-store": "tsx --tsconfig tsconfig.main.json src/main/verify-transcript-store.ts",
     "verify:turn-manager-queue": "tsx --tsconfig tsconfig.main.json src/main/verify-turn-manager-queue.ts",
     "verify:wander-scheduler": "tsx --tsconfig tsconfig.main.json src/main/verify-wander-scheduler.ts",
+    "verify:idle-fidget-scheduler": "tsx --tsconfig tsconfig.main.json src/main/verify-idle-fidget-scheduler.ts",
     "verify:turn-pipeline": "tsx --tsconfig tsconfig.main.json src/main/verify-turn-pipeline.ts",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run verify:pet-state-machine && npm run verify:response-buffer && npm run verify:anchor-position && npm run verify:renderer-url && npm run verify:transcript-store && npm run verify:turn-manager-queue && npm run verify:wander-scheduler && npm run verify:turn-pipeline"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run verify:pet-state-machine && npm run verify:response-buffer && npm run verify:anchor-position && npm run verify:renderer-url && npm run verify:transcript-store && npm run verify:turn-manager-queue && npm run verify:wander-scheduler && npm run verify:idle-fidget-scheduler && npm run verify:turn-pipeline"
   },
   "dependencies": {
     "motion": "^12.42.2",
@@ -48,11 +49,11 @@
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "highlight.js": "^11.11.1",
-    "png-to-ico": "^3.0.1",
+    "png-to-ico": "^3.0.2",
     "sharp": "^0.35.3",
-    "tsx": "^4.22.4",
+    "tsx": "^4.23.0",
     "typescript": "^6.0.3",
-    "vite": "^7.3.0",
+    "vite": "^8.1.3",
     "zod": "^4.3.6"
   }
 }

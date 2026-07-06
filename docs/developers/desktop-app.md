@@ -54,8 +54,8 @@ Main owns all state; the renderers are pure UI over typed IPC.
   each tick and moves the window itself, which also sidesteps DPI coordinate
   mismatches. Every move (drag ticks and wander alike) goes through
   `moveWindow` in `main/pet-window.ts`, which reasserts the fixed frame size
-  via `setBounds`: plain `setPosition` on a fractional-DPI Windows display
-  round-trips the bounds through physical pixels and, because it leaves the
+  via `setBounds`. Plain `setPosition` on a fractional-DPI Windows display
+  round-trips the bounds through physical pixels, and because it leaves the
   size untouched, that rounding compounds across a move loop and the sprite
   grows without bound.
 - The chat window is a popover anchored next to the pet (pure

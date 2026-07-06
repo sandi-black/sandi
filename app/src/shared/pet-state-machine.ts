@@ -2,15 +2,28 @@ import type { PetRow } from "./animation-manifest";
 
 // The pet's animation is driven by two layers: a *background* row that reflects
 // what sandi is doing right now (idle, waiting on a queued turn, streaming
-// text, thinking), and *one-shot* rows (waving, jumping, failed) that briefly
-// interrupt it and then fall back. The main process derives background changes
-// and one-shots from real turn/link events; the renderer feeds
+// text, thinking), and *one-shot* rows (waving, jumping, failed, plus the idle
+// fidgets blink and sleeping) that briefly interrupt it and then fall back. The
+// main process derives background changes and one-shots from real turn/link
+// events (and from the idle-fidget scheduler); the renderer feeds
 // animation-complete back when a one-shot finishes playing. Keeping the whole
 // policy in this pure reducer makes it verifiable without a canvas or Electron.
 
 export type PetBackground = "idle" | "waiting" | "running" | "review";
-export type PetOneShot = "waving" | "jumping" | "failed";
+export type PetOneShot = "waving" | "jumping" | "failed" | "blink" | "sleeping";
 export type WanderDirection = "left" | "right";
+
+// How each background renders. Backgrounds carry meaning (queued vs streaming
+// vs thinking) and precedence; the row is the animation shown for it. `idle`
+// holds a static frame, and `running` (streaming an answer) shares the calm
+// `review` animation so the pet never plays a run-in-place row while parked in
+// place at work.
+const BACKGROUND_ROW: Record<PetBackground, PetRow> = {
+  idle: "idle",
+  waiting: "waiting",
+  running: "review",
+  review: "review",
+};
 
 export type PetState = {
   row: PetRow;
@@ -26,7 +39,13 @@ export type PetEvent =
 
 export const INITIAL_PET_STATE: PetState = { row: "idle", background: "idle" };
 
-const ONE_SHOT_ROWS: readonly PetRow[] = ["waving", "jumping", "failed"];
+const ONE_SHOT_ROWS: readonly PetRow[] = [
+  "waving",
+  "jumping",
+  "failed",
+  "blink",
+  "sleeping",
+];
 const WANDER_ROWS: readonly PetRow[] = ["running-left", "running-right"];
 
 export function isOneShotRow(row: PetRow): boolean {
@@ -46,13 +65,19 @@ export function reducePetState(state: PetState, event: PetEvent): PetState {
       if (isOneShotRow(state.row)) {
         return { row: state.row, background: event.background };
       }
-      return { row: event.background, background: event.background };
+      return {
+        row: BACKGROUND_ROW[event.background],
+        background: event.background,
+      };
     }
     case "one-shot":
       return { row: event.row, background: state.background };
     case "animation-complete": {
       if (isOneShotRow(state.row)) {
-        return { row: state.background, background: state.background };
+        return {
+          row: BACKGROUND_ROW[state.background],
+          background: state.background,
+        };
       }
       // Looping rows do not complete; a stray completion event is a no-op.
       return state;
@@ -69,7 +94,10 @@ export function reducePetState(state: PetState, event: PetEvent): PetState {
     }
     case "wander-stop": {
       if (isWanderRow(state.row)) {
-        return { row: state.background, background: state.background };
+        return {
+          row: BACKGROUND_ROW[state.background],
+          background: state.background,
+        };
       }
       return state;
     }

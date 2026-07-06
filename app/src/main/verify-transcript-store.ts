@@ -95,6 +95,28 @@ async function main(): Promise<void> {
     );
     assert.equal(rawIndex.sessions.length, 1);
 
+    // A corrupt index is quarantined, not silently treated as empty: the
+    // original moves aside where the next persist cannot overwrite it, and
+    // the store starts with no sessions.
+    await writeFile(join(dir, "index.json"), "{not json", "utf8");
+    const quarantined = await createTranscriptStore(dir);
+    assert.deepEqual(
+      quarantined.listSessions(),
+      [],
+      "corrupt index starts empty",
+    );
+    assert.equal(
+      await readFile(join(dir, "index.json.corrupt"), "utf8"),
+      "{not json",
+      "corrupt index preserved aside",
+    );
+    await quarantined.createSession("post-quarantine session");
+    assert.equal(
+      await readFile(join(dir, "index.json.corrupt"), "utf8"),
+      "{not json",
+      "persisting a new index leaves the quarantined copy alone",
+    );
+
     console.log("verify-transcript-store: ok");
   } finally {
     await rm(dir, { recursive: true, force: true });

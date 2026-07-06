@@ -10,6 +10,7 @@ import { IPC } from "@shared/ipc-contract";
 import { BrowserWindow, ipcMain, screen } from "electron";
 
 import { CursorPointSchema, IgnoreMouseSchema } from "./ipc-schemas";
+import { parseRendererDevServerUrl } from "./renderer-url";
 import type { SettingsStore } from "./settings-store";
 import { clampIntoWorkArea } from "./window-anchor";
 
@@ -142,7 +143,9 @@ export function createPetWindow(input: {
 }
 
 async function loadRenderer(win: BrowserWindow): Promise<void> {
-  const devUrl = process.env["ELECTRON_RENDERER_URL"];
+  const devUrl = parseRendererDevServerUrl(
+    process.env["ELECTRON_RENDERER_URL"],
+  );
   if (devUrl) {
     await win.loadURL(`${devUrl}/pet/index.html`);
     return;

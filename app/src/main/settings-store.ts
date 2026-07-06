@@ -56,12 +56,27 @@ function load(filePath: string): Settings {
     if (isMissingFileError(error)) return SettingsSchema.parse({});
     throw error;
   }
+  let data: unknown;
   try {
-    const parsed = SettingsSchema.safeParse(JSON.parse(raw));
-    if (parsed.success) return parsed.data;
+    data = JSON.parse(raw);
   } catch {
-    // Corrupt JSON falls through to defaults; the next save rewrites it.
+    return quarantine(filePath);
   }
+  const parsed = SettingsSchema.safeParse(data);
+  if (parsed.success) return parsed.data;
+  return quarantine(filePath);
+}
+
+// A settings file that exists but does not parse is corrupt state, not
+// first-run state. Move the original aside so the next save cannot silently
+// overwrite the only copy, surface the reset, and run on defaults; a settings
+// loss should not brick the whole app.
+function quarantine(filePath: string): Settings {
+  const backupPath = `${filePath}.corrupt`;
+  renameSync(filePath, backupPath);
+  console.error(
+    `settings file was corrupt; moved it to ${backupPath} and reset to defaults`,
+  );
   return SettingsSchema.parse({});
 }
 

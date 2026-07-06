@@ -222,12 +222,27 @@ async function loadIndex(indexPath: string): Promise<SessionSummary[]> {
     if (isMissingFileError(error)) return [];
     throw error;
   }
+  let data: unknown;
   try {
-    const parsed = IndexSchema.safeParse(JSON.parse(raw));
-    if (parsed.success) return parsed.data.sessions;
+    data = JSON.parse(raw);
   } catch {
-    // Corrupt JSON: deliberately fall through to rebuilding an empty index;
-    // the JSONL transcripts on disk are untouched.
+    return quarantineIndex(indexPath);
   }
+  const parsed = IndexSchema.safeParse(data);
+  if (parsed.success) return parsed.data.sessions;
+  return quarantineIndex(indexPath);
+}
+
+// An index that exists but does not parse is corrupt state, not an empty
+// session list. Move the original aside so the next index persist cannot
+// overwrite the only copy, and surface the reset; the JSONL transcripts
+// themselves are untouched, so the sessions' content survives even though
+// the sidebar starts empty.
+async function quarantineIndex(indexPath: string): Promise<SessionSummary[]> {
+  const backupPath = `${indexPath}.corrupt`;
+  await rename(indexPath, backupPath);
+  console.error(
+    `transcript index was corrupt; moved it to ${backupPath} and starting empty`,
+  );
   return [];
 }

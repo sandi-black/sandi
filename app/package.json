@@ -21,11 +21,12 @@
     "verify:pet-state-machine": "tsx --tsconfig tsconfig.main.json src/shared/verify-pet-state-machine.ts",
     "verify:response-buffer": "tsx --tsconfig tsconfig.main.json src/shared/verify-response-buffer.ts",
     "verify:anchor-position": "tsx --tsconfig tsconfig.main.json src/main/verify-anchor-position.ts",
+    "verify:renderer-url": "tsx --tsconfig tsconfig.main.json src/main/verify-renderer-url.ts",
     "verify:transcript-store": "tsx --tsconfig tsconfig.main.json src/main/verify-transcript-store.ts",
     "verify:turn-manager-queue": "tsx --tsconfig tsconfig.main.json src/main/verify-turn-manager-queue.ts",
     "verify:wander-scheduler": "tsx --tsconfig tsconfig.main.json src/main/verify-wander-scheduler.ts",
     "verify:turn-pipeline": "tsx --tsconfig tsconfig.main.json src/main/verify-turn-pipeline.ts",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run verify:pet-state-machine && npm run verify:response-buffer && npm run verify:anchor-position && npm run verify:transcript-store && npm run verify:turn-manager-queue && npm run verify:wander-scheduler && npm run verify:turn-pipeline"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run verify:pet-state-machine && npm run verify:response-buffer && npm run verify:anchor-position && npm run verify:renderer-url && npm run verify:transcript-store && npm run verify:turn-manager-queue && npm run verify:wander-scheduler && npm run verify:turn-pipeline"
   },
   "dependencies": {
     "motion": "^12.42.2",

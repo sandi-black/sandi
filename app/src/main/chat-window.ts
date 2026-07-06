@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { IPC } from "@shared/ipc-contract";
 import { BrowserWindow, ipcMain, screen } from "electron";
 
+import { parseRendererDevServerUrl } from "./renderer-url";
 import { computeAnchoredPosition } from "./window-anchor";
 
 // The popover chat window. Created hidden at startup and shown/hidden for the
@@ -97,7 +98,9 @@ function position(win: BrowserWindow, petBounds: Electron.Rectangle): void {
 }
 
 async function loadRenderer(win: BrowserWindow): Promise<void> {
-  const devUrl = process.env["ELECTRON_RENDERER_URL"];
+  const devUrl = parseRendererDevServerUrl(
+    process.env["ELECTRON_RENDERER_URL"],
+  );
   if (devUrl) {
     await win.loadURL(`${devUrl}/chat/index.html`);
     return;

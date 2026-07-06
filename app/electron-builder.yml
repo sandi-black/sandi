@@ -4,12 +4,26 @@
 # what these targets imply.
 #
 # Known gap: the artifacts are unsigned, so SmartScreen warns on first run.
+# (Auto-update still works: electron-updater only enforces signature checks
+# when the installed app itself is signed.)
 
 appId: black.jessica.sandi
 productName: Sandi
 directories:
   buildResources: build
   output: release
+
+# Where installed apps look for updates. This block does double duty: at
+# package time it makes electron-builder emit the update feed (latest.yml plus
+# the .exe.blockmap files) into release/ and embed the feed location in the
+# app's resources (app-update.yml), and at run time electron-updater (see
+# src/main/updater.ts) reads that to poll this repo's GitHub Release assets.
+# CI never publishes through this provider: the packaging workflow runs
+# --publish never and attaches the assets itself with gh.
+publish:
+  provider: github
+  owner: sandi-black
+  repo: sandi
 
 # electron-vite bundles every runtime dependency into out/, so the packaged
 # app ships only those bundles; node_modules stays out of the artifact.

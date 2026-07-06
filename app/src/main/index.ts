@@ -12,7 +12,7 @@ import {
   createResponseBuffer,
   type ResponseBuffer,
 } from "@shared/response-buffer";
-import { app, dialog, ipcMain, screen } from "electron";
+import { app, dialog, ipcMain, screen, shell } from "electron";
 
 import { installAssetProtocol, registerAssetScheme } from "./asset-protocol";
 import { createAttachmentStaging } from "./attachment-staging";
@@ -35,6 +35,12 @@ import { createTranscriptStore } from "./transcript-store";
 import { createTray, type TrayController } from "./tray";
 import { createTurnManager } from "./turn-manager";
 import { createTurnPipeline } from "./turn-pipeline";
+import {
+  createUpdater,
+  detectUpdateFlavor,
+  RELEASES_URL,
+  type UpdaterController,
+} from "./updater";
 import {
   createWanderScheduler,
   type WanderScheduler,
@@ -351,6 +357,21 @@ async function main(): Promise<void> {
   });
   ipcMain.handle(IPC.linkStatusGet, () => link.status());
 
+  // Self-update: the installed app stages new releases in the background and
+  // installs on quit (or from the tray); the portable exe can only point at
+  // the download page; a dev run gets no updater and no tray section.
+  const updateFlavor = detectUpdateFlavor();
+  const updater: UpdaterController | undefined =
+    updateFlavor === "dev"
+      ? undefined
+      : createUpdater({
+          flavor: updateFlavor,
+          autoCheck: settings.get().autoUpdate,
+          // The optional chain covers the first checks racing tray creation
+          // just below; every later state change lands on the live menu.
+          onState: (state) => tray?.setUpdateState(state),
+        });
+
   tray = createTray({
     settings,
     onToggleSandi: () => pet.toggleVisibility(),
@@ -363,6 +384,21 @@ async function main(): Promise<void> {
     },
     onOutfitChange: (outfit: PetOutfit) => pet.sendOutfit(outfit),
     onWanderChange: (enabled: boolean) => wanderScheduler.setEnabled(enabled),
+    ...(updater
+      ? {
+          updates: {
+            initialState: updater.state(),
+            onCheck: () => updater.checkNow(),
+            onInstall: () => updater.quitAndInstall(),
+            onDownload: () => {
+              shell.openExternal(RELEASES_URL).catch((error: unknown) => {
+                console.error("failed to open the releases page", error);
+              });
+            },
+            onAutoUpdateChange: (enabled) => updater.setAutoCheck(enabled),
+          },
+        }
+      : {}),
   });
 
   app.on("second-instance", () => {
@@ -395,6 +431,7 @@ async function main(): Promise<void> {
   app.on("before-quit", () => {
     wanderScheduler.dispose();
     fidgetScheduler.dispose();
+    updater?.dispose();
     link.stop();
   });
 }

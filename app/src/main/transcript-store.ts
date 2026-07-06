@@ -131,16 +131,30 @@ export async function createTranscriptStore(
         throw error;
       }
       const entries: TranscriptEntry[] = [];
+      let skipped = 0;
       for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
+        let value: unknown;
         try {
-          const parsed = TranscriptEntrySchema.safeParse(JSON.parse(line));
-          // A malformed line (torn write, manual edit) is skipped rather than
-          // poisoning the whole transcript.
-          if (parsed.success) entries.push(normalizeEntry(parsed.data));
+          value = JSON.parse(line);
         } catch {
-          // Unparseable JSON: skip the line, same policy as a schema miss.
+          // Unparseable JSON (a torn write or a manual edit) is skipped rather
+          // than poisoning the whole transcript, but the loss is counted and
+          // surfaced below rather than swallowed silently.
+          skipped++;
+          continue;
         }
+        const parsed = TranscriptEntrySchema.safeParse(value);
+        if (parsed.success) {
+          entries.push(normalizeEntry(parsed.data));
+        } else {
+          skipped++;
+        }
+      }
+      if (skipped > 0) {
+        console.error(
+          `transcript ${conversationId}: skipped ${skipped} unreadable line(s), kept the ${entries.length} that parsed`,
+        );
       }
       return entries;
     },

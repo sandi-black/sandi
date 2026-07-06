@@ -184,16 +184,28 @@ function handleEvent(block: string, conn: Connection): void {
   });
 }
 
+// A malformed event on the link is a protocol failure, not nothing. Surfacing
+// it through onStatus keeps a corrupt frame from vanishing without a trace,
+// which matters most for attachments (they have no later reconciliation the
+// way streamed chunks do, so a dropped one is simply lost).
+function surfaceDroppedEvent(conn: Connection, event: string): void {
+  conn.options.onStatus?.(`dropped a malformed ${event} event`);
+}
+
 function handleResponseChunk(data: string, conn: Connection): void {
   if (!conn.options.onResponseChunk) return;
   let raw: unknown;
   try {
     raw = JSON.parse(data);
   } catch {
+    surfaceDroppedEvent(conn, RESPONSE_CHUNK_EVENT);
     return;
   }
   const parsed = ResponseChunkSchema.safeParse(raw);
-  if (!parsed.success) return;
+  if (!parsed.success) {
+    surfaceDroppedEvent(conn, RESPONSE_CHUNK_EVENT);
+    return;
+  }
   conn.options.onResponseChunk(parsed.data);
 }
 
@@ -203,10 +215,14 @@ function handleResponseAttachment(data: string, conn: Connection): void {
   try {
     raw = JSON.parse(data);
   } catch {
+    surfaceDroppedEvent(conn, RESPONSE_ATTACHMENT_EVENT);
     return;
   }
   const parsed = ResponseAttachmentSchema.safeParse(raw);
-  if (!parsed.success) return;
+  if (!parsed.success) {
+    surfaceDroppedEvent(conn, RESPONSE_ATTACHMENT_EVENT);
+    return;
+  }
   conn.options.onResponseAttachment(parsed.data);
 }
 

@@ -96,7 +96,7 @@ documented in [`api-surface.md`](api-surface.md)):
 - User to Sandi: staged images (picked, dropped, or pasted) upload to the
   server's content-addressed attachment store at submit time and the turn
   references their hashes, which puts them in the model's visual context.
-  Non-image files are not uploaded at all: they already live on the machine
+  Non-image files are not uploaded because they already live on the machine
   where Sandi's hands-local tools run, so the message just lists their paths
   and she reads them herself.
 - Sandi to user: her `attach_to_reply` tool relays hands-local paths through
@@ -146,10 +146,10 @@ Known gap: the artifacts are unsigned, so SmartScreen warns on first run.
 Packaging runs in CI only on a version tag. Push a `vX.Y.Z` tag and the
 `Package` workflow (`.github/workflows/package.yml`) builds both Windows
 targets on a Windows runner and attaches the installers to that tag's GitHub
-Release. The tag becomes the app version: the workflow passes it to
-electron-builder as `extraMetadata.version`, so `app.getVersion()` (shown in
-the tray menu) and the `${version}` in each artifact filename match the tag
-rather than the committed `0.1.0` in `app/package.json`.
+Release. The workflow passes the tag to electron-builder as
+`extraMetadata.version`, so `app.getVersion()` (shown in the tray menu) and the
+`${version}` in each artifact filename match the tag rather than the committed
+`0.1.0` in `app/package.json`.
 
 ```sh
 git tag v0.2.0
@@ -160,7 +160,7 @@ The fast per-PR checks (`check-app`) skip the Electron binary and never run
 electron-builder, so packaging-only breakage (a bad `electron-builder.yml`, a
 missing icon, an asar path problem) surfaces at tag time, not on the PR. To
 rehearse the pipeline without cutting a tag, run the workflow by hand via
-`workflow_dispatch`: it packages at `app/package.json`'s own version and
+`workflow_dispatch`, which packages at `app/package.json`'s own version and
 uploads the artifacts to the run instead of a release.
 
 ## Manual smoke checklist

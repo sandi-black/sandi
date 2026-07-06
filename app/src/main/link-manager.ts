@@ -84,7 +84,15 @@ export function createLinkManager(input: {
     },
     async restart() {
       controller?.abort();
-      await runLoop();
+      // runLoop only settles when the app shuts down, so awaiting it here
+      // would hang the caller (the pairing IPC response) until quit, even
+      // though the reconnected link is already coming up. Relaunch in the
+      // background and let its progress reach the UI through onStatus, the
+      // same way start()'s loop does.
+      void runLoop().catch((error: unknown) => {
+        setStatus({ state: "dropped", message: "link restart failed" });
+        console.error("link restart loop failed", error);
+      });
     },
     stop() {
       controller?.abort();

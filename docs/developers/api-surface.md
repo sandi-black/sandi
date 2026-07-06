@@ -409,9 +409,9 @@ are restricted to a short list today (`image/png`, `image/jpeg`, `image/webp`,
 `image/gif`, plus `application/octet-stream` as a fallback), kept as an
 exported const so widening it later is a one-line change.
 
-A read is scoped to the requesting identity: an attachment that exists but
-belongs to someone else answers exactly like one that does not exist at all, so
-a caller can never probe for another identity's uploads by guessing a hash.
+A read scoped to the requesting identity returns someone else's attachment
+exactly like a missing one, so a caller can never probe for another identity's
+uploads by guessing a hash.
 
 ### Inbound: uploading and referencing a file
 

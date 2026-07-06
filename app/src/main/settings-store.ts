@@ -15,6 +15,18 @@ const SettingsSchema = z.object({
   petPosition: z
     .object({ x: z.number().int(), y: z.number().int() })
     .optional(),
+  // The chat popover's user-chosen geometry. The position is stored as an
+  // offset from the pet window's top-left rather than absolute coordinates,
+  // so the popover reopens beside her wherever she has wandered. Absent until
+  // the human first moves or resizes the popover; the default anchored
+  // placement applies until then.
+  chatOffset: z.object({ x: z.number().int(), y: z.number().int() }).optional(),
+  chatSize: z
+    .object({
+      width: z.number().int().positive(),
+      height: z.number().int().positive(),
+    })
+    .optional(),
   outfit: z.enum(["classic", "alternate"]).default("classic"),
   wander: z.boolean().default(false),
   autoLaunch: z.boolean().default(false),

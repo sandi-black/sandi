@@ -66,6 +66,20 @@ Main owns all state; the renderers are pure UI over typed IPC.
   and lives for the whole app life: closing hides it, and only the tray's Quit
   destroys it. There is deliberately no blur handler; it stays up when clicked
   away.
+- The popover is movable and resizable, down to a minimum that keeps the
+  composer usable. Moving uses a `-webkit-app-region` drag area on the header
+  (safe here because the header sits on opaque pixels, unlike the pet).
+  Resizing is manual: Windows drops `WS_THICKFRAME` from transparent windows,
+  so there is no native resize frame, and the renderer's edge grips
+  (`ResizeGrips.tsx`) report grip/tick/release while main applies bounds from
+  the true cursor (pure `computeResizedBounds`), the same pattern as the pet
+  drag. Both choices persist in settings: the size as-is, the position as an
+  offset from the pet's top-left, so it reopens beside her wherever she has
+  wandered and `follow` trails at the chosen offset instead of the default
+  anchor. Restores clamp into the current work area (pure
+  `computeOffsetPosition` and `clampSizeIntoWorkArea`) without rewriting the
+  saved values, so a temporary small display does not erase the intent.
+  Programmatic placements set a guard flag so only real gestures are recorded.
 - The tray is the pet's only conventional chrome. Left click toggles her
   visibility; the context menu has open chat, outfit, wander, start-with-
   Windows, the link status line, and Quit. The `Tray` instance stays in
@@ -199,8 +213,14 @@ desktop. After a change that touches windows, input, or packaging, check:
    renders inline and save-as writes it where pointed.
 9. Persistence: close the popover, reopen from the pet; the transcript is
    intact. Relaunch the app; sessions and transcripts are intact.
-10. Wander: enable it, leave her idle; she eventually strolls and any
+10. Chat geometry: drag the popover by its header and resize it from an edge;
+    close and reopen it (pet click and tray both) and it comes back at the
+    same size and the same position relative to the pet. Drag the pet and the
+    popover trails at that offset. Relaunch the app; both survive. With the
+    session drawer open, the drawer's own header buttons still click (they sit
+    over the drag region).
+11. Wander: enable it, leave her idle; she eventually strolls and any
     activity (a message, a drag, opening chat) stops her immediately.
-11. Packaged build: the NSIS installer installs and launches; the portable
+12. Packaged build: the NSIS installer installs and launches; the portable
     exe runs from a bare folder; start-with-Windows takes effect on the
     packaged app.

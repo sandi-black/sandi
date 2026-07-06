@@ -96,11 +96,16 @@ async function main(): Promise<void> {
   let fidget: IdleFidgetScheduler | undefined;
 
   const chat = createChatWindow({ isQuitting: () => quitting });
+  const waveOnChatOpen = (): void => {
+    if (chat.window.isVisible()) return;
+    pet.sendDisplayEvent({ type: "one-shot", row: "waving" });
+  };
   const pet = createPetWindow({
     settings,
     onOpenChat: () => {
       wander?.interrupt();
       fidget?.interrupt();
+      waveOnChatOpen();
       chat.toggleNear(pet.window.getBounds());
     },
     onDragStart: () => {
@@ -346,6 +351,7 @@ async function main(): Promise<void> {
     onOpenChat: () => {
       wanderScheduler.interrupt();
       fidgetScheduler.interrupt();
+      waveOnChatOpen();
       chat.openNear(pet.window.getBounds());
     },
     onOutfitChange: (outfit: PetOutfit) => pet.sendOutfit(outfit),

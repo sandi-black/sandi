@@ -20,7 +20,7 @@ export type IdleFidgetHost = {
 export type IdleFidgetOptions = {
   // Quiet stretch between fidgets, sampled uniformly.
   pauseRangeMs?: [number, number];
-  // The rows she may play as a fidget; one is chosen uniformly each time.
+  // The rows she may play as a fidget. Repeating a row in this list weights it.
   pool?: readonly PetOneShot[];
   // How long each fidget holds the stage before the pause rearms; defaults to
   // the row's own frame budget. Injectable so the schedule verifies at ms scale.
@@ -47,8 +47,8 @@ function rowDurationMs(row: PetOneShot): number {
 }
 
 const DEFAULTS: Required<IdleFidgetOptions> = {
-  pauseRangeMs: [12_000, 40_000],
-  pool: ["blink", "waving", "sleeping"],
+  pauseRangeMs: [8_000, 28_000],
+  pool: ["blink", "blink", "blink", "waving", "sleeping"],
   durationMs: rowDurationMs,
   random: Math.random,
 };
@@ -63,6 +63,7 @@ export function createIdleFidgetScheduler(
   let disposed = false;
   let pauseTimer: NodeJS.Timeout | undefined;
   let busyTimer: NodeJS.Timeout | undefined;
+  let previousRow: PetOneShot | undefined;
 
   const clearTimers = (): void => {
     if (pauseTimer) clearTimeout(pauseTimer);
@@ -83,12 +84,17 @@ export function createIdleFidgetScheduler(
 
   const fidget = (): void => {
     if (!enabled || disposed) return;
-    const row = config.pool[Math.floor(config.random() * config.pool.length)];
+    const candidates = previousRow
+      ? config.pool.filter((candidate) => candidate !== previousRow)
+      : config.pool;
+    const pool = candidates.length > 0 ? candidates : config.pool;
+    const row = pool[Math.floor(config.random() * pool.length)];
     if (!row || !host.canFidget()) {
       // Not a good moment (or an empty pool): stay still and try again later.
       arm();
       return;
     }
+    previousRow = row;
     host.sendDisplayEvent({ type: "one-shot", row });
     // Hold "busy" for the row's own run so the wander scheduler stays parked
     // until she has settled back to the static idle frame, then rearm.

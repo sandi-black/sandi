@@ -23,6 +23,10 @@ import { registerFileHandlers } from "./handlers/file-handlers";
 import { registerPairingHandlers } from "./handlers/pairing-handlers";
 import { registerSessionHandlers } from "./handlers/session-handlers";
 import { registerTurnHandlers } from "./handlers/turn-handlers";
+import {
+  createIdleFidgetScheduler,
+  type IdleFidgetScheduler,
+} from "./idle-fidget-scheduler";
 import { ReplyAttachmentSchema } from "./ipc-schemas";
 import { createLinkManager } from "./link-manager";
 import { createPetWindow } from "./pet-window";
@@ -85,18 +89,24 @@ async function main(): Promise<void> {
   const store = await createTranscriptStore(join(userData, "transcripts"));
   const staging = createAttachmentStaging(join(userData, "staging"));
 
-  // Assigned once the scheduler exists below; the pet window is created first
-  // because the scheduler walks it.
+  // Assigned once the schedulers exist below; the pet window is created first
+  // because they drive it. Both are idle-only ambient behaviors: wander walks
+  // her across the display, fidget plays brief in-place idle animations.
   let wander: WanderScheduler | undefined;
+  let fidget: IdleFidgetScheduler | undefined;
 
   const chat = createChatWindow({ isQuitting: () => quitting });
   const pet = createPetWindow({
     settings,
     onOpenChat: () => {
       wander?.interrupt();
+      fidget?.interrupt();
       chat.toggleNear(pet.window.getBounds());
     },
-    onDragStart: () => wander?.interrupt(),
+    onDragStart: () => {
+      wander?.interrupt();
+      fidget?.interrupt();
+    },
   });
 
   const sendToChat = (channel: string, payload: unknown): void => {
@@ -151,12 +161,28 @@ async function main(): Promise<void> {
       activeTurns.size === 0 &&
       pet.window.isVisible() &&
       !pet.isDragging() &&
-      !chat.window.isVisible(),
+      !chat.window.isVisible() &&
+      !(fidget?.isFidgeting() ?? false),
     sendDisplayEvent: (event) => pet.sendDisplayEvent(event),
     savePosition: (position) => settings.update({ petPosition: position }),
   });
   wander = wanderScheduler;
   wanderScheduler.setEnabled(settings.get().wander);
+
+  // Idle fidgets share wander's idle gate and additionally hold off while she is
+  // mid-stroll, so a walk and a blink never fight over the same moment. Unlike
+  // wander, fidgets stay in place, so they run regardless of the wander setting.
+  const fidgetScheduler = createIdleFidgetScheduler({
+    canFidget: () =>
+      activeTurns.size === 0 &&
+      pet.window.isVisible() &&
+      !pet.isDragging() &&
+      !chat.window.isVisible() &&
+      !wanderScheduler.isStrolling(),
+    sendDisplayEvent: (event) => pet.sendDisplayEvent(event),
+  });
+  fidget = fidgetScheduler;
+  fidgetScheduler.setEnabled(true);
 
   const link = createLinkManager({
     // Sandi's relative tool paths resolve against the home directory; her
@@ -227,6 +253,7 @@ async function main(): Promise<void> {
     events: {
       onTurnStarted: ({ turnId }) => {
         wanderScheduler.interrupt();
+        fidgetScheduler.interrupt();
         activeTurns.set(turnId, "waiting");
         refreshPetBackground();
       },
@@ -314,6 +341,7 @@ async function main(): Promise<void> {
     onToggleSandi: () => pet.toggleVisibility(),
     onOpenChat: () => {
       wanderScheduler.interrupt();
+      fidgetScheduler.interrupt();
       chat.openNear(pet.window.getBounds());
     },
     onOutfitChange: (outfit: PetOutfit) => pet.sendOutfit(outfit),
@@ -349,6 +377,7 @@ async function main(): Promise<void> {
   });
   app.on("before-quit", () => {
     wanderScheduler.dispose();
+    fidgetScheduler.dispose();
     link.stop();
   });
 }

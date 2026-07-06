@@ -101,6 +101,7 @@ async function main(): Promise<void> {
     onOpenChat: () => {
       wander?.interrupt();
       fidget?.interrupt();
+      pet.sendDisplayEvent({ type: "reply-alert", visible: false });
       chat.toggleNear(pet.window.getBounds());
     },
     onDragStart: () => {
@@ -272,6 +273,9 @@ async function main(): Promise<void> {
           type: "one-shot",
           row: event.ok ? "jumping" : "failed",
         });
+        if (event.ok && !chat.window.isVisible()) {
+          pet.sendDisplayEvent({ type: "reply-alert", visible: true });
+        }
         refreshPetBackground();
         sendToChat(IPC.turnSettled, event);
       },
@@ -346,6 +350,7 @@ async function main(): Promise<void> {
     onOpenChat: () => {
       wanderScheduler.interrupt();
       fidgetScheduler.interrupt();
+      pet.sendDisplayEvent({ type: "reply-alert", visible: false });
       chat.openNear(pet.window.getBounds());
     },
     onOutfitChange: (outfit: PetOutfit) => pet.sendOutfit(outfit),

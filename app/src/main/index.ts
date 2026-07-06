@@ -16,6 +16,7 @@ import { app, dialog, ipcMain, screen } from "electron";
 
 import { installAssetProtocol, registerAssetScheme } from "./asset-protocol";
 import { createAttachmentStaging } from "./attachment-staging";
+import { createAutoTitler } from "./auto-titler";
 import { createChatWindow } from "./chat-window";
 import { registerAttachmentHandlers } from "./handlers/attachment-handlers";
 import { registerFileHandlers } from "./handlers/file-handlers";
@@ -38,6 +39,11 @@ import {
   createWanderScheduler,
   type WanderScheduler,
 } from "./wander-scheduler";
+import {
+  desktopConfigPath,
+  loadDesktopCredentials,
+} from "@sandi-server/surfaces/api/client/credentials";
+import { generateTitle } from "@sandi-server/surfaces/api/client/titles";
 
 // Composition root for the desktop app. Main owns everything stateful: the
 // windows, tray, settings, device link, turn queue, and transcript store. The
@@ -300,11 +306,31 @@ async function main(): Promise<void> {
     }
   };
 
-  registerSessionHandlers({
+  const notifySessionsChanged = (): void =>
+    sendToChat(IPC.sessionsChanged, undefined);
+
+  // Names a fresh conversation from its opening message by asking the server to
+  // title it (a one-off model turn, like Discord's thread naming), then renames
+  // the local session. Credentials load fresh each time, so a re-pair takes
+  // effect without a restart, exactly as the turn pipeline does.
+  const autoTitler = createAutoTitler({
     store,
-    onSessionsChanged: () => sendToChat(IPC.sessionsChanged, undefined),
+    requestTitle: async ({ conversationId, message }) => {
+      const credentials = await loadDesktopCredentials(desktopConfigPath());
+      if (!credentials) return undefined;
+      const outcome = await generateTitle({
+        url: credentials.url,
+        token: credentials.token,
+        conversationId,
+        message,
+      });
+      return outcome.ok ? outcome.title : undefined;
+    },
+    onTitled: notifySessionsChanged,
   });
-  registerTurnHandlers({ turnManager, store, staging });
+
+  registerSessionHandlers({ store, onSessionsChanged: notifySessionsChanged });
+  registerTurnHandlers({ turnManager, store, staging, autoTitler });
   registerAttachmentHandlers({ staging });
   registerFileHandlers();
   registerPairingHandlers({

@@ -144,6 +144,10 @@ export function ChatApp(): JSX.Element {
     );
   }, []);
 
+  // Stable so the transcript rows' memo is not defeated by a fresh retry
+  // handler on every streaming render.
+  const retry = useCallback((text: string): void => submit(text, []), [submit]);
+
   const activeTitle =
     sessions.find((session) => session.conversationId === activeConversationId)
       ?.title ?? "Sandi";
@@ -210,7 +214,7 @@ export function ChatApp(): JSX.Element {
         />
       ) : (
         <>
-          <TranscriptView onRetry={(text) => submit(text, [])} />
+          <TranscriptView onRetry={retry} />
           {queue && queue.pending.length > 0 && (
             <div className="queue-strip">
               {queue.pending.map((turn) => (

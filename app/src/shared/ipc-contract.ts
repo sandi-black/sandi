@@ -110,7 +110,8 @@ export type PetDisplayEvent =
   | { type: "background"; background: PetBackground }
   | { type: "one-shot"; row: PetOneShot }
   | { type: "wander"; direction: WanderDirection }
-  | { type: "wander-stop" };
+  | { type: "wander-stop" }
+  | { type: "reply-alert"; visible: boolean };
 
 export type PairOutcomeSummary =
   | { ok: true; identityId: string; deviceId: string }

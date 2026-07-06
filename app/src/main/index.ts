@@ -105,6 +105,7 @@ async function main(): Promise<void> {
     onOpenChat: () => {
       wander?.interrupt();
       fidget?.interrupt();
+      pet.sendDisplayEvent({ type: "reply-alert", visible: false });
       waveOnChatOpen();
       chat.toggleNear(pet.window.getBounds());
     },
@@ -277,6 +278,11 @@ async function main(): Promise<void> {
           type: "one-shot",
           row: event.ok ? "jumping" : "failed",
         });
+        // Failures earn the marker as much as replies do: either way there is
+        // an outcome waiting in a chat the user cannot currently see.
+        if (!chat.window.isVisible()) {
+          pet.sendDisplayEvent({ type: "reply-alert", visible: true });
+        }
         refreshPetBackground();
         sendToChat(IPC.turnSettled, event);
       },
@@ -351,6 +357,7 @@ async function main(): Promise<void> {
     onOpenChat: () => {
       wanderScheduler.interrupt();
       fidgetScheduler.interrupt();
+      pet.sendDisplayEvent({ type: "reply-alert", visible: false });
       waveOnChatOpen();
       chat.openNear(pet.window.getBounds());
     },

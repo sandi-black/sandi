@@ -35,7 +35,13 @@ async function main(): Promise<void> {
   };
 
   player.onOneShotComplete(() => dispatch({ type: "animation-complete" }));
-  bridge.onDisplayEvent((event) => dispatch(event));
+  bridge.onDisplayEvent((event) => {
+    if (event.type === "reply-alert") {
+      player.setReplyAlertVisible(event.visible);
+      return;
+    }
+    dispatch(event);
+  });
 
   player.setOutfit(await bridge.getOutfit());
   bridge.onOutfitChanged((outfit) => player.setOutfit(outfit));

@@ -42,6 +42,7 @@ async function verifyAttachmentStore(): Promise<void> {
     await verifyBasicUploadAndOwnedRead(store, port, uploads);
     await verifyIdentityScopedRead(store, port, uploads);
     await verifyDedup(store, port, uploads);
+    await verifyDedupRestoresMissingBlob(store, root, port, uploads);
     await verifySizeCapAborts(store, port, uploads);
     await verifyAtomicLayout(store, root, port, uploads);
     await verifyUnknownHashIsUndefined(store);
@@ -239,6 +240,45 @@ async function verifyDedup(
   );
   console.log(
     "ok re-uploading identical bytes dedups storage and adds the new uploader as an owner",
+  );
+}
+
+// A stale sidecar whose blob has vanished must not turn a re-upload into a
+// success-that-cannot-be-read: the dedup branch checks the disk and restores
+// the blob from the fresh upload instead of discarding it.
+async function verifyDedupRestoresMissingBlob(
+  store: AttachmentStore,
+  root: string,
+  port: number,
+  uploads: { body: IncomingMessage; done: () => void }[],
+): Promise<void> {
+  const bytes = Buffer.from("Grace Hopper's compiler notes, second copy");
+  const first = await uploadBytes(store, port, uploads, {
+    bytes,
+    mimeType: "text/plain",
+    name: "notes.txt",
+    identityId: "hopper",
+  });
+  const blobPath = join(root, first.hash.slice(0, 2), first.hash);
+  await rm(blobPath, { force: true });
+
+  const second = await uploadBytes(store, port, uploads, {
+    bytes,
+    mimeType: "text/plain",
+    name: "notes-again.txt",
+    identityId: "hopper",
+  });
+  assertEqual(second.hash, first.hash, "the restore reports the same digest");
+  const restored = await readFile(blobPath);
+  if (!restored.equals(bytes)) {
+    throw new Error("expected the re-upload to restore the missing blob");
+  }
+  const readBack = await store.get(first.hash, "hopper");
+  if (!readBack) {
+    throw new Error("expected the restored attachment to read back");
+  }
+  console.log(
+    "ok a dedup upload restores a blob that vanished out from under its sidecar",
   );
 }
 

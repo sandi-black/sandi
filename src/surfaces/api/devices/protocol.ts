@@ -337,12 +337,27 @@ export type ResponseChunk = z.infer<typeof ResponseChunkSchema>;
 // reads it. `seq` is a per-turn monotonic counter, the same ordering discipline
 // as ResponseChunk, assigned by the extension rather than reusing the chunk
 // stream's counter (the two channels are independent).
+// path stays a bounded free-form path (absolute or desktop-relative by the
+// tool's contract; the desktop resolves it against its own root), but name is
+// a single bounded filename (the desktop offers it as a save-as suggestion)
+// and mimeType a plain type/subtype token pair.
 export const RESPONSE_ATTACHMENT_EVENT = "response_attachment";
 export const ResponseAttachmentSchema = z.object({
   turnId: z.string().min(1),
   seq: z.number().int().nonnegative(),
-  path: z.string().min(1),
-  name: z.string().min(1).optional(),
-  mimeType: z.string().min(1).optional(),
+  path: z.string().min(1).max(4096),
+  name: z
+    .string()
+    .min(1)
+    .max(200)
+    .refine(
+      (value) => !value.includes("/") && !value.includes("\\"),
+      "name must be a single filename, not a path",
+    )
+    .optional(),
+  mimeType: z
+    .string()
+    .regex(/^[a-z0-9!#$&^_.+-]{1,100}\/[a-z0-9!#$&^_.+-]{1,100}$/)
+    .optional(),
 });
 export type ResponseAttachment = z.infer<typeof ResponseAttachmentSchema>;

@@ -64,6 +64,45 @@ export function attachedResult(displayName: string): AttachToReplyResult {
   };
 }
 
+// The refusal for parameters the broker would reject anyway, answered here so
+// the model gets a precise correction instead of a broker 400.
+export function invalidParamsResult(reason: string): AttachToReplyResult {
+  return {
+    content: [
+      { type: "text", text: `invalid attach_to_reply call: ${reason}` },
+    ],
+    details: { tool: "attach_to_reply", ok: false },
+  };
+}
+
+// Exported for tests: validates the model's parameters into the exact shape
+// the broker's ResponseAttachmentSchema accepts (restated here because this
+// file loads outside the alias-aware runtime, like the env names above).
+// `path` is a bounded path, absolute or desktop-relative; `name` must be a
+// single bounded filename since the desktop offers it as a save-as name.
+export function validateAttachParams(params: {
+  path: string;
+  name?: string;
+}): { ok: true; path: string; name?: string } | { ok: false; reason: string } {
+  const path = params.path.trim();
+  if (path.length === 0 || path.length > 4096) {
+    return { ok: false, reason: "path must be 1 to 4096 characters" };
+  }
+  const name = params.name?.trim();
+  if (name !== undefined) {
+    if (name.length === 0 || name.length > 200) {
+      return { ok: false, reason: "name must be 1 to 200 characters" };
+    }
+    if (name.includes("/") || name.includes("\\")) {
+      return {
+        ok: false,
+        reason: "name must be a single filename, not a path",
+      };
+    }
+  }
+  return { ok: true, path, ...(name !== undefined ? { name } : {}) };
+}
+
 export default function attachToReplyToolExtension(pi: ExtensionAPI): void {
   const target = readAttachTarget();
   // Per-turn monotonic counter, independent of the response-chunk stream's own
@@ -90,14 +129,16 @@ export default function attachToReplyToolExtension(pi: ExtensionAPI): void {
       }),
       async execute(_id, params) {
         if (!target) return noDesktopLinkResult();
+        const validated = validateAttachParams(params);
+        if (!validated.ok) return invalidParamsResult(validated.reason);
         const attachment = {
           turnId: target.turnId,
           seq: seq++,
-          path: params.path,
-          ...(params.name !== undefined ? { name: params.name } : {}),
+          path: validated.path,
+          ...(validated.name !== undefined ? { name: validated.name } : {}),
         };
         await postAttachment(target, attachment);
-        return attachedResult(params.name ?? params.path);
+        return attachedResult(validated.name ?? validated.path);
       },
     }),
   );

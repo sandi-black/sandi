@@ -22,7 +22,18 @@ export const AttachmentRefSchema = z.object({
   hash: z
     .string()
     .regex(ATTACHMENT_HASH, "hash must be 64 lowercase hex chars"),
-  name: z.string().min(1).optional(),
+  // The override name becomes a materialized file's basename, so it is bound
+  // to a single filename at the wire boundary; sanitizeFileName below stays
+  // as defense in depth for the stored name path.
+  name: z
+    .string()
+    .min(1)
+    .max(200)
+    .refine(
+      (value) => !value.includes("/") && !value.includes("\\"),
+      "name must be a single filename, not a path",
+    )
+    .optional(),
 });
 export type AttachmentRef = z.infer<typeof AttachmentRefSchema>;
 

@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { SessionSummary, TranscriptEntry } from "@shared/ipc-contract";
 
 import { isMissingFileError } from "./fs-errors";
-import { ConversationIdSchema } from "./ipc-schemas";
+import { ConversationIdSchema, ReplyAttachmentSchema } from "./ipc-schemas";
 import { z } from "zod/v4";
 
 // The app's own conversation history. The server has no list or transcript
@@ -41,15 +41,10 @@ const TranscriptEntrySchema = z.discriminatedUnion("type", [
     ts: z.string(),
     text: z.string(),
     thinking: z.string().optional(),
-    attachments: z
-      .array(
-        z.object({
-          path: z.string(),
-          name: z.string().optional(),
-          mimeType: z.string().optional(),
-        }),
-      )
-      .optional(),
+    // The same strict shape the save-as IPC boundary parses: these paths
+    // render through sandi-asset:// and come back to main for copying, so a
+    // hand-edited transcript line gets the same scrutiny as a live event.
+    attachments: z.array(ReplyAttachmentSchema).optional(),
   }),
   z.object({
     type: z.literal("error"),

@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
 import { join } from "node:path";
 
@@ -172,8 +172,15 @@ export class AttachmentStore {
       const existing = await this.#readMetadata(digest);
       if (existing) {
         // Dedup: the bytes are already stored, so discard the freshly uploaded
-        // temp copy and only extend the sidecar's ownership.
-        await rm(tempPath, { force: true });
+        // temp copy and only extend the sidecar's ownership. But trust the
+        // disk, not the sidecar: a stale sidecar whose blob has gone missing
+        // would otherwise report success for a hash later reads fail on, so
+        // the fresh upload restores the blob instead of being discarded.
+        if (await blobIsPresent(blobPath)) {
+          await rm(tempPath, { force: true });
+        } else {
+          await rename(tempPath, blobPath);
+        }
         const merged: AttachmentMetadata = {
           ...existing,
           name: existing.name || input.name,
@@ -252,6 +259,15 @@ export class AttachmentStore {
     // Called from inside the metaPath's managed-write critical section, so this
     // only needs the atomic temp-then-rename primitive, not the lock itself.
     await atomicWriteInPlace(path, `${JSON.stringify(metadata, null, 2)}\n`);
+  }
+}
+
+async function blobIsPresent(blobPath: string): Promise<boolean> {
+  try {
+    return (await stat(blobPath)).isFile();
+  } catch (error) {
+    if (isMissingFileError(error)) return false;
+    throw error;
   }
 }
 

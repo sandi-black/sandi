@@ -60,9 +60,8 @@ Main owns all state; the renderers are pure UI over typed IPC.
   when clicked away.
 - The tray is the pet's only conventional chrome. Left click toggles her
   visibility; the context menu has open chat, outfit, wander, start-with-
-  Windows, the link status line, and Quit. The `Tray` instance is held in
-  module scope on purpose: a garbage-collected wrapper silently drops the
-  icon.
+  Windows, the link status line, and Quit. The `Tray` instance stays in
+  module scope because a garbage-collected wrapper silently drops the icon.
 - Conversations are app-local. The server has no list or transcript endpoint
   (conversations are implicit and device-scoped), so main keeps one
   append-only JSONL per conversation plus an `index.json` for the sidebar,
@@ -91,8 +90,8 @@ activity halts it within one tick.
 
 ### Attachments
 
-Two directions, two mechanisms (the server side is documented in
-[`api-surface.md`](api-surface.md)):
+The app uses one attachment mechanism in each direction (the server side is
+documented in [`api-surface.md`](api-surface.md)):
 
 - User to Sandi: staged images (picked, dropped, or pasted) upload to the
   server's content-addressed attachment store at submit time and the turn

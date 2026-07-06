@@ -2,8 +2,9 @@ import { type JSX, useCallback, useEffect, useState } from "react";
 
 import { Composer } from "./Composer";
 import { guard } from "./guard";
+import { PairingCard } from "./PairingCard";
 import { SessionDrawer } from "./SessionDrawer";
-import { PairingCard, StatusBar } from "./StatusBar";
+import { StatusBar } from "./StatusBar";
 import { useChatStore } from "./store";
 import { TranscriptView } from "./TranscriptView";
 

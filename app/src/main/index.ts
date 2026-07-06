@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import type { PetOutfit } from "@shared/animation-manifest";
 import type {
@@ -175,8 +175,14 @@ async function main(): Promise<void> {
         }
       },
       onResponseAttachment: (attachment) => {
+        // The tool's contract allows desktop-relative paths; everything
+        // app-side (transcript, sandi-asset rendering, save-as) requires
+        // absolute, so resolve here against the same root the link's tools
+        // run under.
         const entry: ReplyAttachment = {
-          path: attachment.path,
+          path: isAbsolute(attachment.path)
+            ? attachment.path
+            : join(app.getPath("home"), attachment.path),
           ...(attachment.name !== undefined ? { name: attachment.name } : {}),
           ...(attachment.mimeType !== undefined
             ? { mimeType: attachment.mimeType }

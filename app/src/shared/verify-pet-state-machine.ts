@@ -29,16 +29,24 @@ function main(): void {
   assert.equal(PET_ROWS.waving.loop, false, "waving is a one-shot");
   assert.equal(PET_ROWS.jumping.loop, false, "jumping is a one-shot");
   assert.equal(PET_ROWS.failed.loop, false, "failed is a one-shot");
+  assert.equal(PET_ROWS.blink.loop, false, "blink is a one-shot");
+  assert.equal(PET_ROWS.sleeping.loop, false, "sleeping is a one-shot");
+  // Idle is a single held frame: a still pet, not a breathing loop.
+  assert.equal(PET_ROWS.idle.frames, 1, "idle is a single static frame");
 
   // A full successful turn: queued -> thinking -> answering -> celebration ->
   // back to rest.
   let state = INITIAL_PET_STATE;
+  assert.equal(state.row, "idle", "she starts on the static idle pose");
   state = run([{ type: "background", background: "waiting" }], state);
   assert.equal(state.row, "waiting", "queued turn shows waiting");
   state = run([{ type: "background", background: "review" }], state);
   assert.equal(state.row, "review", "thinking deltas show review");
   state = run([{ type: "background", background: "running" }], state);
-  assert.equal(state.row, "running", "text deltas show running");
+  // Streaming an answer shares the calm review animation: the run-in-place row
+  // is never shown while she is parked at work.
+  assert.equal(state.row, "review", "text deltas share the review animation");
+  assert.equal(state.background, "running", "but the background stays running");
   state = run(
     [
       { type: "background", background: "idle" },
@@ -86,6 +94,24 @@ function main(): void {
     { type: "animation-complete" },
   ]);
   assert.equal(state.row, "waiting", "loops ignore completion");
+
+  // An idle fidget plays over the static idle pose and hands back to it.
+  state = run([{ type: "one-shot", row: "blink" }]);
+  assert.equal(state.row, "blink", "an idle blink plays");
+  assert.equal(state.background, "idle", "the background stays idle under it");
+  state = run([{ type: "animation-complete" }], state);
+  assert.deepEqual(state, INITIAL_PET_STATE, "the blink settles back to idle");
+
+  // A turn that starts mid-fidget is not lost: the fidget finishes, then the
+  // new background takes the stage.
+  state = run([
+    { type: "one-shot", row: "sleeping" },
+    { type: "background", background: "waiting" },
+  ]);
+  assert.equal(state.row, "sleeping", "a dozing fidget keeps playing");
+  assert.equal(state.background, "waiting", "the queued turn is retained");
+  state = run([{ type: "animation-complete" }], state);
+  assert.equal(state.row, "waiting", "the fidget hands off to the turn");
 
   // Wander only starts from a fully idle pet, and any activity preempts it.
   state = run([{ type: "wander", direction: "left" }]);

@@ -9,6 +9,11 @@ import { join } from "node:path";
 import type { ContextCompiler } from "@/lib/context/context-compiler";
 import { buildMemoryContext } from "@/lib/context/memory";
 import type { ConversationStore } from "@/lib/conversations/store";
+import {
+  normalizeGeneratedTitle,
+  TITLE_TURN_THINKING,
+  TITLE_TURN_TIMEOUT_MS,
+} from "@/lib/conversations/title";
 import type {
   ConversationManifest,
   ConversationParticipant,
@@ -29,6 +34,12 @@ import {
   validateApiConversationRef,
 } from "@/surfaces/api/api/conversations";
 import { API_DELIVERY_INSTRUCTIONS } from "@/surfaces/api/api/delivery-instructions";
+import {
+  DESKTOP_TITLE_INSTRUCTIONS,
+  DESKTOP_TITLE_MAX_LENGTH,
+  DESKTOP_TITLE_PLACEHOLDER,
+  desktopTitleRequestInput,
+} from "@/surfaces/api/api/title";
 import { handleAttachmentDownload } from "@/surfaces/api/attachments/download-route";
 import { AttachmentStore } from "@/surfaces/api/attachments/store";
 import {
@@ -64,6 +75,7 @@ const BODY_READ_TIMEOUT_MS = 15_000;
 const SERVER_HEADERS_TIMEOUT_MS = 10_000;
 const SERVER_REQUEST_TIMEOUT_MS = 30_000;
 const TURNS_PATH = /^\/v1\/conversations\/([^/]+)\/turns$/;
+const TITLE_PATH = /^\/v1\/conversations\/([^/]+)\/title$/;
 const AUTH_PAIR_PATH = "/v1/auth/pair";
 // A desktop holds the link open (SSE) to receive tool calls and POSTs each
 // result back as it finishes.
@@ -292,6 +304,26 @@ export class ApiBot {
         return;
       }
 
+      const titleMatch = TITLE_PATH.exec(path);
+      if (titleMatch) {
+        if (method !== "POST") {
+          sendJson(response, 405, { error: "method_not_allowed" });
+          return;
+        }
+        let conversationId: string;
+        try {
+          conversationId = decodeURIComponent(titleMatch[1] ?? "");
+        } catch (error) {
+          if (error instanceof URIError) {
+            sendJson(response, 400, { error: "invalid_conversation_id" });
+            return;
+          }
+          throw error;
+        }
+        await this.#handleTitleRequest(request, response, conversationId);
+        return;
+      }
+
       const turnsMatch = TURNS_PATH.exec(path);
       if (turnsMatch) {
         if (method !== "POST") {
@@ -475,6 +507,137 @@ export class ApiBot {
       response.removeListener("close", onClose);
       await cleanupMaterializedAttachments(materialized.dir);
     }
+  }
+
+  // Names a conversation from a single message with a one-off, stateless model
+  // turn: the desktop app posts its opening message here and renames its local
+  // session from the reply, mirroring how the Discord surface names a freshly
+  // created thread. The turn runs with sessionMode "none" against a synthetic
+  // conversation id so it never touches the real conversation's session or
+  // history, and without a tool broker so titling is a pure text call.
+  async #handleTitleRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+    conversationId: string,
+  ): Promise<void> {
+    const entry = await this.#authenticate(request);
+    if (!entry) {
+      sendJson(response, 401, { error: "unauthorized" });
+      return;
+    }
+
+    const ref = {
+      identityId: entry.identityId,
+      deviceId: entry.deviceId,
+      conversationId,
+    };
+    try {
+      validateApiConversationRef(ref);
+    } catch (error) {
+      if (error instanceof InvalidApiSegmentError) {
+        sendJson(response, 400, { error: `invalid_${snakeCase(error.field)}` });
+        return;
+      }
+      throw error;
+    }
+
+    const participant = await this.#participantForIdentityId(entry.identityId);
+    if (!participant) {
+      sendJson(response, 403, { error: "identity_unmapped" });
+      return;
+    }
+
+    const body = await readJsonBody(request, {
+      maxBytes: MAX_REQUEST_BODY_BYTES,
+      timeoutMs: BODY_READ_TIMEOUT_MS,
+    });
+    if (!body.ok) {
+      sendJson(response, body.status, { error: body.error });
+      return;
+    }
+    const parsed = parseTitleBody(body.value);
+    if (!parsed.ok) {
+      sendJson(response, 400, { error: parsed.error });
+      return;
+    }
+
+    const canonicalId = canonicalApiConversationId(ref);
+
+    // Tie the title turn to the client connection, so a desktop that closed the
+    // request (it moved on, or a later message already renamed the session)
+    // aborts the model rather than burning a Pi session on a title nobody wants.
+    const abort = new AbortController();
+    const onClose = (): void => {
+      if (!response.writableFinished) abort.abort();
+    };
+    response.on("close", onClose);
+
+    try {
+      if (abort.signal.aborted) return;
+      const title = await this.#generateTitle({
+        canonicalId,
+        participant,
+        message: parsed.message,
+        signal: abort.signal,
+      });
+      if (response.destroyed) return;
+      sendJson(response, 200, { title });
+    } catch (error) {
+      if (abort.signal.aborted || response.destroyed) return;
+      if (error instanceof ProviderTurnError) {
+        const status = providerErrorStatus(error);
+        log.warn("API title turn failed", {
+          conversationId: canonicalId,
+          reason: error.reason,
+        });
+        sendJson(response, status, {
+          error: "provider_error",
+          reason: error.reason,
+        });
+        return;
+      }
+      throw error;
+    } finally {
+      response.removeListener("close", onClose);
+    }
+  }
+
+  async #generateTitle(input: {
+    canonicalId: string;
+    participant: ConversationParticipant;
+    message: string;
+    signal: AbortSignal;
+  }): Promise<string> {
+    log.info("starting API title turn", { conversationId: input.canonicalId });
+    const response = await this.#provider.generateTurn({
+      // Synthetic id: a title turn is stateless and must not resume or write the
+      // real conversation's persistent session.
+      conversationId: `title:${input.canonicalId}`,
+      instructions: DESKTOP_TITLE_INSTRUCTIONS,
+      input: desktopTitleRequestInput({
+        authorUsername: input.participant.username,
+        authorDisplayName: input.participant.displayName,
+        message: input.message,
+      }),
+      sessionMode: "none",
+      accountRouting: input.participant.identityId
+        ? { identityId: input.participant.identityId }
+        : {},
+      surfaceContext: API_SURFACE_CONTEXT,
+      memoryContext: buildMemoryContext({
+        dataDir: this.#config.paths.dataDir,
+        participants: [input.participant],
+      }),
+      thinking: TITLE_TURN_THINKING,
+      timeoutMs: TITLE_TURN_TIMEOUT_MS,
+      signal: input.signal,
+    });
+    // Fall back to the placeholder the desktop already shows, which it treats as
+    // "still untitled" and leaves in place rather than overwriting with junk.
+    return (
+      normalizeGeneratedTitle(response.text, DESKTOP_TITLE_MAX_LENGTH) ??
+      DESKTOP_TITLE_PLACEHOLDER
+    );
   }
 
   // Redeems a pairing code for a per-device bearer token. The endpoint is
@@ -779,6 +942,21 @@ function parseTurnBody(value: unknown): ParsedTurnBody {
     ...(attachments ? { attachments } : {}),
   };
   return base;
+}
+
+type ParsedTitleBody =
+  | { ok: true; message: string }
+  | { ok: false; error: string };
+
+function parseTitleBody(value: unknown): ParsedTitleBody {
+  if (!isRecord(value)) {
+    return { ok: false, error: "invalid_body" };
+  }
+  const message = value["message"];
+  if (typeof message !== "string" || message.trim().length === 0) {
+    return { ok: false, error: "invalid_message" };
+  }
+  return { ok: true, message };
 }
 
 // Best-effort client key for rate limiting. The API surface is bound to a

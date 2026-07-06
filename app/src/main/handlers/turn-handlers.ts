@@ -4,6 +4,7 @@ import { IPC } from "@shared/ipc-contract";
 import { ipcMain } from "electron";
 
 import type { AttachmentStaging } from "../attachment-staging";
+import type { AutoTitler } from "../auto-titler";
 import { SubmitTurnSchema, TurnIdSchema } from "../ipc-schemas";
 import type { TranscriptStore } from "../transcript-store";
 import type { TurnManager } from "../turn-manager";
@@ -16,8 +17,9 @@ export function registerTurnHandlers(input: {
   turnManager: TurnManager;
   store: TranscriptStore;
   staging: AttachmentStaging;
+  autoTitler: AutoTitler;
 }): void {
-  const { turnManager, store, staging } = input;
+  const { turnManager, store, staging, autoTitler } = input;
 
   ipcMain.handle(IPC.turnSubmit, async (_event, payload: unknown) => {
     const parsed = SubmitTurnSchema.parse(payload);
@@ -44,6 +46,19 @@ export function registerTurnHandlers(input: {
       turnId,
       attachmentIds: parsed.attachmentIds,
     });
+    // Name a fresh conversation from its opening message, in the background:
+    // the guard inside only titles a still-unnamed conversation once, so this
+    // is a no-op on every later message. Fire-and-forget, so a preflight
+    // rejection (an unreadable session index, say) is caught and logged here
+    // rather than surfacing as an unhandled rejection off the IPC handler.
+    autoTitler
+      .maybeTitle({
+        conversationId: parsed.conversationId,
+        message: parsed.text,
+      })
+      .catch((error: unknown) => {
+        console.error("auto-title failed", error);
+      });
     return { turnId };
   });
 

@@ -1,6 +1,6 @@
 import avatarUrl from "@assets/sandi-mirrored-small.png";
 import type { TranscriptEntry } from "@shared/ipc-contract";
-import { type JSX, useEffect, useRef } from "react";
+import { type JSX, memo, useEffect, useRef } from "react";
 
 import { AttachmentList } from "./AttachmentList";
 import { MarkdownMessage } from "./MarkdownMessage";
@@ -19,7 +19,6 @@ export function TranscriptView({
   const liveTurn = useChatStore((state) => state.liveTurn);
   const liveAttachments = useChatStore((state) => state.liveAttachments);
   const queue = useChatStore((state) => state.queue);
-  const showThinking = useChatStore((state) => state.showThinking);
 
   const scroller = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
@@ -55,19 +54,21 @@ export function TranscriptView({
           entry={entry}
           key={`${entry.turnId}-${entry.type}-${entry.ts}`}
           onRetry={onRetry}
-          showThinking={showThinking}
-          transcript={transcript}
+          // Resolved here, not from the whole transcript array, so the row's
+          // props stay stable and its memo holds while a new turn streams.
+          retryText={
+            entry.type === "error" ? retrySourceFor(entry, transcript) : ""
+          }
         />
       ))}
       {(liveTurn || waiting) && (
         <div className="msg-sandi">
           <img src={avatarUrl} alt="" className="avatar" />
           <div className="msg-sandi-body">
-            {showThinking && liveTurn && liveTurn.thinking.length > 0 && (
-              <div className="thinking">{liveTurn.thinking}</div>
-            )}
             {liveTurn && liveTurn.text.length > 0 ? (
-              <MarkdownMessage text={liveTurn.text} />
+              // Live text re-renders every delta, so it renders without syntax
+              // highlighting; the settled row that replaces it highlights once.
+              <MarkdownMessage text={liveTurn.text} highlight={false} />
             ) : null}
             <AttachmentList attachments={liveAttachments} />
             <span className="cursor">▍</span>
@@ -78,16 +79,31 @@ export function TranscriptView({
   );
 }
 
-function TranscriptRow({
+// The user text that produced an error, resurfaced so its row can offer retry.
+function retrySourceFor(
+  entry: TranscriptEntry,
+  transcript: TranscriptEntry[],
+): string {
+  const source = transcript.find(
+    (candidate) =>
+      candidate.turnId === entry.turnId && candidate.type === "user",
+  );
+  return source?.type === "user" ? source.text : "";
+}
+
+// Memoized so a settled message is not re-parsed and re-highlighted on every
+// streaming delta of a later turn. The parent re-renders each delta to grow
+// the live message; without this, every row in the whole transcript would
+// re-run its markdown pipeline each token, and the cost per token would climb
+// with the length of the conversation until the renderer's CPU saturated.
+const TranscriptRow = memo(function TranscriptRow({
   entry,
-  transcript,
-  showThinking,
   onRetry,
+  retryText,
 }: {
   entry: TranscriptEntry;
-  transcript: TranscriptEntry[];
-  showThinking: boolean;
   onRetry(text: string): void;
+  retryText: string;
 }): JSX.Element {
   if (entry.type === "user") {
     return (
@@ -108,19 +124,14 @@ function TranscriptRow({
     );
   }
   if (entry.type === "error") {
-    // Retry resubmits the user text that produced this failure.
-    const source = transcript.find(
-      (candidate) =>
-        candidate.turnId === entry.turnId && candidate.type === "user",
-    );
     return (
       <div className="msg-error">
         <span>{entry.text}</span>
-        {source?.type === "user" && (
+        {retryText.length > 0 && (
           <button
             type="button"
             className="retry-button"
-            onClick={() => onRetry(source.text)}
+            onClick={() => onRetry(retryText)}
           >
             retry
           </button>
@@ -132,15 +143,9 @@ function TranscriptRow({
     <div className="msg-sandi">
       <img src={avatarUrl} alt="" className="avatar" />
       <div className="msg-sandi-body">
-        {showThinking && entry.thinking && entry.thinking.length > 0 && (
-          <details className="thinking">
-            <summary className="thinking-summary">thoughts</summary>
-            {entry.thinking}
-          </details>
-        )}
         <MarkdownMessage text={entry.text} />
         <AttachmentList attachments={entry.attachments ?? []} />
       </div>
     </div>
   );
-}
+});

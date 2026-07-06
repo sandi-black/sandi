@@ -19,7 +19,6 @@ export function ChatApp(): JSX.Element {
     (state) => state.activeConversationId,
   );
   const sessions = useChatStore((state) => state.sessions);
-  const showThinking = useChatStore((state) => state.showThinking);
   const [dragOver, setDragOver] = useState(false);
 
   // The store constant is module-scoped, so these callbacks depend on nothing.
@@ -145,6 +144,10 @@ export function ChatApp(): JSX.Element {
     );
   }, []);
 
+  // Stable so the transcript rows' memo is not defeated by a fresh retry
+  // handler on every streaming render.
+  const retry = useCallback((text: string): void => submit(text, []), [submit]);
+
   const activeTitle =
     sessions.find((session) => session.conversationId === activeConversationId)
       ?.title ?? "Sandi";
@@ -190,14 +193,6 @@ export function ChatApp(): JSX.Element {
         <span className="header-title">{activeTitle}</span>
         <button
           type="button"
-          className={`icon-button${showThinking ? " active" : ""}`}
-          title="Show Sandi's thinking"
-          onClick={() => useChatStore.getState().setShowThinking(!showThinking)}
-        >
-          ✦
-        </button>
-        <button
-          type="button"
           className="icon-button"
           title="Close"
           onClick={() => window.sandiChat.closeWindow()}
@@ -219,7 +214,7 @@ export function ChatApp(): JSX.Element {
         />
       ) : (
         <>
-          <TranscriptView onRetry={(text) => submit(text, [])} />
+          <TranscriptView onRetry={retry} />
           {queue && queue.pending.length > 0 && (
             <div className="queue-strip">
               {queue.pending.map((turn) => (

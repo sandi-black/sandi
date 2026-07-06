@@ -18,6 +18,9 @@ export type ChatWindow = {
   window: BrowserWindow;
   openNear(petBounds: Electron.Rectangle): void;
   toggleNear(petBounds: Electron.Rectangle): void;
+  // Re-anchor to the pet's current bounds, but only while already visible, so
+  // the popover trails her as she is dragged. A no-op when hidden.
+  follow(petBounds: Electron.Rectangle): void;
   hide(): void;
 };
 
@@ -78,6 +81,10 @@ export function createChatWindow(input: { isQuitting(): boolean }): ChatWindow {
       win.show();
       win.focus();
     },
+    follow(petBounds) {
+      if (!win.isVisible()) return;
+      position(win, petBounds);
+    },
     hide() {
       win.hide();
     },
@@ -94,7 +101,14 @@ function position(win: BrowserWindow, petBounds: Electron.Rectangle): void {
     { width: CHAT_WIDTH, height: CHAT_HEIGHT },
     display.workArea,
   );
-  win.setPosition(point.x, point.y);
+  // setBounds reasserting the fixed size rather than setPosition: `follow`
+  // repositions the popover every frame while the pet is dragged, and plain
+  // setPosition on a fractional-DPI Windows display inflates the window a
+  // little on each call (see moveWindow in pet-window.ts for the mechanism).
+  win.setBounds(
+    { x: point.x, y: point.y, width: CHAT_WIDTH, height: CHAT_HEIGHT },
+    false,
+  );
 }
 
 async function loadRenderer(win: BrowserWindow): Promise<void> {

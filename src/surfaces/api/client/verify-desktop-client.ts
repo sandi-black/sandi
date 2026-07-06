@@ -7,14 +7,16 @@ import { join } from "node:path";
 import { runDesktopClient } from "@/surfaces/api/client/desktop-client";
 import {
   DeviceResultSchema,
+  type ResponseAttachment,
   type ResponseChunk,
 } from "@/surfaces/api/devices/protocol";
 
 // Exercises the desktop client against a fake api surface: it must run a
 // dispatched tool and POST the outcome, abandon a running command when the
-// server sends a tool_cancel for it, and surface streamed response_chunk events
-// through onResponseChunk. This covers the seam the unit tests cannot, the SSE
-// parse plus cancel plus result-report plus response-stream path end to end.
+// server sends a tool_cancel for it, and surface streamed response_chunk and
+// response_attachment events through their callbacks. This covers the seam the
+// unit tests cannot, the SSE parse plus cancel plus result-report plus
+// response-stream and outbound-attachment paths end to end.
 
 type ResultRow = {
   id: string;
@@ -49,6 +51,12 @@ async function verifyDesktopClient(): Promise<void> {
     markStreamEnd = resolveEnd;
   });
 
+  const attachments: ResponseAttachment[] = [];
+  let markAttachment: (() => void) | undefined;
+  const attachmentReceived = new Promise<void>((resolveAttachment) => {
+    markAttachment = resolveAttachment;
+  });
+
   const server = createServer((req, res) => {
     if (req.url === "/v1/devices/link" && req.method === "GET") {
       res.writeHead(200, {
@@ -76,6 +84,14 @@ async function verifyDesktopClient(): Promise<void> {
         type: "end",
         turnId: "turn-1",
         seq: 2,
+      });
+      // An outbound attachment notice (as attach_to_reply would relay it) the
+      // client must surface through onResponseAttachment.
+      writeEvent(res, "response_attachment", {
+        turnId: "turn-1",
+        seq: 0,
+        path: "C:/Users/hopper/Desktop/plot.png",
+        name: "plot.png",
       });
       // A long-running command we will cancel, and a quick echo we let finish.
       const sleepCmd =
@@ -136,6 +152,10 @@ async function verifyDesktopClient(): Promise<void> {
       streamed.push(chunk);
       if (chunk.type === "end") markStreamEnd?.();
     },
+    onResponseAttachment: (attachment) => {
+      attachments.push(attachment);
+      markAttachment?.();
+    },
   });
 
   try {
@@ -145,9 +165,24 @@ async function verifyDesktopClient(): Promise<void> {
         awaitResult(echoId),
         awaitResult(screenshotId),
         streamEnded,
+        attachmentReceived,
       ]),
       timeout(10_000),
     ]);
+
+    assertEqual(attachments.length, 1, "one response_attachment event arrives");
+    const [attachment] = attachments;
+    assertEqual(
+      attachment?.path,
+      "C:/Users/hopper/Desktop/plot.png",
+      "the attachment's path reaches onResponseAttachment",
+    );
+    assertEqual(
+      attachment?.name,
+      "plot.png",
+      "the attachment's name reaches onResponseAttachment",
+    );
+    console.log("ok a response_attachment event surfaces through the client");
 
     const text = streamed
       .filter((chunk) => chunk.type === "delta" && chunk.channel === "text")

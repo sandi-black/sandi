@@ -3,6 +3,11 @@ dist/
 .env
 .DS_Store
 
+# Desktop app build output (app/node_modules is covered by the entry above).
+app/out/
+app/release/
+app/build/icons/
+
 # Runtime state. Keep directory placeholders and checked-in builtin skills.
 data/**
 !data/

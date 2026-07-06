@@ -1,0 +1,104 @@
+name: Package
+
+# Builds the Windows desktop artifacts (NSIS installer + portable exe) and
+# attaches them to the GitHub Release for the tag that triggered the run. This
+# is the one job that runs the real electron-builder pipeline on a Windows
+# runner, so it is also what catches packaging-only breakage (a bad
+# electron-builder.yml, a missing icon, an asar path problem) that the fast
+# ubuntu checks cannot see.
+#
+# Triggered only by a version tag push. workflow_dispatch is kept so the
+# pipeline can be exercised by hand without cutting a throwaway tag; a manual
+# run packages at package.json's own version and skips the release upload.
+#
+# Known gap: the artifacts are unsigned, so SmartScreen warns on first run.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  # Needed to create or update the GitHub Release the installers attach to.
+  contents: write
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package Windows artifacts
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      # Packaging needs the real Electron binary, so unlike check-app this
+      # install does not skip the download.
+      - name: Install dependencies
+        run: npm ci
+
+      # A tag ref becomes the app version (minus the leading "v"); a manual run
+      # falls back to whatever package.json already declares. Either way the
+      # tag is external input, so it is validated as a strict semver before it
+      # can flow into GITHUB_OUTPUT, the artifact names, or the app metadata.
+      - name: Resolve app version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(node -p "require('./app/package.json').version")"
+          fi
+          # The official strict SemVer 2.0.0 grammar: rejects leading zeros
+          # (01.2.3), empty identifiers (1.2.3-.), and other near-misses the
+          # loose pattern let through into artifact names and app metadata.
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
+          if [[ ! "${version}" =~ $semver ]]; then
+            echo "::error::refusing to package non-semver version '${version}' (from ref '${GITHUB_REF_NAME}')"
+            exit 1
+          fi
+          echo "value=${version}" >> "$GITHUB_OUTPUT"
+          echo "Packaging Sandi ${version}"
+
+      - name: Build renderer and main bundles
+        run: npm run build -w app
+
+      # extraMetadata.version overrides the packaged package.json, so both
+      # app.getVersion() (surfaced in the tray) and the ${version} artifact
+      # names reflect the tag rather than the committed 0.1.0.
+      - name: Package Windows artifacts
+        working-directory: app
+        run: npx electron-builder --win -c.extraMetadata.version="${{ steps.version.outputs.value }}"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandi-windows-${{ steps.version.outputs.value }}
+          path: |
+            app/release/*.exe
+          if-no-files-found: error
+
+      # Only a tag has a release to attach to; a manual run stops at the
+      # uploaded build artifact above.
+      - name: Attach installers to the release
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" app/release/*.exe --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" app/release/*.exe \
+              --title "${GITHUB_REF_NAME}" --generate-notes
+          fi

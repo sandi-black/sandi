@@ -6,7 +6,10 @@ import { executeLocalTool } from "@/surfaces/api/client/executors";
 import { postJson } from "@/surfaces/api/client/http";
 import {
   type DeviceImage,
+  RESPONSE_ATTACHMENT_EVENT,
   RESPONSE_CHUNK_EVENT,
+  type ResponseAttachment,
+  ResponseAttachmentSchema,
   type ResponseChunk,
   ResponseChunkSchema,
   TOOL_CALL_EVENT,
@@ -33,6 +36,11 @@ export type DesktopClientOptions = {
   // The hands-only `run` command omits it (deltas are ignored); the `chat` REPL
   // supplies it to print the answer as it arrives.
   onResponseChunk?: (chunk: ResponseChunk) => void;
+  // Called for each outbound attachment notice the server pushes during a turn
+  // (the attach_to_reply extension tool reporting a file Sandi wrote to this
+  // desktop). Optional for the same reason as onResponseChunk: the hands-only
+  // `run` command has no reply stream to attach anything to.
+  onResponseAttachment?: (attachment: ResponseAttachment) => void;
 };
 
 // One live SSE link. `signal` aborts when the link settles (so in-flight tool
@@ -160,6 +168,10 @@ function handleEvent(block: string, conn: Connection): void {
     handleResponseChunk(data, conn);
     return;
   }
+  if (event === RESPONSE_ATTACHMENT_EVENT) {
+    handleResponseAttachment(data, conn);
+    return;
+  }
   if (event !== TOOL_CALL_EVENT) return;
   // Run each call without blocking the read loop so the desktop can handle
   // several at once. The catch is a backstop: runToolCall already reports tool
@@ -172,17 +184,46 @@ function handleEvent(block: string, conn: Connection): void {
   });
 }
 
+// A malformed event on the link is a protocol failure, not nothing. Surfacing
+// it through onStatus keeps a corrupt frame from vanishing without a trace,
+// which matters most for attachments (they have no later reconciliation the
+// way streamed chunks do, so a dropped one is simply lost).
+function surfaceDroppedEvent(conn: Connection, event: string): void {
+  conn.options.onStatus?.(`dropped a malformed ${event} event`);
+}
+
 function handleResponseChunk(data: string, conn: Connection): void {
   if (!conn.options.onResponseChunk) return;
   let raw: unknown;
   try {
     raw = JSON.parse(data);
   } catch {
+    surfaceDroppedEvent(conn, RESPONSE_CHUNK_EVENT);
     return;
   }
   const parsed = ResponseChunkSchema.safeParse(raw);
-  if (!parsed.success) return;
+  if (!parsed.success) {
+    surfaceDroppedEvent(conn, RESPONSE_CHUNK_EVENT);
+    return;
+  }
   conn.options.onResponseChunk(parsed.data);
+}
+
+function handleResponseAttachment(data: string, conn: Connection): void {
+  if (!conn.options.onResponseAttachment) return;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch {
+    surfaceDroppedEvent(conn, RESPONSE_ATTACHMENT_EVENT);
+    return;
+  }
+  const parsed = ResponseAttachmentSchema.safeParse(raw);
+  if (!parsed.success) {
+    surfaceDroppedEvent(conn, RESPONSE_ATTACHMENT_EVENT);
+    return;
+  }
+  conn.options.onResponseAttachment(parsed.data);
 }
 
 function handleCancel(data: string, conn: Connection): void {

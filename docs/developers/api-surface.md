@@ -28,8 +28,10 @@ The work is staged:
   server but file and shell tools run on the caller's machine.
 - Phase 3 (built): response streaming, where the answer streams back to the
   desktop token by token as the model generates it.
-- A desktop GUI app is out of scope here; the surface ships a minimal reference
-  client instead (`pair`, `run`, and the streaming `chat` REPL).
+- The desktop GUI app lives in the `app/` workspace and is documented in
+  [`desktop-app.md`](desktop-app.md). This surface also ships a minimal headless
+  reference client (`pair`, `run`, and the streaming `chat` REPL) that the app
+  reuses as its client library.
 
 ## Identity and authentication
 
@@ -341,8 +343,9 @@ open and runs each dispatched tool call locally, reconnecting with backoff.
 each typed line as a turn, and prints the answer as it streams in (see Response
 streaming below). The local executors live in `client/executors.ts`. The token
 file is the human's own machine state, written with plain `fs`, never the
-server's managed-write lock. A full desktop GUI app remains a later, separate
-effort.
+server's managed-write lock. The desktop GUI app in `app/` imports these same
+client modules (the link loop, `sendTurn`, credentials, pairing) as its
+transport; see [`desktop-app.md`](desktop-app.md).
 
 ### Response streaming
 
@@ -371,6 +374,104 @@ transport.
   device leases no broker, so the extension reads no env and subscribes to
   nothing, and the response returns only over the turn body, exactly as before.
 
+## Attachments
+
+Sandi can take a file into a turn's context and can hand one back in her reply,
+both scoped to the caller's own identity and stored server-side alongside her
+other continuity.
+
+### Store
+
+Attachments are content-addressed under the server data dir
+(`src/surfaces/api/attachments/store.ts`): a blob lands at
+`attachments/<first 2 hex chars of its sha256>/<sha256>`, sharded by its own
+hash prefix so one directory never accumulates every blob the server has ever
+seen, with a sidecar `<sha256>.json` alongside it:
+
+```json
+{
+  "hash": "…64 lowercase hex…",
+  "size": 82301,
+  "mimeType": "image/png",
+  "name": "plot.png",
+  "ownerIdentityIds": ["hopper"],
+  "createdAt": "2026-07-05T12:00:00.000Z"
+}
+```
+
+An upload streams to a temp file in the same shard directory while it is
+hashed, so the final rename into place is a same-volume atomic move rather than
+a cross-device copy, and a body over the cap (64 MiB) aborts mid-transfer
+rather than after buffering the whole thing. Re-uploading bytes already on file
+is a dedup no-op: the temp copy is discarded and the sidecar only gains the new
+uploader, keeping whichever name and mime type were stored first. Mime types
+are restricted to a short list today (`image/png`, `image/jpeg`, `image/webp`,
+`image/gif`, plus `application/octet-stream` as a fallback), kept as an
+exported const so widening it later is a one-line change.
+
+A read scoped to the requesting identity returns someone else's attachment
+exactly like a missing one, so a caller can never probe for another identity's
+uploads by guessing a hash.
+
+### Inbound: uploading and referencing a file
+
+- `POST /v1/attachments` is a raw-body upload, not JSON, so a single stream can
+  be hashed as it arrives rather than parsed and buffered as multipart fields.
+  The `content-type` header is the mime type; a custom `x-sandi-name` header
+  carries the filename (non-empty, capped at 200 characters, no path
+  separator). On success: `200 { "hash", "size", "mimeType", "name" }`. Errors:
+  `400 invalid_mime` or `invalid_name`, `413 too_large`, plus the usual
+  `401`/`403` from the shared bearer auth.
+- `GET /v1/attachments/:hash` streams the blob back with its stored content
+  type and a `content-disposition` filename. `404 unknown_attachment` covers
+  both a hash the server has never seen and one the caller does not own.
+- A turn body may carry `attachments?: [{ hash, name? }]`, at most 16 refs,
+  each hash the store's own canonical shape (64 lowercase hex). Before the turn
+  is queued, every ref is resolved against the store for the requesting
+  identity; an unowned or unknown hash answers `400 { "error":
+"invalid_attachment", "hash" }` (naming only the hash the caller already
+  supplied, nothing else about the attachment) without leasing a queue slot or
+  spawning a provider turn. Resolved refs are copied into a temp directory
+  scoped to that one turn (`turn-materialize.ts`), under a sanitized filename
+  (a ref's own `name` overrides the stored one; a collision between two refs is
+  suffixed rather than overwritten), and the directory is removed in the turn's
+  `finally` regardless of how the turn ends.
+
+The materialized paths reach the provider as `ProviderTurnRequest.attachmentPaths`.
+`pi-cli-client.ts` passes each as an `@<path>` argv token alongside the turn's
+stdin-piped message: pi's print-mode message builder concatenates the piped
+stdin content, each `@file`'s text (or, for an image, an image attachment on
+that same message), and the first positional message into one initial prompt,
+regardless of where the `@`-prefixed token appears in argv. That means an
+attachment rides into the model's context without changing how `input` itself
+is delivered. `verify:pi-harness` covers this against a fake pi command that
+records its argv and stdin.
+
+### Outbound: attaching a file to a reply
+
+Sandi can also hand a file back. The `attach_to_reply` extension tool
+(`pi-extension/attach-to-reply-tool.ts`, loaded alongside the other api-surface
+extensions) takes `{ path, name? }`, where `path` is a file already on the
+caller's desktop (typically one Sandi just wrote there with a `local_*` tool).
+It POSTs the attachment to the broker's `/attachment` ingress using the same
+per-turn token and turn id the tools and the response stream use; the broker
+validates the body against `ResponseAttachmentSchema`, rejects a turn id that
+does not match the lease (`409`), and relays it to the device's SSE link as a
+`response_attachment` event (`DeviceRegistry.streamResponseAttachment`), mirroring
+how `/stream` relays a response delta. A vanished device answers `503`, which
+the tool surfaces to the model as a plain error rather than a silent drop. On a
+surface with no desktop link (no broker env on the child), the tool answers a
+clear "no desktop link on this surface" result instead of failing the turn, so
+the model can recover, for example by describing the file in text instead.
+
+`ResponseAttachmentSchema` (`{ turnId, seq, path, name?, mimeType? }`) is its
+own schema, separate from `ResponseChunk`: an attachment is a one-shot notice,
+not a streamed delta, and `seq` is a per-turn counter the extension keeps
+independently of the response-chunk stream's own. `desktop-client.ts` parses
+the event and surfaces it through an optional `onResponseAttachment` callback
+on `DesktopClientOptions`; the reference `chat` REPL prints a one-line
+`[attached: <name or path>]` note when one arrives for the turn in progress.
+
 ## Files
 
 ```text
@@ -394,14 +495,21 @@ src/surfaces/api/
     conversations.ts            canonical ids and manifest builder
     delivery-instructions.ts    API delivery contract
   bot/
-    api-bot.ts                  HTTP server, routing, auth, pairing, turns, device routes
+    api-bot.ts                  HTTP server, routing, auth, pairing, turns, device routes, attachment routes
     verify-api-bot.ts           verify harness with an injected provider
+  attachments/
+    store.ts                    content-addressed blob store: streamed hashing upload, dedup, identity-scoped get
+    verify-attachment-store.ts  hashing, dedup, identity scoping, size cap, path layout verify
+    upload-route.ts             POST /v1/attachments: header validation, streamed store, error mapping
+    download-route.ts           GET /v1/attachments/:hash: identity-scoped stream-back with headers
+    turn-materialize.ts         turn-body attachment refs: schema, per-turn temp-dir materialize + cleanup
+    verify-attachment-routes.ts end-to-end verify against a real ApiBot: upload/download, caps, turn refs
   devices/
-    protocol.ts                 hands-local + streaming wire protocol (tools, cancel, image result, response_chunk)
+    protocol.ts                 hands-local + streaming wire protocol (tools, cancel, image result, response_chunk, response_attachment)
     device-registry.ts          tracks desktop SSE links; dispatches, cancels, settles, streams, resolves identity desktops
     device-routes.ts            HTTP edge: SSE link and result POST controllers
-    tool-broker.ts              loopback broker: per-turn token, /call relay, desktop selection, /stream ingress
-    verify-tool-broker.ts       broker + registry round-trip, unavailable, abort + cancel, desktop selection, image relay, stream relay
+    tool-broker.ts              loopback broker: per-turn token, /call relay, desktop selection, /stream + /attachment ingress
+    verify-tool-broker.ts       broker + registry round-trip, unavailable, abort + cancel, desktop selection, image relay, stream relay, attachment relay
   http/
     respond.ts                  shared sendJson and bearer-token parsing
     read-json-body.ts           shared bounded JSON body reader
@@ -410,15 +518,17 @@ src/surfaces/api/
     verify-local-exec-tools.ts  proxy routing and ok/refused/unavailable/image mapping
     response-stream.ts          api-only extension: relays response deltas to the broker
     verify-response-stream.ts   event classification, env parsing, delta POST
+    attach-to-reply-tool.ts     api-only extension: attach_to_reply tool, relays an outbound attachment to the broker
+    verify-attach-to-reply.ts   env parsing, broker relay (happy/mismatch/unavailable/error), tool result shapes
   client/
     index.ts                    reference client CLI (pair | login | run | chat)
-    desktop-client.ts           SSE link loop: tool dispatch, cancel, response deltas, reconnect
-    verify-desktop-client.ts    end-to-end link verify: dispatch, cancel, result-report, stream
+    desktop-client.ts           SSE link loop: tool dispatch, cancel, response deltas, response attachments, reconnect
+    verify-desktop-client.ts    end-to-end link verify: dispatch, cancel, result-report, stream, response_attachment
     executors.ts                local file and shell implementations + state-tool routing
     verify-executors.ts         per-tool executor verify against a temp dir
     desktop-state.ts            Windows monitor/window enumeration and screenshot capture
     verify-desktop-state.ts     platform-aware state-tool verify (live on Windows, refusal elsewhere)
-    turns.ts                    sendTurn + reconcileSuffix (REPL turn POST and stream reconcile)
+    turns.ts                    sendTurn + reconcileSuffix (REPL turn POST and stream reconcile, incl. attachment refs)
     response-printer.ts         renders a streamed response for the chat REPL
     verify-turns.ts             reconcile, printer, and sendTurn outcome mapping
     credentials.ts              per-device token file (owner-only, OS config dir, legacy migration)
@@ -433,7 +543,7 @@ src/lib/config/
   platform-dirs.ts              directories-style per-OS config/data/cache dirs
   verify-platform-dirs.ts       per-OS path resolution (Windows, macOS, Linux/XDG)
 src/lib/provider/
-  pi-cli-client.ts              --no-builtin-tools gating + broker and turn-id env threading
+  pi-cli-client.ts              --no-builtin-tools gating + broker and turn-id env threading + @-file attachment pass-through
 src/surfaces/discord/bot/
   device-auth.ts                issueDeviceCode: the /sandi auth issuer core
   verify-device-auth.ts         issuer verify (recognized vs declined)
@@ -470,6 +580,22 @@ live on Windows and asserts a clear refusal on any other platform;
 `verify:client-executors` covers each local file and shell executor (and the
 state-tool routing), including bash cancellation; `verify:desktop-client` drives
 the reference client against a fake api surface to prove it runs a dispatched
-call, abandons one on `tool_cancel`, and reports both outcomes; and
+call, abandons one on `tool_cancel`, reports both outcomes, and surfaces a
+`response_attachment` event through `onResponseAttachment`; and
 `verify:pi-harness` proves an api turn disables builtin tools and passes the
-broker env through while a default turn does neither.
+broker env through while a default turn does neither, and that an attachment
+path rides as an `@`-prefixed argv token alongside the stdin-piped message.
+
+For attachments specifically, `verify:attachment-store` covers hashing, dedup
+(including which name and mime type win), identity-scoped reads, the size cap
+aborting mid-stream, and the on-disk shard layout; `verify:attachment-routes`
+drives a real `ApiBot` end to end: the upload/download round trip, the 401 with
+no bearer, the 404 for an unowned or unknown hash, the 413 over the size cap,
+name and mime validation, and a turn body with attachment refs materializing
+files under sanitized names, passing their paths to the provider, and cleaning
+up its temp directory once the turn finishes; and `verify:attach-to-reply`
+covers the extension's broker relay (the happy path, a turn-mismatch `409`, a
+device-unavailable `503`, and an unexpected status) plus the exact tool-result
+shapes for its success and its no-desktop-link refusal. `verify:tool-broker`
+additionally covers the `/attachment` ingress (relay, turn mismatch, device
+gone), mirroring its `/stream` coverage.

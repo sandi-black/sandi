@@ -4,7 +4,9 @@ import { createLogger } from "@/lib/logging";
 import {
   type BrokerCall,
   type DeviceResult,
+  RESPONSE_ATTACHMENT_EVENT,
   RESPONSE_CHUNK_EVENT,
+  type ResponseAttachment,
   type ResponseChunk,
   TOOL_CALL_EVENT,
   TOOL_CANCEL_EVENT,
@@ -236,6 +238,26 @@ export class DeviceRegistry {
     try {
       return state.write(
         `event: ${RESPONSE_CHUNK_EVENT}\ndata: ${JSON.stringify(chunk)}\n\n`,
+      );
+    } catch {
+      this.#teardown(state, "device link write failed");
+      return false;
+    }
+  }
+
+  // Pushes one outbound attachment notice to the keyed device's stream. Same
+  // fire-and-forget contract as streamResponseChunk: no pending call, no reply,
+  // and a false return just tells the caller to stop (here, the caller is the
+  // attach_to_reply tool reporting failure to the model, not a lost turn).
+  streamResponseAttachment(
+    key: string,
+    attachment: ResponseAttachment,
+  ): boolean {
+    const state = this.#connections.get(key);
+    if (!state || state.closed) return false;
+    try {
+      return state.write(
+        `event: ${RESPONSE_ATTACHMENT_EVENT}\ndata: ${JSON.stringify(attachment)}\n\n`,
       );
     } catch {
       this.#teardown(state, "device link write failed");

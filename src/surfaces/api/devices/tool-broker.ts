@@ -14,6 +14,7 @@ import {
 import {
   type BrokerCall,
   BrokerCallSchema,
+  ResponseAttachmentSchema,
   ResponseChunkSchema,
   type ToolCallOutcome,
 } from "@/surfaces/api/devices/protocol";
@@ -28,6 +29,7 @@ const log = createLogger("api-tool-broker");
 const LOOPBACK_HOST = "127.0.0.1";
 const CALL_PATH = "/call";
 const STREAM_PATH = "/stream";
+const ATTACHMENT_PATH = "/attachment";
 
 // File writes carry their content in the call body, so the cap is generous;
 // reads and shell output are capped on the desktop before they return.
@@ -250,7 +252,9 @@ export class ToolBroker {
     try {
       const method = request.method ?? "GET";
       const path = (request.url ?? "/").split("?")[0] ?? "/";
-      if (method !== "POST" || (path !== CALL_PATH && path !== STREAM_PATH)) {
+      const knownPath =
+        path === CALL_PATH || path === STREAM_PATH || path === ATTACHMENT_PATH;
+      if (method !== "POST" || !knownPath) {
         sendJson(response, 404, { error: "not_found" });
         return;
       }
@@ -263,6 +267,11 @@ export class ToolBroker {
 
       if (path === STREAM_PATH) {
         await this.#handleStream(request, response, binding);
+        return;
+      }
+
+      if (path === ATTACHMENT_PATH) {
+        await this.#handleAttachment(request, response, binding);
         return;
       }
 
@@ -381,6 +390,45 @@ export class ToolBroker {
       return;
     }
     const relayed = this.#registry.streamResponseChunk(
+      binding.key,
+      parsed.data,
+    );
+    if (!relayed) {
+      sendJson(response, 503, { error: "device_unavailable" });
+      return;
+    }
+    sendJson(response, 202, { ok: true });
+  }
+
+  // Relays one outbound attachment notice from the pi child (the
+  // attach_to_reply extension tool) to the bound device's SSE link. Mirrors
+  // #handleStream: a turn-id mismatch is a 409 (the lease is bound to a turn but
+  // the tool reported one that does not match, meaning a stale or misrouted
+  // call), and a vanished device is a 503 so the tool result the model sees can
+  // say plainly that the desktop link dropped.
+  async #handleAttachment(
+    request: IncomingMessage,
+    response: ServerResponse,
+    binding: TurnBinding,
+  ): Promise<void> {
+    const body = await readJsonBody(request, {
+      maxBytes: BROKER_MAX_BODY_BYTES,
+      timeoutMs: BROKER_BODY_TIMEOUT_MS,
+    });
+    if (!body.ok) {
+      sendJson(response, body.status, { error: body.error });
+      return;
+    }
+    const parsed = ResponseAttachmentSchema.safeParse(body.value);
+    if (!parsed.success) {
+      sendJson(response, 400, { error: "invalid_attachment" });
+      return;
+    }
+    if (binding.turnId !== undefined && parsed.data.turnId !== binding.turnId) {
+      sendJson(response, 409, { error: "turn_mismatch" });
+      return;
+    }
+    const relayed = this.#registry.streamResponseAttachment(
       binding.key,
       parsed.data,
     );

@@ -4,6 +4,7 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
+import { join } from "node:path";
 
 import type { ContextCompiler } from "@/lib/context/context-compiler";
 import { buildMemoryContext } from "@/lib/context/memory";
@@ -28,6 +29,16 @@ import {
   validateApiConversationRef,
 } from "@/surfaces/api/api/conversations";
 import { API_DELIVERY_INSTRUCTIONS } from "@/surfaces/api/api/delivery-instructions";
+import { handleAttachmentDownload } from "@/surfaces/api/attachments/download-route";
+import { AttachmentStore } from "@/surfaces/api/attachments/store";
+import {
+  type AttachmentRef,
+  AttachmentRefsSchema,
+  cleanupMaterializedAttachments,
+  InvalidAttachmentRefError,
+  materializeAttachmentRefs,
+} from "@/surfaces/api/attachments/turn-materialize";
+import { handleAttachmentUpload } from "@/surfaces/api/attachments/upload-route";
 import { redeemPairing } from "@/surfaces/api/auth/pairing";
 import { apiParticipantFromHuman } from "@/surfaces/api/auth/participant";
 import { FixedWindowLimiter } from "@/surfaces/api/auth/rate-limiter";
@@ -58,6 +69,12 @@ const AUTH_PAIR_PATH = "/v1/auth/pair";
 // result back as it finishes.
 const DEVICE_LINK_PATH = "/v1/devices/link";
 const DEVICE_RESULT_PATH = "/v1/devices/result";
+const ATTACHMENTS_PATH = "/v1/attachments";
+const ATTACHMENT_PATH = /^\/v1\/attachments\/([^/]+)$/;
+// An attachment upload streams straight to disk rather than buffering a JSON
+// body, so its cap is far larger than MAX_REQUEST_BODY_BYTES; the store itself
+// enforces the real per-blob cap while streaming and aborts over it.
+const ATTACHMENT_UPLOAD_TIMEOUT_MS = 5 * 60_000;
 
 // Rate limits for the unauthenticated pairing endpoint. A code is a 50-bit
 // single-use secret with a short TTL, so brute force is already infeasible;
@@ -97,6 +114,7 @@ export class ApiBot {
   readonly #devices: DeviceRegistry;
   readonly #broker: ToolBroker;
   readonly #deviceRoutes: DeviceRoutes;
+  readonly #attachments: AttachmentStore;
   #server: Server | undefined;
 
   constructor(input: ApiBotInput) {
@@ -107,6 +125,13 @@ export class ApiBot {
     this.#devices = input.devices;
     this.#broker = input.broker;
     this.#deviceRoutes = new DeviceRoutes(input.devices);
+    // Content-addressed, alongside conversations under the same server data
+    // dir, following the same per-surface data-dir resolution ConversationStore
+    // uses (no separate config knob; attachments are server state, not
+    // something an operator points elsewhere today).
+    this.#attachments = new AttachmentStore(
+      join(input.config.paths.dataDir, "attachments"),
+    );
     // ttlMs 0 on both auth stores: re-stat on every check so a token minted by
     // the pairing endpoint authenticates immediately (no cache-window 401), a
     // revoked token stops working at once, and a removed or unmapped identity
@@ -220,6 +245,53 @@ export class ApiBot {
         return;
       }
 
+      if (path === ATTACHMENTS_PATH) {
+        if (method !== "POST") {
+          sendJson(response, 405, { error: "method_not_allowed" });
+          return;
+        }
+        const entry = await this.#authenticate(request);
+        if (!entry) {
+          sendJson(response, 401, { error: "unauthorized" });
+          return;
+        }
+        request.setTimeout(ATTACHMENT_UPLOAD_TIMEOUT_MS);
+        await handleAttachmentUpload(request, response, {
+          store: this.#attachments,
+          identityId: entry.identityId,
+        });
+        return;
+      }
+
+      const attachmentMatch = ATTACHMENT_PATH.exec(path);
+      if (attachmentMatch) {
+        if (method !== "GET") {
+          sendJson(response, 405, { error: "method_not_allowed" });
+          return;
+        }
+        const entry = await this.#authenticate(request);
+        if (!entry) {
+          sendJson(response, 401, { error: "unauthorized" });
+          return;
+        }
+        let hash: string;
+        try {
+          hash = decodeURIComponent(attachmentMatch[1] ?? "");
+        } catch (error) {
+          if (error instanceof URIError) {
+            sendJson(response, 404, { error: "unknown_attachment" });
+            return;
+          }
+          throw error;
+        }
+        await handleAttachmentDownload(response, {
+          store: this.#attachments,
+          hash,
+          identityId: entry.identityId,
+        });
+        return;
+      }
+
       const turnsMatch = TURNS_PATH.exec(path);
       if (turnsMatch) {
         if (method !== "POST") {
@@ -303,6 +375,28 @@ export class ApiBot {
       return;
     }
 
+    // Resolve every attachment ref up front (before the turn is queued), so a
+    // bad ref answers 400 without ever leasing a queue slot or spawning a
+    // provider turn. Materializing copies each blob into a temp dir scoped to
+    // this one turn; it is removed below regardless of how the turn ends.
+    let materialized: { dir: string | undefined; paths: string[] };
+    try {
+      materialized = await materializeAttachmentRefs({
+        store: this.#attachments,
+        identityId: entry.identityId,
+        refs: parsed.attachments ?? [],
+      });
+    } catch (error) {
+      if (error instanceof InvalidAttachmentRefError) {
+        sendJson(response, 400, {
+          error: "invalid_attachment",
+          hash: error.hash,
+        });
+        return;
+      }
+      throw error;
+    }
+
     // Tie the turn to the client connection: if the client disconnects before
     // we finish replying, abort so we neither burn a Pi session nor write to a
     // dead response. We key off the response closing *before* it finished
@@ -346,6 +440,9 @@ export class ApiBot {
         deviceKey: entry.tokenSha256,
         input: parsed.input,
         ...(parsed.turnId !== undefined ? { turnId: parsed.turnId } : {}),
+        ...(materialized.paths.length > 0
+          ? { attachmentPaths: materialized.paths }
+          : {}),
         requestSignal: abort.signal,
       });
       if (response.destroyed) return;
@@ -376,6 +473,7 @@ export class ApiBot {
       throw error;
     } finally {
       response.removeListener("close", onClose);
+      await cleanupMaterializedAttachments(materialized.dir);
     }
   }
 
@@ -440,6 +538,7 @@ export class ApiBot {
     deviceKey: string;
     input: string;
     turnId?: string;
+    attachmentPaths?: string[];
     requestSignal: AbortSignal;
   }): Promise<string> {
     return new Promise((resolveTurn, rejectTurn) => {
@@ -463,6 +562,9 @@ export class ApiBot {
               deviceKey: input.deviceKey,
               input: input.input,
               ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+              ...(input.attachmentPaths
+                ? { attachmentPaths: input.attachmentPaths }
+                : {}),
               signal,
             });
             resolveTurn(text);
@@ -481,6 +583,7 @@ export class ApiBot {
     deviceKey: string;
     input: string;
     turnId?: string;
+    attachmentPaths?: string[];
     signal: AbortSignal;
   }): Promise<string> {
     log.info("starting API conversation turn", {
@@ -523,6 +626,9 @@ export class ApiBot {
         }),
         ...(lease ? { localToolBroker: lease.ticket } : {}),
         ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+        ...(input.attachmentPaths
+          ? { attachmentPaths: input.attachmentPaths }
+          : {}),
         signal: input.signal,
       };
       const response = await this.#provider.generateTurn(request);
@@ -618,7 +724,13 @@ function formatApiTurn(
 }
 
 type ParsedTurnBody =
-  | { ok: true; input: string; title?: string; turnId?: string }
+  | {
+      ok: true;
+      input: string;
+      title?: string;
+      turnId?: string;
+      attachments?: AttachmentRef[];
+    }
   | { ok: false; error: string };
 
 function parseTurnBody(value: unknown): ParsedTurnBody {
@@ -644,11 +756,27 @@ function parseTurnBody(value: unknown): ParsedTurnBody {
   ) {
     return { ok: false, error: "invalid_turn_id" };
   }
-  const base: { ok: true; input: string; title?: string; turnId?: string } = {
+  const rawAttachments = record["attachments"];
+  let attachments: AttachmentRef[] | undefined;
+  if (rawAttachments !== undefined) {
+    const parsedAttachments = AttachmentRefsSchema.safeParse(rawAttachments);
+    if (!parsedAttachments.success) {
+      return { ok: false, error: "invalid_attachments" };
+    }
+    if (parsedAttachments.data.length > 0) attachments = parsedAttachments.data;
+  }
+  const base: {
+    ok: true;
+    input: string;
+    title?: string;
+    turnId?: string;
+    attachments?: AttachmentRef[];
+  } = {
     ok: true,
     input,
     ...(typeof title === "string" && title.trim().length > 0 ? { title } : {}),
     ...(typeof turnId === "string" ? { turnId } : {}),
+    ...(attachments ? { attachments } : {}),
   };
   return base;
 }

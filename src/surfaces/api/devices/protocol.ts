@@ -328,3 +328,59 @@ export const ResponseChunkSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type ResponseChunk = z.infer<typeof ResponseChunkSchema>;
+
+// An outbound attachment Sandi hands back mid-turn: the `attach_to_reply`
+// extension tool writes a file to the human's own desktop (with her local_*
+// tools) and reports its path here so the desktop client can find and surface
+// it, mirroring how a response_chunk carries the outbound text. `path` is a
+// hands-local path on the caller's machine, not a server path; the server never
+// reads it. `seq` is a per-turn monotonic counter, the same ordering discipline
+// as ResponseChunk, assigned by the extension rather than reusing the chunk
+// stream's counter (the two channels are independent).
+// path stays a bounded free-form path (absolute or desktop-relative by the
+// tool's contract; the desktop resolves it against its own root), but name is
+// a single bounded filename (the desktop offers it as a save-as suggestion)
+// and mimeType a plain type/subtype token pair.
+export const RESPONSE_ATTACHMENT_EVENT = "response_attachment";
+
+// A safe single filename for the save-as suggestion: no path separators and no
+// C0/DEL control bytes (code points 0-31 and 127). Code-point checks keep the
+// source plain ASCII rather than embedding a control-char regex literal.
+function isSafeAttachmentName(value: string): boolean {
+  for (const char of value) {
+    if (char === "/" || char === "\\") return false;
+    const code = char.charCodeAt(0);
+    if (code <= 31 || code === 127) return false;
+  }
+  return true;
+}
+
+export const ResponseAttachmentSchema = z.object({
+  turnId: z.string().min(1),
+  seq: z.number().int().nonnegative(),
+  // A NUL byte makes the desktop's fs calls throw once it resolves this to an
+  // absolute path, so it is rejected here even though the server never reads
+  // the path itself.
+  path: z
+    .string()
+    .min(1)
+    .max(4096)
+    .refine(
+      (value) => !value.includes(String.fromCharCode(0)),
+      "path must not contain a NUL byte",
+    ),
+  name: z
+    .string()
+    .min(1)
+    .max(200)
+    .refine(
+      isSafeAttachmentName,
+      "name must be a filesystem-safe single filename",
+    )
+    .optional(),
+  mimeType: z
+    .string()
+    .regex(/^[a-z0-9!#$&^_.+-]{1,100}\/[a-z0-9!#$&^_.+-]{1,100}$/)
+    .optional(),
+});
+export type ResponseAttachment = z.infer<typeof ResponseAttachmentSchema>;

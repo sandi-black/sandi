@@ -15,11 +15,27 @@ const LABELS: Record<string, string> = {
 
 export function StatusBar(): JSX.Element {
   const link = useChatStore((state) => state.link);
+  const uiError = useChatStore((state) => state.uiError);
+  const setUiError = useChatStore((state) => state.setUiError);
   return (
-    <div className="status-bar">
-      <span className={`status-dot ${link.state}`} />
-      <span title={link.message}>{LABELS[link.state] ?? link.state}</span>
-    </div>
+    <>
+      {uiError && (
+        <div className="ui-error">
+          <span>{uiError}</span>
+          <button
+            type="button"
+            title="Dismiss"
+            onClick={() => setUiError(undefined)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      <div className="status-bar">
+        <span className={`status-dot ${link.state}`} />
+        <span title={link.message}>{LABELS[link.state] ?? link.state}</span>
+      </div>
+    </>
   );
 }
 
@@ -33,12 +49,23 @@ export function PairingCard({ onPaired }: { onPaired(): void }): JSX.Element {
     if (busy || code.trim().length === 0) return;
     setBusy(true);
     setError(undefined);
-    const outcome = await window.sandiChat.pair(code.trim());
-    setBusy(false);
-    if (outcome.ok) {
-      onPaired();
-    } else {
-      setError(outcome.error);
+    try {
+      const outcome = await window.sandiChat.pair(code.trim());
+      if (outcome.ok) {
+        onPaired();
+      } else {
+        setError(outcome.error);
+      }
+    } catch (redeemError) {
+      // The IPC call itself failed (not a rejected code); show it in the same
+      // place so the human is never stuck on a spinner.
+      setError(
+        redeemError instanceof Error
+          ? redeemError.message
+          : String(redeemError),
+      );
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -52,6 +79,8 @@ export function PairingCard({ onPaired }: { onPaired(): void }): JSX.Element {
       <form
         onSubmit={(event) => {
           event.preventDefault();
+          // redeem() handles its own failures (try/catch into the card's
+          // error line), so there is nothing left to reject here.
           void redeem();
         }}
       >

@@ -18,18 +18,42 @@ export async function handleAttachmentDownload(
     return;
   }
 
+  // Open the blob before committing success headers, so a sidecar whose blob
+  // has gone missing (or unreadable) fails closed as a JSON error rather than
+  // a 200 with a broken body.
+  const stream = createReadStream(found.path);
+  try {
+    await new Promise<void>((resolveOpen, rejectOpen) => {
+      stream.once("open", () => resolveOpen());
+      stream.once("error", rejectOpen);
+    });
+  } catch {
+    stream.destroy();
+    // Metadata without readable bytes is a server-side inconsistency; answer
+    // the same 404 as a missing attachment (fail closed, leak nothing).
+    sendJson(response, 404, { error: "unknown_attachment" });
+    return;
+  }
+
   response.writeHead(200, {
     "content-type": found.metadata.mimeType,
     "content-length": found.metadata.size,
     "content-disposition": `attachment; filename="${sanitizeHeaderFilename(found.metadata.name)}"`,
   });
 
-  await new Promise<void>((resolveStream, rejectStream) => {
-    const stream = createReadStream(found.path);
-    stream.on("error", rejectStream);
-    stream.on("end", resolveStream);
-    stream.pipe(response);
-  });
+  try {
+    await new Promise<void>((resolveStream, rejectStream) => {
+      stream.on("error", rejectStream);
+      stream.on("end", resolveStream);
+      stream.pipe(response);
+    });
+  } catch {
+    // Headers are already committed, so there is no error body to send; tear
+    // the connection down so the client sees a truncated transfer, not a
+    // silently short 200.
+    stream.destroy();
+    response.destroy();
+  }
 }
 
 // A stored name is free-form (whatever the uploader sent), so it cannot be

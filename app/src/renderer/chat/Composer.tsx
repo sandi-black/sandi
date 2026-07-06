@@ -1,5 +1,6 @@
 import { type JSX, useEffect, useRef, useState } from "react";
 
+import { guard } from "./guard";
 import { useChatStore } from "./store";
 
 // The message box: autosizing textarea, attach button, staged-attachment
@@ -83,7 +84,10 @@ export function Composer({
                 title="Remove"
                 onClick={() => {
                   removeStaged(attachment.id);
-                  void window.sandiChat.unstageAttachment(attachment.id);
+                  guard(
+                    window.sandiChat.unstageAttachment(attachment.id),
+                    "could not remove the attachment",
+                  );
                 }}
               >
                 ✕
@@ -103,7 +107,9 @@ export function Composer({
               : "Message Sandi (streaming needs the link)..."
           }
           onChange={(event) => setDraft(event.target.value)}
-          onPaste={(event) => void paste(event)}
+          onPaste={(event) =>
+            guard(paste(event), "could not attach the pasted image")
+          }
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
@@ -115,7 +121,7 @@ export function Composer({
           type="button"
           className="icon-button"
           title="Attach files"
-          onClick={() => void pick()}
+          onClick={() => guard(pick(), "could not attach files")}
         >
           ✚
         </button>

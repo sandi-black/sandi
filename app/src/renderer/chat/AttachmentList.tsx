@@ -2,6 +2,7 @@ import type { ReplyAttachment } from "@shared/ipc-contract";
 import type { JSX } from "react";
 
 import { assetUrl } from "./asset-url";
+import { guard } from "./guard";
 
 // Attachments sandi added to a reply: images render inline with a hover
 // save button; other files show as chips with an explicit save action.
@@ -33,7 +34,12 @@ export function AttachmentList({
           <button
             type="button"
             className="save-overlay"
-            onClick={() => void window.sandiChat.saveAttachmentAs(attachment)}
+            onClick={() =>
+              guard(
+                window.sandiChat.saveAttachmentAs(attachment),
+                `could not save ${displayName(attachment)}`,
+              )
+            }
           >
             Save
           </button>
@@ -50,7 +56,10 @@ export function AttachmentList({
                 type="button"
                 title="Save as..."
                 onClick={() =>
-                  void window.sandiChat.saveAttachmentAs(attachment)
+                  guard(
+                    window.sandiChat.saveAttachmentAs(attachment),
+                    `could not save ${displayName(attachment)}`,
+                  )
                 }
               >
                 save

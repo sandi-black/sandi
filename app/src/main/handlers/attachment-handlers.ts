@@ -3,7 +3,11 @@ import { IPC } from "@shared/ipc-contract";
 import { dialog, ipcMain } from "electron";
 
 import type { AttachmentStaging } from "../attachment-staging";
-import { AttachmentIdSchema, StagePasteSchema } from "../ipc-schemas";
+import {
+  AttachmentIdSchema,
+  AttachmentPathSchema,
+  StagePasteSchema,
+} from "../ipc-schemas";
 
 // Composer attachment intake: the native file picker, dropped paths (resolved
 // by the preload via webUtils.getPathForFile), and pasted images.
@@ -28,8 +32,9 @@ export function registerAttachmentHandlers(input: {
   });
 
   ipcMain.handle(IPC.attachmentStageDrop, (_event, path: unknown) => {
-    if (typeof path !== "string" || path.length === 0) return null;
-    return staging.stagePath(path);
+    const parsed = AttachmentPathSchema.safeParse(path);
+    if (!parsed.success) return null;
+    return staging.stagePath(parsed.data);
   });
 
   ipcMain.handle(IPC.attachmentStagePaste, (_event, dataUrl: unknown) => {

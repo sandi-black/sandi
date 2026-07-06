@@ -116,7 +116,9 @@ export function createPetWindow(input: {
   ipcMain.handle(IPC.petGetOutfit, () => settings.get().outfit);
 
   win.once("ready-to-show", () => win.show());
-  void loadRenderer(win);
+  loadRenderer(win).catch((error: unknown) => {
+    console.error("pet renderer failed to load", error);
+  });
 
   return {
     window: win,

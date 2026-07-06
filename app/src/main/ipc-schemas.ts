@@ -12,8 +12,13 @@ export const CursorPointSchema = z.object({
 
 export const IgnoreMouseSchema = z.boolean();
 
+// Conversation ids become JSONL filenames in the transcript store, so the
+// shape is strict everywhere one crosses a boundary: IPC, the on-disk index,
+// and turn submission all share this schema.
+export const ConversationIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,200}$/);
+
 export const SubmitTurnSchema = z.object({
-  conversationId: z.string().min(1).max(200),
+  conversationId: ConversationIdSchema,
   text: z.string().min(1).max(200_000),
   attachmentIds: z.array(z.string().min(1)).max(16),
 });
@@ -22,7 +27,10 @@ export const TurnIdSchema = z.string().min(1).max(200);
 
 export const SessionTitleSchema = z.string().min(1).max(200);
 
-export const ConversationIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,200}$/);
+// A dropped file's path as resolved by the preload (webUtils.getPathForFile).
+// Free-form beyond emptiness and length: any absolute path is fair game by
+// design, but it still gets a named schema like every other IPC payload.
+export const AttachmentPathSchema = z.string().min(1).max(4096);
 
 export const PairCodeSchema = z.string().min(1).max(200);
 

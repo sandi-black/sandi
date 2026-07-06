@@ -1,6 +1,7 @@
 import { type JSX, useCallback, useEffect, useState } from "react";
 
 import { Composer } from "./Composer";
+import { guard } from "./guard";
 import { SessionDrawer } from "./SessionDrawer";
 import { PairingCard, StatusBar } from "./StatusBar";
 import { useChatStore } from "./store";
@@ -37,19 +38,22 @@ export function ChatApp(): JSX.Element {
   // the link state, and subscribe to every push channel.
   useEffect(() => {
     const chat = window.sandiChat;
-    void (async () => {
-      const sessionList = await chat.listSessions();
-      useChatStore.getState().setSessions(sessionList);
-      const recent = sessionList[0];
-      if (recent) {
-        await selectSession(recent.conversationId);
-      } else {
-        const created = await chat.createSession();
-        useChatStore.getState().setSessions(await chat.listSessions());
-        useChatStore.getState().setActive(created.conversationId, []);
-      }
-      useChatStore.getState().setLink(await chat.getLinkStatus());
-    })();
+    guard(
+      (async () => {
+        const sessionList = await chat.listSessions();
+        useChatStore.getState().setSessions(sessionList);
+        const recent = sessionList[0];
+        if (recent) {
+          await selectSession(recent.conversationId);
+        } else {
+          const created = await chat.createSession();
+          useChatStore.getState().setSessions(await chat.listSessions());
+          useChatStore.getState().setActive(created.conversationId, []);
+        }
+        useChatStore.getState().setLink(await chat.getLinkStatus());
+      })(),
+      "could not load sessions",
+    );
 
     const unsubscribers = [
       chat.onLinkStatus((status) => useChatStore.getState().setLink(status)),
@@ -90,7 +94,10 @@ export function ChatApp(): JSX.Element {
           });
           // Reload from disk so thinking and attachments (persisted by main)
           // appear without duplicating that assembly logic here.
-          void selectSession(event.conversationId);
+          guard(
+            selectSession(event.conversationId),
+            "could not reload the conversation",
+          );
         } else {
           state.appendTranscript({
             type: "error",
@@ -99,7 +106,7 @@ export function ChatApp(): JSX.Element {
             text: event.error ?? "turn failed",
           });
         }
-        void refreshSessions();
+        guard(refreshSessions(), "could not refresh the session list");
       }),
       chat.onQueueState((queueState) => {
         if (
@@ -109,7 +116,9 @@ export function ChatApp(): JSX.Element {
           useChatStore.getState().setQueue(queueState);
         }
       }),
-      chat.onSessionsChanged(() => void refreshSessions()),
+      chat.onSessionsChanged(() =>
+        guard(refreshSessions(), "could not refresh the session list"),
+      ),
     ];
     return () => {
       for (const unsubscribe of unsubscribers) unsubscribe();
@@ -120,16 +129,19 @@ export function ChatApp(): JSX.Element {
     const conversationId = useChatStore.getState().activeConversationId;
     if (!conversationId) return;
     // Optimistic append; main writes the same entry to disk.
-    void window.sandiChat
-      .submitTurn({ conversationId, text, attachmentIds })
-      .then(({ turnId }) => {
-        useChatStore.getState().appendTranscript({
-          type: "user",
-          turnId,
-          ts: new Date().toISOString(),
-          text,
-        });
-      });
+    guard(
+      window.sandiChat
+        .submitTurn({ conversationId, text, attachmentIds })
+        .then(({ turnId }) => {
+          useChatStore.getState().appendTranscript({
+            type: "user",
+            turnId,
+            ts: new Date().toISOString(),
+            text,
+          });
+        }),
+      "could not send the message",
+    );
   }, []);
 
   const activeTitle =
@@ -141,9 +153,12 @@ export function ChatApp(): JSX.Element {
     event.preventDefault();
     setDragOver(false);
     for (const file of event.dataTransfer.files) {
-      void window.sandiChat.stageDroppedFile(file).then((staged) => {
-        if (staged) useChatStore.getState().addStaged(staged);
-      });
+      guard(
+        window.sandiChat.stageDroppedFile(file).then((staged) => {
+          if (staged) useChatStore.getState().addStaged(staged);
+        }),
+        `could not attach ${file.name}`,
+      );
     }
   }, []);
 
@@ -193,9 +208,12 @@ export function ChatApp(): JSX.Element {
       {link.state === "unpaired" ? (
         <PairingCard
           onPaired={() => {
-            void window.sandiChat
-              .getLinkStatus()
-              .then((status) => useChatStore.getState().setLink(status));
+            guard(
+              window.sandiChat
+                .getLinkStatus()
+                .then((status) => useChatStore.getState().setLink(status)),
+              "could not read the link status",
+            );
           }}
         />
       ) : (
@@ -210,7 +228,10 @@ export function ChatApp(): JSX.Element {
                     type="button"
                     title="Remove from queue"
                     onClick={() =>
-                      void window.sandiChat.cancelQueued(turn.turnId)
+                      guard(
+                        window.sandiChat.cancelQueued(turn.turnId),
+                        "could not remove the queued message",
+                      )
                     }
                   >
                     ✕
@@ -221,7 +242,12 @@ export function ChatApp(): JSX.Element {
           )}
           <Composer
             onSubmit={submit}
-            onStop={(turnId) => void window.sandiChat.stopTurn(turnId)}
+            onStop={(turnId) =>
+              guard(
+                window.sandiChat.stopTurn(turnId),
+                "could not stop the turn",
+              )
+            }
           />
         </>
       )}
@@ -229,35 +255,47 @@ export function ChatApp(): JSX.Element {
       <StatusBar />
 
       <SessionDrawer
-        onSelect={(conversationId) => void selectSession(conversationId)}
-        onCreate={() => {
-          void window.sandiChat.createSession().then((session) => {
-            void refreshSessions();
-            useChatStore.getState().setActive(session.conversationId, []);
-          });
-        }}
-        onDelete={(conversationId) => {
-          void window.sandiChat.deleteSession(conversationId).then(() => {
-            void refreshSessions();
-            if (
-              conversationId === useChatStore.getState().activeConversationId
-            ) {
-              void window.sandiChat.listSessions().then((list) => {
-                const next = list[0];
-                if (next) {
-                  void selectSession(next.conversationId);
-                } else {
-                  void window.sandiChat.createSession().then((session) => {
-                    void refreshSessions();
-                    useChatStore
-                      .getState()
-                      .setActive(session.conversationId, []);
-                  });
-                }
-              });
-            }
-          });
-        }}
+        onSelect={(conversationId) =>
+          guard(
+            selectSession(conversationId),
+            "could not open the conversation",
+          )
+        }
+        onCreate={() =>
+          guard(
+            (async () => {
+              const session = await window.sandiChat.createSession();
+              await refreshSessions();
+              useChatStore.getState().setActive(session.conversationId, []);
+            })(),
+            "could not create a conversation",
+          )
+        }
+        onDelete={(conversationId) =>
+          guard(
+            (async () => {
+              await window.sandiChat.deleteSession(conversationId);
+              await refreshSessions();
+              if (
+                conversationId !== useChatStore.getState().activeConversationId
+              ) {
+                return;
+              }
+              // The active conversation is gone; land on the most recent
+              // survivor, or a fresh one if none remain.
+              const list = await window.sandiChat.listSessions();
+              const next = list[0];
+              if (next) {
+                await selectSession(next.conversationId);
+                return;
+              }
+              const session = await window.sandiChat.createSession();
+              await refreshSessions();
+              useChatStore.getState().setActive(session.conversationId, []);
+            })(),
+            "could not delete the conversation",
+          )
+        }
       />
     </div>
   );

@@ -4,6 +4,8 @@ import { basename, extname, join } from "node:path";
 
 import type { StagedAttachment } from "@shared/ipc-contract";
 
+import { isMissingFileError } from "./fs-errors";
+
 // Composer attachments before submit. Picked and dropped files stay where
 // they are (their path is the attachment); pasted images have no path, so
 // they are written into a staging directory first. At submit time the turn
@@ -42,8 +44,11 @@ export function createAttachmentStaging(stagingDir: string): AttachmentStaging {
         const info = await stat(path);
         if (!info.isFile()) return null;
         size = info.size;
-      } catch {
-        return null;
+      } catch (error) {
+        // A vanished path (dropped then deleted) is a normal no-op; a
+        // permission or I/O error is not and must reach the caller.
+        if (isMissingFileError(error)) return null;
+        throw error;
       }
       if (size > MAX_ATTACHMENT_BYTES) return null;
       const name = basename(path);

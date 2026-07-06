@@ -11,6 +11,8 @@ import { join } from "node:path";
 
 import type { SessionSummary, TranscriptEntry } from "@shared/ipc-contract";
 
+import { isMissingFileError } from "./fs-errors";
+import { ConversationIdSchema } from "./ipc-schemas";
 import { z } from "zod/v4";
 
 // The app's own conversation history. The server has no list or transcript
@@ -57,10 +59,14 @@ const TranscriptEntrySchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+// The index is a disk boundary like any other: a hand-edited or corrupted
+// conversationId must not flow back out as a SessionSummary and later reach
+// the filename join, so it is parsed with the same strict schema the IPC
+// layer uses.
 const IndexSchema = z.object({
   sessions: z.array(
     z.object({
-      conversationId: z.string(),
+      conversationId: ConversationIdSchema,
       title: z.string(),
       createdAt: z.string(),
       updatedAt: z.string(),
@@ -123,8 +129,11 @@ export async function createTranscriptStore(
       let raw: string;
       try {
         raw = await readFile(transcriptPath(conversationId), "utf8");
-      } catch {
-        return [];
+      } catch (error) {
+        // A session with no turns yet has no file; that is an empty
+        // transcript. Anything else (permissions, I/O) is a real failure.
+        if (isMissingFileError(error)) return [];
+        throw error;
       }
       const entries: TranscriptEntry[] = [];
       for (const line of raw.split("\n")) {
@@ -209,14 +218,21 @@ function normalizeEntry(
 }
 
 async function loadIndex(indexPath: string): Promise<SessionSummary[]> {
+  let raw: string;
   try {
-    const parsed = IndexSchema.safeParse(
-      JSON.parse(await readFile(indexPath, "utf8")),
-    );
+    raw = await readFile(indexPath, "utf8");
+  } catch (error) {
+    // No index yet is a first run; a permission or I/O error is not, and must
+    // not be mistaken for an empty session list.
+    if (isMissingFileError(error)) return [];
+    throw error;
+  }
+  try {
+    const parsed = IndexSchema.safeParse(JSON.parse(raw));
     if (parsed.success) return parsed.data.sessions;
   } catch {
-    // Missing or corrupt index: fall through to rebuilding an empty one; the
-    // JSONL transcripts on disk are untouched.
+    // Corrupt JSON: deliberately fall through to rebuilding an empty index;
+    // the JSONL transcripts on disk are untouched.
   }
   return [];
 }

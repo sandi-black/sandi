@@ -59,6 +59,7 @@ async function verifyAttachmentRoutes(): Promise<void> {
     const uploaded = await verifyUploadAndDownloadRoundTrip(base);
     await verifyDownloadOfUnownedIsNotFound(base, uploaded.hash);
     await verifyDownloadOfUnknownIsNotFound(base);
+    await verifyDownloadOfMissingBlobFailsClosed(base, dataDir);
     await verifyUploadRejectsBadNameAndMime(base);
     await verifyUploadRejectsOverCap(base);
     await verifyTurnWithAttachmentsMaterializesFiles(base, provider);
@@ -177,6 +178,39 @@ async function verifyDownloadOfUnknownIsNotFound(base: string): Promise<void> {
   });
   assertEqual(response.status, 404, "an unknown hash is 404");
   console.log("ok GET /v1/attachments/:hash for an unknown hash returns 404");
+}
+
+// A sidecar whose blob has gone missing is a server-side inconsistency; the
+// download must fail closed as a 404 JSON error before success headers commit,
+// never a 200 with a broken body.
+async function verifyDownloadOfMissingBlobFailsClosed(
+  base: string,
+  dataDir: string,
+): Promise<void> {
+  const bytes = Buffer.from("blob that will vanish", "utf8");
+  const upload = await fetch(`${base}/v1/attachments`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${RAW_TOKEN}`,
+      "content-type": "application/octet-stream",
+      "x-sandi-name": "vanishing.bin",
+    },
+    body: bytes,
+    duplex: "half",
+  });
+  assertEqual(upload.status, 200, "the vanishing blob uploads first");
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  await rm(join(dataDir, "attachments", hash.slice(0, 2), hash), {
+    force: true,
+  });
+
+  const response = await fetch(`${base}/v1/attachments/${hash}`, {
+    headers: { authorization: `Bearer ${RAW_TOKEN}` },
+  });
+  assertEqual(response.status, 404, "a sidecar without its blob is 404");
+  console.log(
+    "ok GET /v1/attachments/:hash whose blob is missing fails closed with 404",
+  );
 }
 
 async function verifyUploadRejectsBadNameAndMime(base: string): Promise<void> {

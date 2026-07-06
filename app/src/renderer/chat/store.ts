@@ -31,6 +31,9 @@ type ChatState = {
   staged: StagedAttachment[];
   showThinking: boolean;
   drawerOpen: boolean;
+  // The most recent failed bridge call, surfaced as a dismissible strip; every
+  // fire-and-forget IPC promise routes its rejection here (see guard.ts).
+  uiError: string | undefined;
 
   setSessions(sessions: SessionSummary[]): void;
   setActive(conversationId: string, transcript: TranscriptEntry[]): void;
@@ -50,6 +53,7 @@ type ChatState = {
   removeStaged(id: string): void;
   setShowThinking(show: boolean): void;
   setDrawerOpen(open: boolean): void;
+  setUiError(message: string | undefined): void;
 };
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -63,6 +67,7 @@ export const useChatStore = create<ChatState>((set) => ({
   staged: [],
   showThinking: false,
   drawerOpen: false,
+  uiError: undefined,
 
   setSessions: (sessions) => set({ sessions }),
   setActive: (conversationId, transcript) =>
@@ -113,4 +118,5 @@ export const useChatStore = create<ChatState>((set) => ({
     })),
   setShowThinking: (showThinking) => set({ showThinking }),
   setDrawerOpen: (drawerOpen) => set({ drawerOpen }),
+  setUiError: (uiError) => set({ uiError }),
 }));

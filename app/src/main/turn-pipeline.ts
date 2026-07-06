@@ -7,6 +7,7 @@ import {
   loadDesktopCredentials,
 } from "@sandi-server/surfaces/api/client/credentials";
 import { sendTurn } from "@sandi-server/surfaces/api/client/turns";
+import { z } from "zod/v4";
 
 // Builds and sends one turn: uploads image attachments to the server's
 // content-addressed store (so they enter the model's visual context), lists
@@ -72,6 +73,13 @@ function withFileReferences(text: string, paths: string[]): string {
   return `${text}\n\nAttached files on my desktop (read them with your local tools):\n${list}`;
 }
 
+// The upload response is external JSON, and its hash flows straight into the
+// turn body, so the whole shape is parsed, including the store's canonical
+// 64-hex sha256 form, rather than probing for any string-valued hash.
+const UploadResponseSchema = z.object({
+  hash: z.string().regex(/^[0-9a-f]{64}$/),
+});
+
 type UploadOutcome = { ok: true; hash: string } | { ok: false; error: string };
 
 async function uploadAttachment(input: {
@@ -113,17 +121,10 @@ async function uploadAttachment(input: {
     return { ok: false, error: `upload failed (status ${response.status})` };
   }
   try {
-    const parsed: unknown = await response.json();
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      "hash" in parsed &&
-      typeof parsed.hash === "string"
-    ) {
-      return { ok: true, hash: parsed.hash };
-    }
+    const parsed = UploadResponseSchema.safeParse(await response.json());
+    if (parsed.success) return { ok: true, hash: parsed.data.hash };
   } catch {
-    // Fall through to the generic error below.
+    // Non-JSON body: fall through to the generic error below.
   }
   return { ok: false, error: "upload returned an unexpected body" };
 }

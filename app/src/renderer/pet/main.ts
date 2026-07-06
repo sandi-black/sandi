@@ -105,4 +105,7 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+main().catch((error: unknown) => {
+  // The pet has no UI to report into; the devtools console is the surface.
+  console.error("pet renderer failed to start", error);
+});

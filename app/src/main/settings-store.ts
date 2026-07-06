@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 
 import { app } from "electron";
 
+import { isMissingFileError } from "./fs-errors";
 import { z } from "zod/v4";
 
 // Small persisted app state: where the pet sits, which outfit she wears, and
@@ -47,8 +48,13 @@ function load(filePath: string): Settings {
   let raw: string;
   try {
     raw = readFileSync(filePath, "utf8");
-  } catch {
-    return SettingsSchema.parse({});
+  } catch (error) {
+    // First run has no settings file; that is the defaults. A permission or
+    // I/O error is a real startup failure and propagates (main's catch shows
+    // it), rather than silently running on defaults and clobbering the file
+    // on the next save.
+    if (isMissingFileError(error)) return SettingsSchema.parse({});
+    throw error;
   }
   try {
     const parsed = SettingsSchema.safeParse(JSON.parse(raw));

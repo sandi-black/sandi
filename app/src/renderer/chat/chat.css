@@ -466,6 +466,38 @@ body,
   color: #2a1214;
 }
 
+/* Error strip: the most recent failed bridge call, dismissible */
+
+.ui-error {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(224, 90, 103, 0.14);
+  border: 1px solid rgba(224, 90, 103, 0.4);
+  color: var(--danger);
+  font-size: 11.5px;
+}
+
+.ui-error span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-error button {
+  border: none;
+  background: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+}
+
 /* Status bar */
 
 .status-bar {

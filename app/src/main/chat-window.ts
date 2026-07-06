@@ -57,7 +57,9 @@ export function createChatWindow(input: { isQuitting(): boolean }): ChatWindow {
     win.hide();
   });
 
-  void loadRenderer(win);
+  loadRenderer(win).catch((error: unknown) => {
+    console.error("chat renderer failed to load", error);
+  });
 
   return {
     window: win,

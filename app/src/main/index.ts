@@ -12,7 +12,7 @@ import {
   createResponseBuffer,
   type ResponseBuffer,
 } from "@shared/response-buffer";
-import { app, ipcMain, screen } from "electron";
+import { app, dialog, ipcMain, screen } from "electron";
 
 import { installAssetProtocol, registerAssetScheme } from "./asset-protocol";
 import { createAttachmentStaging } from "./attachment-staging";
@@ -47,7 +47,15 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   registerAssetScheme();
-  void main();
+  main().catch((error: unknown) => {
+    // Startup failed outright (settings unreadable, a window refused to
+    // build): surface it and exit rather than leaving a half-alive tray-less
+    // process the human cannot see or quit.
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("sandi-desktop failed to start", error);
+    dialog.showErrorBox("Sandi could not start", message);
+    app.exit(1);
+  });
 }
 
 async function main(): Promise<void> {
@@ -194,7 +202,11 @@ async function main(): Promise<void> {
         refreshPetBackground();
       },
       onTurnSettled: (event) => {
-        void persistSettled(event);
+        persistSettled(event).catch((error: unknown) => {
+          // The turn itself settled; a failed transcript append loses history
+          // but must not crash the app or block the settle event.
+          console.error("failed to persist a settled turn", error);
+        });
         activeTurns.delete(event.turnId);
         pet.sendDisplayEvent({
           type: "one-shot",
@@ -275,8 +287,17 @@ async function main(): Promise<void> {
   });
 
   // The device link runs for the app's whole life, reconnecting on its own;
-  // this promise only resolves when the app is shutting down.
-  void link.start();
+  // this promise only resolves when the app is shutting down. A rejection
+  // means the loop itself died (not a dropped connection, which it retries
+  // internally), so reflect that in the status instead of leaving "linked" up.
+  link.start().catch((error: unknown) => {
+    console.error("device link loop failed", error);
+    tray?.setLinkStatus({ state: "dropped", message: "link loop failed" });
+    sendToChat(IPC.linkStatus, {
+      state: "dropped",
+      message: "link loop failed; restart the app or re-pair",
+    });
+  });
   app.on("before-quit", () => {
     wanderScheduler.dispose();
     link.stop();

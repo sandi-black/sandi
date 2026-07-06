@@ -52,12 +52,20 @@ Main owns all state; the renderers are pure UI over typed IPC.
   long-standing DWM hit-test bugs on Windows, so the renderer only reports
   grip and release; main re-reads the true cursor from the `screen` module
   each tick and moves the window itself, which also sidesteps DPI coordinate
-  mismatches.
+  mismatches. Every move (drag ticks and wander alike) goes through
+  `moveWindow` in `main/pet-window.ts`, which reasserts the fixed frame size
+  via `setBounds`. Plain `setPosition` on a fractional-DPI Windows display
+  round-trips the bounds through physical pixels, and because it leaves the
+  size untouched, that rounding compounds across a move loop and the sprite
+  grows without bound.
 - The chat window is a popover anchored next to the pet (pure
-  `computeAnchoredPosition` with edge flipping). It is created hidden at
-  startup and lives for the whole app life: closing hides it, and only the
-  tray's Quit destroys it. There is deliberately no blur handler; it stays up
-  when clicked away.
+  `computeAnchoredPosition` with edge flipping). While open, the pet window's
+  `onMove` hook fires on every reposition and calls `chat.follow`, which
+  re-anchors (and re-flips sides near an edge) only when the popover is already
+  visible, so it trails her as she is dragged. It is created hidden at startup
+  and lives for the whole app life: closing hides it, and only the tray's Quit
+  destroys it. There is deliberately no blur handler; it stays up when clicked
+  away.
 - The tray is the pet's only conventional chrome. Left click toggles her
   visibility; the context menu has open chat, outfit, wander, start-with-
   Windows, the link status line, and Quit. The `Tray` instance stays in

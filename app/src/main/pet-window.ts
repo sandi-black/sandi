@@ -28,12 +28,40 @@ export type PetWindow = {
   toggleVisibility(): void;
   // True while the human is dragging her; wander yields to the hand.
   isDragging(): boolean;
+  // Move the pet's top-left to (x, y) without letting her size drift; see
+  // moveWindow. Wander drives this from the main composition root.
+  moveTo(x: number, y: number): void;
 };
+
+// Reposition the window while pinning its size to exactly one sprite frame.
+//
+// Plain setPosition on a fractional-DPI Windows display (125%, 150%) inflates
+// the window a little on every call: Electron round-trips the bounds through
+// physical pixels, and because setPosition leaves the size untouched, that
+// rounding compounds across the hundreds of calls a drag or a stroll makes,
+// so the pet grows without bound the whole time she moves. Reasserting the
+// canonical DIP frame size on every move forces Electron to recompute the
+// physical size from a fixed value each tick, so any drift is corrected
+// instead of accumulating.
+function moveWindow(win: BrowserWindow, x: number, y: number): void {
+  win.setBounds(
+    {
+      x: Math.round(x),
+      y: Math.round(y),
+      width: FRAME_WIDTH,
+      height: FRAME_HEIGHT,
+    },
+    false,
+  );
+}
 
 export function createPetWindow(input: {
   settings: SettingsStore;
   onOpenChat(): void;
   onDragStart?(): void;
+  // Fired after every reposition (drag ticks and wander), so a visible chat
+  // popover can trail her.
+  onMove?(): void;
 }): PetWindow {
   const { settings, onOpenChat } = input;
 
@@ -89,7 +117,8 @@ export function createPetWindow(input: {
     CursorPointSchema.optional().safeParse(payload);
     if (!dragOffset) return;
     const cursor = screen.getCursorScreenPoint();
-    win.setPosition(cursor.x + dragOffset.x, cursor.y + dragOffset.y, false);
+    moveWindow(win, cursor.x + dragOffset.x, cursor.y + dragOffset.y);
+    input.onMove?.();
   });
   ipcMain.on(IPC.petDragEnd, (event) => {
     if (event.sender !== win.webContents) return;
@@ -139,6 +168,10 @@ export function createPetWindow(input: {
     isDragging() {
       return dragOffset !== undefined;
     },
+    moveTo(x, y) {
+      moveWindow(win, x, y);
+      input.onMove?.();
+    },
   };
 }
 
@@ -160,7 +193,8 @@ function restorePosition(win: BrowserWindow, settings: SettingsStore): void {
     // First run: bottom-right corner of the primary display's work area, the
     // classic desktop-pet spot.
     const area = screen.getPrimaryDisplay().workArea;
-    win.setPosition(
+    moveWindow(
+      win,
       area.x + area.width - size.width - 24,
       area.y + area.height - size.height,
     );
@@ -170,7 +204,7 @@ function restorePosition(win: BrowserWindow, settings: SettingsStore): void {
   // since last run cannot strand her off-screen.
   const display = screen.getDisplayNearestPoint(saved);
   const clamped = clampIntoWorkArea(saved, size, display.workArea);
-  win.setPosition(clamped.x, clamped.y);
+  moveWindow(win, clamped.x, clamped.y);
 }
 
 // Referenced so the bridge type stays the single source of truth for what the

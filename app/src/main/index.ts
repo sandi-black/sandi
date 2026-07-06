@@ -91,6 +91,10 @@ async function main(): Promise<void> {
       chat.toggleNear(pet.window.getBounds());
     },
     onDragStart: () => wander?.interrupt(),
+    // Keep the popover glued to her side as she is dragged; a no-op while the
+    // chat is hidden (which is also every wander tick, since wander is gated
+    // off whenever the chat is open).
+    onMove: () => chat.follow(pet.window.getBounds()),
   });
 
   const sendToChat = (channel: string, payload: unknown): void => {
@@ -139,7 +143,7 @@ async function main(): Promise<void> {
   // walk; the scheduler itself rechecks it on each movement tick.
   const wanderScheduler = createWanderScheduler({
     getBounds: () => pet.window.getBounds(),
-    setPosition: (x, y) => pet.window.setPosition(x, y, false),
+    setPosition: (x, y) => pet.moveTo(x, y),
     workAreaFor: (bounds) => screen.getDisplayMatching(bounds).workArea,
     canStroll: () =>
       activeTurns.size === 0 &&

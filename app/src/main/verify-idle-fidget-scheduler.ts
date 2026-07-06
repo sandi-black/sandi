@@ -65,6 +65,7 @@ async function testPicksFromPool(): Promise<void> {
   // yields a zero-length pause, so the pick is the only meaningful draw.
   const scheduler = createIdleFidgetScheduler(host, {
     ...FAST,
+    durationMs: () => 100,
     pool: ["waving", "blink"],
     random: () => 0.1,
   });
@@ -73,9 +74,26 @@ async function testPicksFromPool(): Promise<void> {
   scheduler.dispose();
   const rows = oneShotRows(host);
   assert.ok(rows.length > 0, "a fidget fired");
-  assert.ok(
-    rows.every((row) => row === "waving"),
-    "the pick follows the injected random",
+  assert.equal(rows[0], "waving", "the pick follows the injected random");
+}
+
+async function testAvoidsImmediateRepeatWhenPossible(): Promise<void> {
+  const host = createFakeHost();
+  const scheduler = createIdleFidgetScheduler(host, {
+    pauseRangeMs: [0, 0],
+    durationMs: () => 5,
+    pool: ["blink", "waving"],
+    random: () => 0,
+  });
+  scheduler.setEnabled(true);
+  await sleep(30);
+  scheduler.dispose();
+  const rows = oneShotRows(host);
+  assert.ok(rows.length >= 2, "multiple fidgets fired");
+  assert.notEqual(
+    rows[0],
+    rows[1],
+    "the scheduler avoids repeating the same fidget when another exists",
   );
 }
 
@@ -142,6 +160,7 @@ async function testDisableGoesQuiet(): Promise<void> {
 async function main(): Promise<void> {
   await testFiresAndRearms();
   await testPicksFromPool();
+  await testAvoidsImmediateRepeatWhenPossible();
   await testGateBlocks();
   await testGateReopens();
   await testEmptyPoolStaysStill();

@@ -1,12 +1,12 @@
 # Desktop App
 
-The desktop app in `app/` is Sandi's face on a machine: a sprite of her lives
-on the desktop in a borderless, transparent, always-on-top window, and
-clicking her opens a popover chat with sessions, streaming replies,
-attachments, and a message queue. It is an Electron app whose main process
-imports the API surface's client modules (`src/surfaces/api/client/`) directly
-as TypeScript source, so the device link, turn sending, credentials, and
-pairing are the same code the headless reference client runs.
+The desktop app in `app/` puts Sandi's sprite in a borderless, transparent,
+always-on-top window on the desktop; clicking her opens a popover chat with
+sessions, streaming replies, attachments, and a message queue. It is an
+Electron app whose main process imports the API surface's client modules
+(`src/surfaces/api/client/`) directly as TypeScript source, so the device
+link, turn sending, credentials, and pairing are the same code the headless
+reference client runs.
 
 Read [`api-surface.md`](api-surface.md) first for the server side: pairing,
 the device link, hands-local execution, response streaming, and attachments

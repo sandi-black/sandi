@@ -42,11 +42,28 @@ export function isSupportedAttachmentMimeType(value: string): boolean {
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
+// A sidecar is written by this module, but it is still a disk boundary: a
+// corrupted or hand-edited file must not carry header-unsafe metadata deeper
+// into the program. mimeType must be a plain type/subtype token pair (it
+// becomes the download's Content-Type header verbatim), name must be a
+// bounded single filename (it becomes a materialized file's basename), and
+// size is bounded by the upload cap it was enforced against.
+const MIME_TOKEN_PAIR = /^[a-z0-9!#$&^_.+-]{1,100}\/[a-z0-9!#$&^_.+-]{1,100}$/;
+
 const AttachmentMetadataSchema = z.object({
   hash: z.string().regex(SHA256_HEX, "hash must be 64 lowercase hex chars"),
-  size: z.number().int().nonnegative(),
-  mimeType: z.string().min(1),
-  name: z.string().min(1),
+  size: z.number().int().nonnegative().max(MAX_ATTACHMENT_BYTES),
+  mimeType: z
+    .string()
+    .regex(MIME_TOKEN_PAIR, "mimeType must be a type/subtype token pair"),
+  name: z
+    .string()
+    .min(1)
+    .max(200)
+    .refine(
+      (value) => !value.includes("/") && !value.includes("\\"),
+      "name must be a single filename, not a path",
+    ),
   ownerIdentityIds: z.array(z.string().min(1)),
   createdAt: z.iso.datetime(),
 });

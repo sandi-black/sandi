@@ -169,6 +169,10 @@ function post(target: AttachTarget, body: unknown): Promise<number> {
       (res) => {
         res.resume();
         res.on("end", () => resolvePost(res.statusCode ?? 0));
+        // A broker that dies after sending headers must reject through
+        // postAttachment, not escape as an unhandled 'error' emission or
+        // leave this promise unsettled forever.
+        res.on("error", (error) => rejectPost(error));
       },
     );
     req.setTimeout(CALL_TIMEOUT_MS, () => {

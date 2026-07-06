@@ -26,6 +26,9 @@ export function createTray(input: {
   const tray = new Tray(icon);
   tray.setToolTip("Sandi");
 
+  // In a packaged build this is the release tag the CI packaging workflow
+  // injected as the app version; in dev it is package.json's own version.
+  const version = app.getVersion();
   let linkLabel = "Link: starting...";
 
   const rebuildMenu = (): void => {
@@ -73,6 +76,7 @@ export function createTray(input: {
           },
         },
         { type: "separator" },
+        { label: `Sandi ${version}`, enabled: false },
         { label: "Quit Sandi", click: () => app.quit() },
       ]),
     );

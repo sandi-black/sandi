@@ -6,16 +6,19 @@ import { app } from "electron";
 import { isMissingFileError } from "./fs-errors";
 import { z } from "zod/v4";
 
-// Small persisted app state: where the pet sits, which outfit she wears, and
-// the behavior toggles. Lives in Electron's per-user data dir, deliberately
-// separate from the credentials file the CLI shares. Loaded once at startup;
-// saves are atomic (temp then rename) so a crash never tears the file.
+// Small persisted app state: where the pet sits and the behavior toggles.
+// Lives in Electron's per-user data dir, deliberately separate from the
+// credentials file the CLI shares. Loaded once at startup; saves are atomic
+// (temp then rename) so a crash never tears the file.
+//
+// Settings written by older builds may carry keys that no longer exist (the
+// retired outfit toggle); zod strips unknown keys on parse, so they simply
+// drop off at the next save.
 
 const SettingsSchema = z.object({
   petPosition: z
     .object({ x: z.number().int(), y: z.number().int() })
     .optional(),
-  outfit: z.enum(["classic", "alternate"]).default("classic"),
   wander: z.boolean().default(false),
   autoLaunch: z.boolean().default(false),
   showThinking: z.boolean().default(false),

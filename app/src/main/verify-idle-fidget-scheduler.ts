@@ -41,7 +41,7 @@ function oneShotRows(host: FakeHost): PetOneShot[] {
 const FAST: IdleFidgetOptions = {
   pauseRangeMs: [0, 0],
   durationMs: () => 5,
-  pool: ["blink"],
+  pool: ["breathing"],
   random: () => 0,
 };
 
@@ -54,18 +54,18 @@ async function testFiresAndRearms(): Promise<void> {
   const rows = oneShotRows(host);
   assert.ok(rows.length >= 2, "an idle pet fidgets and rearms itself");
   assert.ok(
-    rows.every((row) => row === "blink"),
+    rows.every((row) => row === "breathing"),
     "every fidget is drawn from the pool",
   );
 }
 
 async function testPicksFromPool(): Promise<void> {
   const host = createFakeHost();
-  // random 0.1 over a two-row pool selects index 0 ("waving"); the same value
+  // random 0.1 over a two-row pool selects index 0 ("casting"); the same value
   // yields a zero-length pause, so the pick is the only meaningful draw.
   const scheduler = createIdleFidgetScheduler(host, {
     ...FAST,
-    pool: ["waving", "blink"],
+    pool: ["casting", "breathing"],
     random: () => 0.1,
   });
   scheduler.setEnabled(true);
@@ -74,7 +74,7 @@ async function testPicksFromPool(): Promise<void> {
   const rows = oneShotRows(host);
   assert.ok(rows.length > 0, "a fidget fired");
   assert.ok(
-    rows.every((row) => row === "waving"),
+    rows.every((row) => row === "casting"),
     "the pick follows the injected random",
   );
 }

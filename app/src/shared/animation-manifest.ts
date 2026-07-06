@@ -1,28 +1,30 @@
-// Frame geometry and row inventory for the pet spritesheets. Both outfits
-// (assets/sandi-spritesheet.webp and the alternate) share one 1536x1872 layout:
-// 8 columns by 9 rows of 192x208 frames, rows padded with empty cells past
-// their frame count. The sheets are fixed art, so this is a typed constant
-// rather than runtime-loaded JSON.
+// Frame geometry and row inventory for the pet spritesheet
+// (assets/sandi-spritesheet.webp): 8 columns by 10 rows of 192x208 frames, one
+// row per animation, composed from the v2 per-animation sheets by
+// scripts/build-spritesheet.mjs. Row indexes here must match the ROWS order in
+// that script. The sheet is fixed art, so this is a typed constant rather than
+// runtime-loaded JSON.
 
 export const FRAME_WIDTH = 192;
 export const FRAME_HEIGHT = 208;
 export const SHEET_COLUMNS = 8;
-export const SHEET_ROWS = 9;
+export const SHEET_ROWS = 10;
 export const SHEET_WIDTH = FRAME_WIDTH * SHEET_COLUMNS;
 export const SHEET_HEIGHT = FRAME_HEIGHT * SHEET_ROWS;
 
 export type PetRow =
   | "idle"
-  | "running-right"
-  | "running-left"
-  | "waving"
-  | "jumping"
-  | "failed"
-  | "waiting"
-  | "running"
-  | "review"
-  | "blink"
-  | "sleeping";
+  | "breathing"
+  | "walking-right"
+  | "walking-left"
+  | "listening"
+  | "thinking"
+  | "typing"
+  | "celebrating"
+  | "startled"
+  | "casting"
+  | "dozing"
+  | "dragging";
 
 export type RowSpec = {
   // Row index into the sheet, top to bottom.
@@ -32,28 +34,28 @@ export type RowSpec = {
   // Looping rows play until the state machine moves on; one-shot rows play
   // once and then report animation-complete so the machine can fall back.
   loop: boolean;
+  // Drawn flipped horizontally. The walk art drifts left (hair trailing
+  // right), so the rightward walk is the same row mirrored at draw time
+  // instead of a duplicate row.
+  mirror?: boolean;
 };
 
 export const PET_ROWS: Record<PetRow, RowSpec> = {
   // Idle is deliberately a single held frame (row 0, frame 0): a still pet at
-  // rest. Her old constant breathing loop now lives in `blink`, played only as
-  // an occasional idle fidget. A one-frame looping row never advances and never
-  // reports completion, so the player simply holds it.
+  // rest. The full breathing/blink cycle lives in `breathing`, played only as
+  // an occasional idle fidget. A one-frame looping row never advances and
+  // never reports completion, so the player simply holds it.
   idle: { index: 0, frames: 1, fps: 1, loop: true },
-  "running-right": { index: 1, frames: 8, fps: 12, loop: true },
-  "running-left": { index: 2, frames: 8, fps: 12, loop: true },
-  waving: { index: 3, frames: 4, fps: 8, loop: false },
-  jumping: { index: 4, frames: 5, fps: 10, loop: false },
-  failed: { index: 5, frames: 8, fps: 8, loop: false },
-  waiting: { index: 6, frames: 6, fps: 6, loop: true },
-  running: { index: 7, frames: 6, fps: 10, loop: true },
-  review: { index: 8, frames: 6, fps: 8, loop: true },
-  // Idle fidgets: brief one-shots that play over the static idle pose and hand
-  // back to it. `blink` is row 0's full breathing/blink cycle; `sleeping`
-  // reuses row 5's drowsy head-droop art (the same frames the `failed` one-shot
-  // draws, but fired while resting rather than on a failed turn).
-  blink: { index: 0, frames: 6, fps: 6, loop: false },
-  sleeping: { index: 5, frames: 8, fps: 8, loop: false },
+  breathing: { index: 0, frames: 8, fps: 6, loop: false },
+  "walking-left": { index: 1, frames: 8, fps: 10, loop: true },
+  "walking-right": { index: 1, frames: 8, fps: 10, loop: true, mirror: true },
+  listening: { index: 2, frames: 8, fps: 8, loop: true },
+  thinking: { index: 3, frames: 8, fps: 8, loop: true },
+  typing: { index: 4, frames: 8, fps: 10, loop: true },
+  celebrating: { index: 5, frames: 8, fps: 10, loop: false },
+  startled: { index: 6, frames: 8, fps: 8, loop: false },
+  casting: { index: 7, frames: 8, fps: 8, loop: false },
+  // Slow on purpose: a yawn read at streaming speed looks like a hiccup.
+  dozing: { index: 8, frames: 8, fps: 5, loop: false },
+  dragging: { index: 9, frames: 8, fps: 10, loop: true },
 };
-
-export type PetOutfit = "classic" | "alternate";

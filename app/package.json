@@ -9,6 +9,7 @@
   "main": "out/main/index.js",
   "scripts": {
     "icons": "node scripts/build-icons.mjs",
+    "sprites": "node scripts/build-spritesheet.mjs",
     "predev": "node scripts/build-icons.mjs",
     "dev": "electron-vite dev",
     "prebuild": "node scripts/build-icons.mjs",

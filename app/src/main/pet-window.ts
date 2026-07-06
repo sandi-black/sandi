@@ -1,10 +1,6 @@
 import { join } from "node:path";
 
-import {
-  FRAME_HEIGHT,
-  FRAME_WIDTH,
-  type PetOutfit,
-} from "@shared/animation-manifest";
+import { FRAME_HEIGHT, FRAME_WIDTH } from "@shared/animation-manifest";
 import type { PetDisplayEvent, SandiPetBridge } from "@shared/ipc-contract";
 import { IPC } from "@shared/ipc-contract";
 import { BrowserWindow, ipcMain, screen } from "electron";
@@ -24,7 +20,6 @@ import { clampIntoWorkArea } from "./window-anchor";
 export type PetWindow = {
   window: BrowserWindow;
   sendDisplayEvent(event: PetDisplayEvent): void;
-  sendOutfit(outfit: PetOutfit): void;
   toggleVisibility(): void;
   // True while the human is dragging her; wander yields to the hand.
   isDragging(): boolean;
@@ -143,8 +138,6 @@ export function createPetWindow(input: {
     win.setIgnoreMouseEvents(parsed.data, { forward: true });
   });
 
-  ipcMain.handle(IPC.petGetOutfit, () => settings.get().outfit);
-
   win.once("ready-to-show", () => win.show());
   loadRenderer(win).catch((error: unknown) => {
     console.error("pet renderer failed to load", error);
@@ -154,9 +147,6 @@ export function createPetWindow(input: {
     window: win,
     sendDisplayEvent(event) {
       win.webContents.send(IPC.petDisplayEvent, event);
-    },
-    sendOutfit(outfit) {
-      win.webContents.send(IPC.petOutfitChanged, outfit);
     },
     toggleVisibility() {
       if (win.isVisible()) {

@@ -43,9 +43,6 @@ async function main(): Promise<void> {
     dispatch(event);
   });
 
-  player.setOutfit(await bridge.getOutfit());
-  bridge.onOutfitChanged((outfit) => player.setOutfit(outfit));
-
   // Pointer gestures. Dragging is manual: main follows the OS cursor, the
   // renderer only signals grip, ticks, and release (see pet-window.ts).
   let pointerDownAt: { x: number; y: number } | undefined;
@@ -66,6 +63,9 @@ async function main(): Promise<void> {
       if (!dragging && Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX) {
         dragging = true;
         bridge.dragStart({ x: event.screenX, y: event.screenY });
+        // The drag row is renderer-local: the gesture starts here, so the
+        // wiggle starts here too, without a round trip through main.
+        dispatch({ type: "drag" });
       }
       if (dragging && !movePending) {
         // One tick per animation frame is plenty; main re-reads the true
@@ -88,6 +88,7 @@ async function main(): Promise<void> {
     if (dragging) {
       dragging = false;
       bridge.dragEnd();
+      dispatch({ type: "drag-stop" });
       return;
     }
     bridge.openChat();

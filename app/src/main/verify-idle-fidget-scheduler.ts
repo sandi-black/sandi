@@ -41,7 +41,7 @@ function oneShotRows(host: FakeHost): PetOneShot[] {
 const FAST: IdleFidgetOptions = {
   pauseRangeMs: [0, 0],
   durationMs: () => 5,
-  pool: ["blink"],
+  pool: ["breathing"],
   random: () => 0,
 };
 
@@ -54,19 +54,19 @@ async function testFiresAndRearms(): Promise<void> {
   const rows = oneShotRows(host);
   assert.ok(rows.length >= 2, "an idle pet fidgets and rearms itself");
   assert.ok(
-    rows.every((row) => row === "blink"),
+    rows.every((row) => row === "breathing"),
     "every fidget is drawn from the pool",
   );
 }
 
 async function testPicksFromPool(): Promise<void> {
   const host = createFakeHost();
-  // random 0.1 over a two-row pool selects index 0 ("waving"); the same value
+  // random 0.1 over a two-row pool selects index 0 ("casting"); the same value
   // yields a zero-length pause, so the pick is the only meaningful draw.
   const scheduler = createIdleFidgetScheduler(host, {
     ...FAST,
     durationMs: () => 100,
-    pool: ["waving", "blink"],
+    pool: ["casting", "breathing"],
     random: () => 0.1,
   });
   scheduler.setEnabled(true);
@@ -74,7 +74,7 @@ async function testPicksFromPool(): Promise<void> {
   scheduler.dispose();
   const rows = oneShotRows(host);
   assert.ok(rows.length > 0, "a fidget fired");
-  assert.equal(rows[0], "waving", "the pick follows the injected random");
+  assert.equal(rows[0], "casting", "the pick follows the injected random");
 }
 
 async function testAvoidsImmediateRepeatWhenPossible(): Promise<void> {
@@ -82,7 +82,7 @@ async function testAvoidsImmediateRepeatWhenPossible(): Promise<void> {
   const scheduler = createIdleFidgetScheduler(host, {
     pauseRangeMs: [0, 0],
     durationMs: () => 5,
-    pool: ["blink", "waving"],
+    pool: ["breathing", "casting"],
     random: () => 0,
   });
   scheduler.setEnabled(true);

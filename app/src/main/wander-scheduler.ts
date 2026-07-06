@@ -2,7 +2,7 @@ import type { PetDisplayEvent } from "@shared/ipc-contract";
 
 // Wander mode: an idle pet occasionally strolls horizontally across her
 // display's work area. Main owns the window position, so main drives the
-// walk: pick a target x, tell the renderer to play the running row, nudge the
+// walk: pick a target x, tell the renderer to play the walking row, nudge the
 // window a couple of pixels per tick, then stop and save where she ended up.
 //
 // Wandering is the lowest-priority behavior everywhere: the renderer's

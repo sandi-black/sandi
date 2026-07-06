@@ -1,6 +1,5 @@
 import { isAbsolute, join } from "node:path";
 
-import type { PetOutfit } from "@shared/animation-manifest";
 import type {
   LinkStatus,
   ReplyAttachment,
@@ -102,9 +101,10 @@ async function main(): Promise<void> {
   let fidget: IdleFidgetScheduler | undefined;
 
   const chat = createChatWindow({ isQuitting: () => quitting, settings });
-  const waveOnChatOpen = (): void => {
+  // The same greeting spell she casts on launch, fired when the chat opens.
+  const greetOnChatOpen = (): void => {
     if (chat.window.isVisible()) return;
-    pet.sendDisplayEvent({ type: "one-shot", row: "waving" });
+    pet.sendDisplayEvent({ type: "one-shot", row: "casting" });
   };
   const pet = createPetWindow({
     settings,
@@ -112,7 +112,7 @@ async function main(): Promise<void> {
       wander?.interrupt();
       fidget?.interrupt();
       pet.sendDisplayEvent({ type: "reply-alert", visible: false });
-      waveOnChatOpen();
+      greetOnChatOpen();
       chat.toggleNear(pet.window.getBounds());
     },
     onDragStart: () => {
@@ -282,7 +282,7 @@ async function main(): Promise<void> {
         activeTurns.delete(event.turnId);
         pet.sendDisplayEvent({
           type: "one-shot",
-          row: event.ok ? "jumping" : "failed",
+          row: event.ok ? "celebrating" : "startled",
         });
         // Failures earn the marker as much as replies do: either way there is
         // an outcome waiting in a chat the user cannot currently see.
@@ -379,10 +379,9 @@ async function main(): Promise<void> {
       wanderScheduler.interrupt();
       fidgetScheduler.interrupt();
       pet.sendDisplayEvent({ type: "reply-alert", visible: false });
-      waveOnChatOpen();
+      greetOnChatOpen();
       chat.openNear(pet.window.getBounds());
     },
-    onOutfitChange: (outfit: PetOutfit) => pet.sendOutfit(outfit),
     onWanderChange: (enabled: boolean) => wanderScheduler.setEnabled(enabled),
     ...(updater
       ? {
@@ -405,9 +404,10 @@ async function main(): Promise<void> {
     pet.window.show();
   });
 
-  // The pet greets on launch once her renderer is ready.
+  // The pet greets on launch once her renderer is ready: she casts a little
+  // spell as she materializes.
   pet.window.webContents.once("did-finish-load", () => {
-    pet.sendDisplayEvent({ type: "one-shot", row: "waving" });
+    pet.sendDisplayEvent({ type: "one-shot", row: "casting" });
   });
 
   // Tray-owned lifecycle: the app stays alive with every window hidden, so

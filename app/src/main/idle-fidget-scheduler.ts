@@ -3,8 +3,8 @@ import type { PetDisplayEvent } from "@shared/ipc-contract";
 import type { PetOneShot } from "@shared/pet-state-machine";
 
 // Idle fidgets: while the pet is fully idle she rests on a single static frame
-// and, now and then, plays one brief in-place animation (a blink, a wave, a
-// drowsy droop) before settling back to stillness. This is the calm cousin of
+// and, now and then, plays one brief in-place animation (a breath and blink, a
+// bit of spell practice, a drowsy yawn) before settling back to stillness. This is the calm cousin of
 // the wander scheduler: it shares the same idle-only gating but never moves the
 // window, it only asks the renderer to play a one-shot row. Timing and the
 // random pick are injected so the schedule verifies without a clock or a canvas.
@@ -48,7 +48,9 @@ function rowDurationMs(row: PetOneShot): number {
 
 const DEFAULTS: Required<IdleFidgetOptions> = {
   pauseRangeMs: [8_000, 28_000],
-  pool: ["blink", "blink", "blink", "waving", "sleeping"],
+  // Weighted: the subtle breath is the common fidget; the flashier spell
+  // practice and drowsy yawn stay occasional.
+  pool: ["breathing", "breathing", "breathing", "casting", "dozing"],
   durationMs: rowDurationMs,
   random: Math.random,
 };

@@ -9,6 +9,7 @@
   "main": "out/main/index.js",
   "scripts": {
     "icons": "node scripts/build-icons.mjs",
+    "sprites": "node scripts/build-spritesheet.mjs",
     "predev": "node scripts/build-icons.mjs",
     "dev": "electron-vite dev",
     "prebuild": "node scripts/build-icons.mjs",
@@ -56,7 +57,7 @@
     "sharp": "^0.35.3",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3",
-    "vite": "^8.1.3",
+    "vite": "^7.3.6",
     "zod": "^4.3.6"
   }
 }

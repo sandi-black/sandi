@@ -1,4 +1,3 @@
-import type { PetOutfit } from "@shared/animation-manifest";
 import type { LinkStatus } from "@shared/ipc-contract";
 import {
   app,
@@ -39,7 +38,6 @@ export function createTray(input: {
   settings: SettingsStore;
   onToggleSandi(): void;
   onOpenChat(): void;
-  onOutfitChange(outfit: PetOutfit): void;
   onWanderChange(enabled: boolean): void;
   updates?: TrayUpdates;
 }): TrayController {
@@ -98,17 +96,6 @@ export function createTray(input: {
         { label: "Open chat", click: () => input.onOpenChat() },
         { label: "Show/hide Sandi", click: () => input.onToggleSandi() },
         { type: "separator" },
-        {
-          label: "Alternate outfit",
-          type: "checkbox",
-          checked: settings.outfit === "alternate",
-          click: (item) => {
-            const outfit: PetOutfit = item.checked ? "alternate" : "classic";
-            input.settings.update({ outfit });
-            input.onOutfitChange(outfit);
-            rebuildMenu();
-          },
-        },
         {
           label: "Wander",
           type: "checkbox",

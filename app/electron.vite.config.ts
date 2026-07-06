@@ -53,6 +53,10 @@ export default defineConfig({
     },
   },
   renderer: {
+    // plugin-react and vite are pinned in package.json below 6/8 until
+    // electron-vite supports vite 8: electron-vite 5 runs vite 7, and
+    // plugin-react 6 targets rolldown-based vite 8, so the newer pair neither
+    // typechecks nor matches what actually runs. Bump all three together.
     plugins: [react()],
     resolve: {
       alias: {

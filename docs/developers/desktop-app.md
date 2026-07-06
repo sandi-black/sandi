@@ -81,11 +81,11 @@ Main owns all state; the renderers are pure UI over typed IPC.
   saved values, so a temporary small display does not erase the intent.
   Programmatic placements set a guard flag so only real gestures are recorded.
 - The tray is the pet's only conventional chrome. Left click toggles her
-  visibility; the context menu has open chat, outfit, wander, start-with-
-  Windows, the link status line, the update section (packaged builds only:
-  status line, manual check, and the automatic-update toggle), and Quit. The
-  `Tray` instance stays in module scope because a garbage-collected wrapper
-  silently drops the icon.
+  visibility; the context menu has open chat, wander, start-with-Windows, the
+  link status line, the update section (packaged builds only: status line,
+  manual check, and the automatic-update toggle), and Quit. The `Tray`
+  instance stays in module scope because a garbage-collected wrapper silently
+  drops the icon.
 - Conversations are app-local. The server has no list or transcript endpoint
   (conversations are implicit and device-scoped), so main keeps one
   append-only JSONL per conversation plus an `index.json` for the sidebar,
@@ -101,14 +101,21 @@ Main owns all state; the renderers are pure UI over typed IPC.
 
 ### The pet's animation
 
-The spritesheet rows are a fixed manifest (idle, waiting, running, review as
-loops; waving, jumping, failed as one-shots; running-left/right for wander).
-Which row plays is a pure reducer in `shared/pet-state-machine.ts`: main
-derives background changes and one-shots from real turn and link events
-(waiting on submit, running while text streams, review while she thinks,
-jumping on success, failed on error), the renderer feeds animation completion
-back in. Wander mode, when enabled from the tray, occasionally strolls an idle
-pet horizontally across her display's work area; main drives the walk
+The spritesheet is composed from per-animation source sheets in
+`assets/pet-v2-src/` by `app/scripts/build-spritesheet.mjs` (run with
+`npm run sprites -w app`), which chroma-keys, slices, and anchors each
+animation into one row of `assets/sandi-spritesheet.webp`. The rows are a
+fixed manifest (`shared/animation-manifest.ts`): idle, listening, thinking,
+typing, and dragging as loops; celebrating, startled, casting, breathing, and
+dozing as one-shots; one right-facing walk row that draws mirrored for
+leftward strolls. Which row plays is a pure reducer in
+`shared/pet-state-machine.ts`: main derives background changes and one-shots
+from real turn and link events (listening on submit, typing while text
+streams, thinking while she thinks, celebrating on success, startled on
+error), the renderer feeds animation completion back in and dispatches drag
+events from its own pointer gestures (she wiggles while held). Wander mode,
+when enabled from the tray, occasionally strolls an idle pet horizontally
+across her display's work area; main drives the walk
 (`main/wander-scheduler.ts`) since main owns the window position, and any real
 activity halts it within one tick.
 
@@ -222,21 +229,21 @@ The verify scripts cover the pure logic; window behavior needs eyes on a real
 desktop. After a change that touches windows, input, or packaging, check:
 
 1. Launch: the pet appears at her saved spot (bottom-right on first run),
-   transparent, above other windows, waving once. No taskbar entry.
+   transparent, above other windows, casting her greeting spell once. No
+   taskbar entry.
 2. Click-through: clicks on the transparent corners of her frame reach the
    desktop beneath; clicks on her body do not.
-3. Drag: grabbing her body moves her smoothly; the position survives a
-   relaunch; dragging near a screen edge does not strand her off-screen after
-   a monitor change.
-4. Tray: left click hides and shows her; the menu's outfit toggle swaps the
-   spritesheet live; Quit actually exits the process.
+3. Drag: grabbing her body moves her smoothly and plays the picked-up wiggle
+   until release; the position survives a relaunch; dragging near a screen
+   edge does not strand her off-screen after a monitor change.
+4. Tray: left click hides and shows her; Quit actually exits the process.
 5. Pairing: with no `desktop.json`, the chat opens on the pairing card; a
    `/sandi auth` code pairs and the status bar flips to linked without a
    restart.
-6. Chat loop: send a message, watch the reply stream, watch the pet switch
-   waiting/review/running and jump on completion. Queue a second message while
-   the first runs; its chip appears instantly and it sends after. Stop an
-   in-flight turn mid-stream.
+6. Chat loop: send a message, watch the reply stream, watch the pet listen,
+   think with her orb, type the answer out, and celebrate on completion.
+   Queue a second message while the first runs; its chip appears instantly
+   and it sends after. Stop an in-flight turn mid-stream.
 7. Attachments, outbound: attach a file via the picker, drop one from
    Explorer, and paste a screenshot; images upload and enter her visual
    context, plain files arrive as paths she reads locally.

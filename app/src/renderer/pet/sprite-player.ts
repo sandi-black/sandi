@@ -2,20 +2,18 @@ import {
   FRAME_HEIGHT,
   FRAME_WIDTH,
   PET_ROWS,
-  type PetOutfit,
   type PetRow,
+  type RowSpec,
 } from "@shared/animation-manifest";
 
 // Draws the active spritesheet row onto the pet canvas on a
 // requestAnimationFrame loop, and exposes per-frame alpha lookups so the
 // window can pass clicks through the sprite's transparent pixels.
 
-import alternateSheetUrl from "@assets/sandi-pet-alternate-outfit-spritesheet.webp";
-import classicSheetUrl from "@assets/sandi-spritesheet.webp";
+import sheetUrl from "@assets/sandi-spritesheet.webp";
 
 export type SpritePlayer = {
   setRow(row: PetRow): void;
-  setOutfit(outfit: PetOutfit): void;
   setReplyAlertVisible(visible: boolean): void;
   // Alpha (0-255) of the currently displayed frame at canvas-CSS-pixel
   // coordinates, for click-through sampling.
@@ -37,10 +35,7 @@ export async function createSpritePlayer(
   context.scale(dpr, dpr);
   context.imageSmoothingEnabled = false;
 
-  const sheets: Record<PetOutfit, ImageBitmap> = {
-    classic: await loadSheet(classicSheetUrl),
-    alternate: await loadSheet(alternateSheetUrl),
-  };
+  const sheet = await loadSheet(sheetUrl);
 
   // A 1x offscreen copy of the current frame backs the alpha lookups; reading
   // one pixel per pointer move from a 192x208 buffer is cheap.
@@ -50,10 +45,9 @@ export async function createSpritePlayer(
   const sampleContext = sample.getContext("2d", { willReadFrequently: true });
   if (!sampleContext) throw new Error("2d sampling context unavailable");
 
-  let outfit: PetOutfit = "classic";
   let row: PetRow = "idle";
   let rowStartedAt = performance.now();
-  let lastDrawn: { row: PetRow; frame: number; outfit: PetOutfit } | undefined;
+  let lastDrawn: { row: PetRow; frame: number } | undefined;
   let completeListener: (() => void) | undefined;
   let completeFired = false;
   let replyAlertVisible = false;
@@ -79,6 +73,46 @@ export async function createSpritePlayer(
     target.restore();
   };
 
+  // Paint one sheet frame over a whole target context, honoring the row's
+  // mirror flag (the walk art faces left; rightward walks draw flipped).
+  const paintFrame = (
+    target: CanvasRenderingContext2D,
+    spec: RowSpec,
+    frame: number,
+  ): void => {
+    const sx = frame * FRAME_WIDTH;
+    const sy = spec.index * FRAME_HEIGHT;
+    target.clearRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
+    if (spec.mirror) {
+      target.save();
+      target.scale(-1, 1);
+      target.drawImage(
+        sheet,
+        sx,
+        sy,
+        FRAME_WIDTH,
+        FRAME_HEIGHT,
+        -FRAME_WIDTH,
+        0,
+        FRAME_WIDTH,
+        FRAME_HEIGHT,
+      );
+      target.restore();
+      return;
+    }
+    target.drawImage(
+      sheet,
+      sx,
+      sy,
+      FRAME_WIDTH,
+      FRAME_HEIGHT,
+      0,
+      0,
+      FRAME_WIDTH,
+      FRAME_HEIGHT,
+    );
+  };
+
   const draw = (now: number): void => {
     const spec = PET_ROWS[row];
     const elapsed = (now - rowStartedAt) / 1000;
@@ -93,44 +127,14 @@ export async function createSpritePlayer(
         completeListener?.();
       }
     }
-    if (
-      lastDrawn &&
-      lastDrawn.row === row &&
-      lastDrawn.frame === frame &&
-      lastDrawn.outfit === outfit
-    ) {
+    if (lastDrawn && lastDrawn.row === row && lastDrawn.frame === frame) {
       requestAnimationFrame(draw);
       return;
     }
-    lastDrawn = { row, frame, outfit };
-    const sheet = sheets[outfit];
-    const sx = frame * FRAME_WIDTH;
-    const sy = spec.index * FRAME_HEIGHT;
-    context.clearRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
-    context.drawImage(
-      sheet,
-      sx,
-      sy,
-      FRAME_WIDTH,
-      FRAME_HEIGHT,
-      0,
-      0,
-      FRAME_WIDTH,
-      FRAME_HEIGHT,
-    );
+    lastDrawn = { row, frame };
+    paintFrame(context, spec, frame);
     drawReplyAlert(context);
-    sampleContext.clearRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
-    sampleContext.drawImage(
-      sheet,
-      sx,
-      sy,
-      FRAME_WIDTH,
-      FRAME_HEIGHT,
-      0,
-      0,
-      FRAME_WIDTH,
-      FRAME_HEIGHT,
-    );
+    paintFrame(sampleContext, spec, frame);
     drawReplyAlert(sampleContext);
     requestAnimationFrame(draw);
   };
@@ -142,9 +146,6 @@ export async function createSpritePlayer(
       row = next;
       rowStartedAt = performance.now();
       completeFired = false;
-    },
-    setOutfit(next) {
-      outfit = next;
     },
     setReplyAlertVisible(visible) {
       if (replyAlertVisible === visible) return;

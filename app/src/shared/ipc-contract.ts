@@ -1,4 +1,3 @@
-import type { PetOutfit } from "./animation-manifest";
 import type {
   PetBackground,
   PetOneShot,
@@ -133,9 +132,7 @@ export type SandiPetBridge = {
   // Toggled from alpha sampling so clicks pass through the sprite's
   // transparent pixels to the desktop beneath.
   setIgnoreMouseEvents(ignore: boolean): void;
-  getOutfit(): Promise<PetOutfit>;
   onDisplayEvent(listener: (event: PetDisplayEvent) => void): () => void;
-  onOutfitChanged(listener: (outfit: PetOutfit) => void): () => void;
 };
 
 // The bridge exposed to the chat window as window.sandiChat.
@@ -183,9 +180,7 @@ export const IPC = {
   petDragEnd: "pet:drag-end",
   petOpenChat: "pet:open-chat",
   petSetIgnoreMouse: "pet:set-ignore-mouse",
-  petGetOutfit: "pet:get-outfit",
   petDisplayEvent: "pet:display-event",
-  petOutfitChanged: "pet:outfit-changed",
 
   sessionList: "session:list",
   sessionCreate: "session:create",

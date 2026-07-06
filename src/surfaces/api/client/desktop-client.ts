@@ -6,7 +6,10 @@ import { executeLocalTool } from "@/surfaces/api/client/executors";
 import { postJson } from "@/surfaces/api/client/http";
 import {
   type DeviceImage,
+  RESPONSE_ATTACHMENT_EVENT,
   RESPONSE_CHUNK_EVENT,
+  type ResponseAttachment,
+  ResponseAttachmentSchema,
   type ResponseChunk,
   ResponseChunkSchema,
   TOOL_CALL_EVENT,
@@ -33,6 +36,11 @@ export type DesktopClientOptions = {
   // The hands-only `run` command omits it (deltas are ignored); the `chat` REPL
   // supplies it to print the answer as it arrives.
   onResponseChunk?: (chunk: ResponseChunk) => void;
+  // Called for each outbound attachment notice the server pushes during a turn
+  // (the attach_to_reply extension tool reporting a file Sandi wrote to this
+  // desktop). Optional for the same reason as onResponseChunk: the hands-only
+  // `run` command has no reply stream to attach anything to.
+  onResponseAttachment?: (attachment: ResponseAttachment) => void;
 };
 
 // One live SSE link. `signal` aborts when the link settles (so in-flight tool
@@ -160,6 +168,10 @@ function handleEvent(block: string, conn: Connection): void {
     handleResponseChunk(data, conn);
     return;
   }
+  if (event === RESPONSE_ATTACHMENT_EVENT) {
+    handleResponseAttachment(data, conn);
+    return;
+  }
   if (event !== TOOL_CALL_EVENT) return;
   // Run each call without blocking the read loop so the desktop can handle
   // several at once. The catch is a backstop: runToolCall already reports tool
@@ -183,6 +195,19 @@ function handleResponseChunk(data: string, conn: Connection): void {
   const parsed = ResponseChunkSchema.safeParse(raw);
   if (!parsed.success) return;
   conn.options.onResponseChunk(parsed.data);
+}
+
+function handleResponseAttachment(data: string, conn: Connection): void {
+  if (!conn.options.onResponseAttachment) return;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch {
+    return;
+  }
+  const parsed = ResponseAttachmentSchema.safeParse(raw);
+  if (!parsed.success) return;
+  conn.options.onResponseAttachment(parsed.data);
 }
 
 function handleCancel(data: string, conn: Connection): void {

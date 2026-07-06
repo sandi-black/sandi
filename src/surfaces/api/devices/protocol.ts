@@ -328,3 +328,21 @@ export const ResponseChunkSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type ResponseChunk = z.infer<typeof ResponseChunkSchema>;
+
+// An outbound attachment Sandi hands back mid-turn: the `attach_to_reply`
+// extension tool writes a file to the human's own desktop (with her local_*
+// tools) and reports its path here so the desktop client can find and surface
+// it, mirroring how a response_chunk carries the outbound text. `path` is a
+// hands-local path on the caller's machine, not a server path; the server never
+// reads it. `seq` is a per-turn monotonic counter, the same ordering discipline
+// as ResponseChunk, assigned by the extension rather than reusing the chunk
+// stream's counter (the two channels are independent).
+export const RESPONSE_ATTACHMENT_EVENT = "response_attachment";
+export const ResponseAttachmentSchema = z.object({
+  turnId: z.string().min(1),
+  seq: z.number().int().nonnegative(),
+  path: z.string().min(1),
+  name: z.string().min(1).optional(),
+  mimeType: z.string().min(1).optional(),
+});
+export type ResponseAttachment = z.infer<typeof ResponseAttachmentSchema>;

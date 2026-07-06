@@ -35,14 +35,16 @@ export function loadApiAppConfig(): ApiAppConfig {
     pi: {
       ...core.pi,
       // The api surface runs hands-local: load the proxy tools that route file
-      // and shell work to the caller's desktop, plus the response-stream
-      // extension that pushes the answer back token by token. Loaded only here,
-      // so other surfaces never carry them. Each self-disables on any turn that
-      // did not lease a tool broker.
+      // and shell work to the caller's desktop, the response-stream extension
+      // that pushes the answer back token by token, and attach_to_reply for
+      // outbound attachments. Loaded only here, so other surfaces never carry
+      // them. Each self-disables (or, for attach_to_reply, answers a graceful
+      // refusal) on any turn that did not lease a tool broker.
       extensionPaths: [
         ...core.pi.extensionPaths,
         apiLocalExecExtensionPath(),
         apiResponseStreamExtensionPath(),
+        apiAttachToReplyExtensionPath(),
       ],
     },
     api: loadApiConfig(core.paths.dataDir),
@@ -60,6 +62,13 @@ function apiResponseStreamExtensionPath(): string {
   return resolve(
     readEnv(["SANDI_PI_RESPONSE_STREAM_EXTENSION"]) ??
       "src/surfaces/api/pi-extension/response-stream.ts",
+  );
+}
+
+function apiAttachToReplyExtensionPath(): string {
+  return resolve(
+    readEnv(["SANDI_PI_ATTACH_TO_REPLY_EXTENSION"]) ??
+      "src/surfaces/api/pi-extension/attach-to-reply-tool.ts",
   );
 }
 

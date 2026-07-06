@@ -1,0 +1,253 @@
+import { createHash, randomBytes } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { mkdir, readFile, rename, rm } from "node:fs/promises";
+import type { IncomingMessage } from "node:http";
+import { join } from "node:path";
+
+import { z } from "zod/v4";
+import {
+  atomicWriteInPlace,
+  withManagedWrite,
+} from "@/lib/state/managed-write";
+
+// Content-addressed storage for attachments a caller uploads or a turn
+// references. A blob is named by its own sha256, so two identities uploading
+// the same bytes share one copy on disk; ownership (who may read it back) is
+// tracked in a sidecar rather than the path, since the path is derived purely
+// from content.
+
+// Kept generous but bounded: an attachment rides through a turn's context, and a
+// per-turn cap this size keeps a single upload from dwarfing everything else the
+// model has to hold. Enforced while streaming, not after, so an oversized upload
+// is abandoned mid-transfer rather than fully buffered first.
+export const MAX_ATTACHMENT_BYTES = 64 * 1024 * 1024;
+
+// The mime types Sandi accepts today. Images cover the common attach-a-photo
+// case; octet-stream is the fallback for anything the caller does not label more
+// specifically. Exported as a const (not baked into a private set) so widening
+// this list later is a one-line change here, not a hunt through the module.
+export const SUPPORTED_ATTACHMENT_MIME_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "application/octet-stream",
+] as const;
+
+const SUPPORTED_MIME_SET = new Set<string>(SUPPORTED_ATTACHMENT_MIME_TYPES);
+
+export function isSupportedAttachmentMimeType(value: string): boolean {
+  return SUPPORTED_MIME_SET.has(value);
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+const AttachmentMetadataSchema = z.object({
+  hash: z.string().regex(SHA256_HEX, "hash must be 64 lowercase hex chars"),
+  size: z.number().int().nonnegative(),
+  mimeType: z.string().min(1),
+  name: z.string().min(1),
+  ownerIdentityIds: z.array(z.string().min(1)),
+  createdAt: z.iso.datetime(),
+});
+export type AttachmentMetadata = z.infer<typeof AttachmentMetadataSchema>;
+
+export class AttachmentTooLargeError extends Error {
+  constructor() {
+    super(`attachment exceeds the ${MAX_ATTACHMENT_BYTES} byte cap`);
+    this.name = "AttachmentTooLargeError";
+  }
+}
+
+export type AttachmentUploadResult = {
+  hash: string;
+  size: number;
+  mimeType: string;
+  name: string;
+};
+
+export type AttachmentReadResult = {
+  metadata: AttachmentMetadata;
+  path: string;
+};
+
+// Blobs live at attachments/<first 2 hex chars>/<hash>, sharded by the hash's
+// own prefix so one directory never accumulates every blob the server has ever
+// seen. The sidecar `<hash>.json` sits alongside the blob it describes.
+export class AttachmentStore {
+  readonly #root: string;
+
+  constructor(root: string) {
+    this.#root = root;
+  }
+
+  // Streams a request body into the store, hashing as it goes. The upload lands
+  // at a temp path in the same shard directory the final blob would use, so the
+  // rename into place is a same-volume atomic move rather than a cross-device
+  // copy. Dedup: if the hash already exists, the temp file is discarded and only
+  // the sidecar gains the uploader (and fills in name/mime if the stored ones
+  // were never set), so re-uploading identical bytes never duplicates storage.
+  async upload(input: {
+    body: IncomingMessage;
+    mimeType: string;
+    name: string;
+    identityId: string;
+    maxBytes?: number;
+  }): Promise<AttachmentUploadResult> {
+    const cap = input.maxBytes ?? MAX_ATTACHMENT_BYTES;
+    const stagingDir = join(this.#root, "_staging");
+    await mkdir(stagingDir, { recursive: true });
+    const tempPath = join(stagingDir, `${randomBytes(16).toString("hex")}.tmp`);
+
+    const hash = createHash("sha256");
+    let size = 0;
+    let overCap = false;
+    const writeStream = createWriteStream(tempPath);
+
+    try {
+      await new Promise<void>((resolveUpload, rejectUpload) => {
+        input.body.on("data", (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > cap) {
+            overCap = true;
+            // Stop pulling more of the body and let the caller answer 413; the
+            // write stream is torn down in the outer catch/finally.
+            input.body.pause();
+            input.body.removeAllListeners("data");
+            writeStream.destroy();
+            rejectUpload(new AttachmentTooLargeError());
+            return;
+          }
+          hash.update(chunk);
+          writeStream.write(chunk);
+        });
+        input.body.on("end", () => {
+          writeStream.end();
+        });
+        input.body.on("error", (error) => {
+          writeStream.destroy();
+          rejectUpload(error);
+        });
+        writeStream.on("finish", () => {
+          if (!overCap) resolveUpload();
+        });
+        writeStream.on("error", (error) => {
+          rejectUpload(error);
+        });
+      });
+    } catch (error) {
+      await rm(tempPath, { force: true });
+      throw error;
+    }
+
+    const digest = hash.digest("hex");
+    const blobPath = this.#blobPath(digest);
+    const metaPath = this.#metadataPath(digest);
+    await mkdir(this.#shardDir(digest), { recursive: true });
+
+    // Two identities (or two turns from the same identity) can upload identical
+    // bytes at once; each is a separate process, so the read-modify-write of the
+    // sidecar runs under the cross-process managed-write lock keyed by its own
+    // path, exactly like every other Sandi-managed state file. The blob rename
+    // itself is a plain filesystem atomic op and idempotent for identical
+    // content, so it does not need the lock.
+    return withManagedWrite(metaPath, async () => {
+      const existing = await this.#readMetadata(digest);
+      if (existing) {
+        // Dedup: the bytes are already stored, so discard the freshly uploaded
+        // temp copy and only extend the sidecar's ownership.
+        await rm(tempPath, { force: true });
+        const merged: AttachmentMetadata = {
+          ...existing,
+          name: existing.name || input.name,
+          mimeType: existing.mimeType || input.mimeType,
+          ownerIdentityIds: addOwner(
+            existing.ownerIdentityIds,
+            input.identityId,
+          ),
+        };
+        await this.#writeMetadata(metaPath, merged);
+        return {
+          hash: digest,
+          size: existing.size,
+          mimeType: merged.mimeType,
+          name: merged.name,
+        };
+      }
+
+      // Rename into place before writing the sidecar, so a reader can never see
+      // a metadata file whose blob is not yet present.
+      await rename(tempPath, blobPath);
+      const metadata: AttachmentMetadata = {
+        hash: digest,
+        size,
+        mimeType: input.mimeType,
+        name: input.name,
+        ownerIdentityIds: [input.identityId],
+        createdAt: new Date().toISOString(),
+      };
+      await this.#writeMetadata(metaPath, metadata);
+      return { hash: digest, size, mimeType: input.mimeType, name: input.name };
+    });
+  }
+
+  // Reads a blob back, scoped to the requesting identity: an attachment that
+  // exists but is not owned by this identity is indistinguishable from a missing
+  // one, so a caller can never probe for another identity's uploads.
+  async get(
+    hash: string,
+    identityId: string,
+  ): Promise<AttachmentReadResult | undefined> {
+    if (!SHA256_HEX.test(hash)) return undefined;
+    const metadata = await this.#readMetadata(hash);
+    if (!metadata) return undefined;
+    if (!metadata.ownerIdentityIds.includes(identityId)) return undefined;
+    return { metadata, path: this.#blobPath(hash) };
+  }
+
+  #shardDir(hash: string): string {
+    return join(this.#root, hash.slice(0, 2));
+  }
+
+  #blobPath(hash: string): string {
+    return join(this.#shardDir(hash), hash);
+  }
+
+  #metadataPath(hash: string): string {
+    return join(this.#shardDir(hash), `${hash}.json`);
+  }
+
+  async #readMetadata(hash: string): Promise<AttachmentMetadata | undefined> {
+    let raw: string;
+    try {
+      raw = await readFile(this.#metadataPath(hash), "utf8");
+    } catch (error) {
+      if (isMissingFileError(error)) return undefined;
+      throw error;
+    }
+    return AttachmentMetadataSchema.parse(JSON.parse(raw));
+  }
+
+  async #writeMetadata(
+    path: string,
+    metadata: AttachmentMetadata,
+  ): Promise<void> {
+    // Called from inside the metaPath's managed-write critical section, so this
+    // only needs the atomic temp-then-rename primitive, not the lock itself.
+    await atomicWriteInPlace(path, `${JSON.stringify(metadata, null, 2)}\n`);
+  }
+}
+
+function addOwner(owners: readonly string[], identityId: string): string[] {
+  if (owners.includes(identityId)) return [...owners];
+  return [...owners, identityId];
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ENOENT"
+  );
+}

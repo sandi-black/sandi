@@ -9,6 +9,7 @@ import type { DesktopCredentials } from "@/surfaces/api/client/credentials";
 import { runDesktopClient } from "@/surfaces/api/client/desktop-client";
 import { createResponsePrinter } from "@/surfaces/api/client/response-printer";
 import { sendTurn } from "@/surfaces/api/client/turns";
+import type { ResponseAttachment } from "@/surfaces/api/devices/protocol";
 
 // The interactive chat REPL behind `npm run client -- chat`. It holds the device
 // link in the background (so tool calls still run locally), reads a line at a
@@ -46,6 +47,10 @@ export async function runChatRepl(options: ChatReplOptions): Promise<void> {
   const linked = new Promise<void>((resolveLinked) => {
     markLinked = resolveLinked;
   });
+  // Tracks the turn currently awaiting a reply, so an attachment notice for a
+  // stale or unrelated turn (a straggler after the REPL moved on) is not
+  // printed under the wrong line.
+  let currentTurnId: string | undefined;
   const link = runDesktopClient({
     credentials,
     rootDir,
@@ -56,6 +61,10 @@ export async function runChatRepl(options: ChatReplOptions): Promise<void> {
       process.stderr.write(`[sandi] ${message}\n`);
     },
     onResponseChunk: (chunk) => printer.onChunk(chunk),
+    onResponseAttachment: (attachment) => {
+      if (attachment.turnId !== currentTurnId) return;
+      printAttachmentNote(attachment);
+    },
   }).catch((error: unknown) => {
     process.stderr.write(
       `[sandi] link error: ${error instanceof Error ? error.message : String(error)}\n`,
@@ -85,6 +94,7 @@ export async function runChatRepl(options: ChatReplOptions): Promise<void> {
     // Mint the turn id here so the printer can bind its live preview to this
     // exact turn and ignore any straggling delta from the previous one.
     const turnId = randomUUID();
+    currentTurnId = turnId;
     printer.begin(turnId);
     process.stdout.write("sandi> ");
     const outcome = await sendTurn({
@@ -108,6 +118,14 @@ export async function runChatRepl(options: ChatReplOptions): Promise<void> {
   controller.abort();
   await link;
   process.stdout.write("\nchat ended\n");
+}
+
+// Prints a one-line note for an attachment Sandi handed back mid-turn, keeping
+// the reference CLI at feature parity with a future GUI's attachment surface.
+// Prefers the display name (what a human would recognize); falls back to the
+// path when the tool call named none.
+function printAttachmentNote(attachment: ResponseAttachment): void {
+  process.stdout.write(`\n[attached: ${attachment.name ?? attachment.path}]\n`);
 }
 
 function delay(ms: number): Promise<void> {

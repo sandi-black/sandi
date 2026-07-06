@@ -24,6 +24,9 @@ async function verifyToolBroker(): Promise<void> {
     await verifyStreamRelay(registry, broker);
     await verifyStreamToGoneDevice(broker);
     await verifyStreamTurnMismatch(registry, broker);
+    await verifyAttachmentRelay(registry, broker);
+    await verifyAttachmentToGoneDevice(broker);
+    await verifyAttachmentTurnMismatch(registry, broker);
   } finally {
     broker.stop();
     registry.closeAll();
@@ -578,6 +581,135 @@ async function verifyStreamToGoneDevice(broker: ToolBroker): Promise<void> {
   assertEqual(response.status, 503, "a delta to an absent device returns 503");
   lease.revoke();
   console.log("ok a delta to an unconnected device returns 503");
+}
+
+async function verifyAttachmentRelay(
+  registry: DeviceRegistry,
+  broker: ToolBroker,
+): Promise<void> {
+  // Capture the device's SSE writes so we can confirm attach_to_reply's notice
+  // lands as a response_attachment event on its link.
+  const writes: string[] = [];
+  registry.connect({
+    key: "d-attach",
+    deviceId: "d-attach",
+    identityId: "i",
+    write: (chunk) => {
+      writes.push(chunk);
+      return true;
+    },
+    end: () => {},
+  });
+  const lease = broker.lease({
+    key: "d-attach",
+    signal: new AbortController().signal,
+  });
+
+  const attachment = {
+    turnId: "turn-1",
+    seq: 0,
+    path: "C:/Users/hopper/Desktop/plot.png",
+    name: "plot.png",
+  };
+  const ok = await postCall(
+    lease.ticket.url,
+    lease.ticket.token,
+    attachment,
+    "/attachment",
+  );
+  assertEqual(ok.status, 202, "a relayed attachment is accepted with 202");
+  assert(
+    writes.some(
+      (w) => w.includes("event: response_attachment") && w.includes("plot.png"),
+    ),
+    "the attachment reaches the device as a response_attachment event",
+  );
+
+  // A malformed attachment is rejected at the broker boundary, not relayed.
+  const bad = await postCall(
+    lease.ticket.url,
+    lease.ticket.token,
+    { turnId: "turn-1", seq: 0 },
+    "/attachment",
+  );
+  assertEqual(bad.status, 400, "a malformed attachment is rejected");
+  lease.revoke();
+  console.log(
+    "ok an outbound attachment relays to the device as a response_attachment",
+  );
+}
+
+async function verifyAttachmentTurnMismatch(
+  registry: DeviceRegistry,
+  broker: ToolBroker,
+): Promise<void> {
+  // A lease bound to a turn id relays only that turn's attachments; a notice
+  // tagged with another turn is rejected so it cannot be attributed wrongly.
+  const writes: string[] = [];
+  registry.connect({
+    key: "d-attach-turn",
+    deviceId: "d-attach-turn",
+    identityId: "i",
+    write: (chunk) => {
+      writes.push(chunk);
+      return true;
+    },
+    end: () => {},
+  });
+  const lease = broker.lease({
+    key: "d-attach-turn",
+    signal: new AbortController().signal,
+    turnId: "turn-A",
+  });
+
+  const wrong = await postCall(
+    lease.ticket.url,
+    lease.ticket.token,
+    { turnId: "turn-B", seq: 0, path: "x" },
+    "/attachment",
+  );
+  assertEqual(wrong.status, 409, "an attachment for another turn is rejected");
+  assert(
+    !writes.some((w) => w.includes("response_attachment")),
+    "a mismatched attachment never reaches the device",
+  );
+
+  const right = await postCall(
+    lease.ticket.url,
+    lease.ticket.token,
+    { turnId: "turn-A", seq: 0, path: "x" },
+    "/attachment",
+  );
+  assertEqual(
+    right.status,
+    202,
+    "an attachment for the leased turn is relayed",
+  );
+  lease.revoke();
+  console.log("ok an attachment notice must match the leased turn id");
+}
+
+async function verifyAttachmentToGoneDevice(broker: ToolBroker): Promise<void> {
+  // A turn leased for a device that never connected: an attachment notice has
+  // nowhere to land, so the broker answers 503 and the tool surfaces that to
+  // the model rather than silently dropping it.
+  const lease = broker.lease({
+    key: "d-attach-ghost",
+    signal: new AbortController().signal,
+  });
+  const response = await postCall(
+    lease.ticket.url,
+    lease.ticket.token,
+    { turnId: "turn-1", seq: 0, path: "x" },
+    "/attachment",
+  );
+  assertEqual(
+    response.status,
+    503,
+    "an attachment to an absent device returns 503",
+  );
+  lease.revoke();
+  console.log("ok an attachment to an unconnected device returns 503");
 }
 
 type EchoDispatch = { id: string; tool: string };

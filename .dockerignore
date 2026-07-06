@@ -5,6 +5,11 @@ node_modules
 dist
 coverage
 
+# The desktop app never ships in server images; only its manifest is needed
+# so `npm ci --workspaces=false` can validate the workspace-aware lockfile.
+app/**
+!app/package.json
+
 .env
 .env.*
 !.env.example

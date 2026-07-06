@@ -233,6 +233,49 @@ process.stdout.write("fake model output\\n");
     "api turns pass the leased broker token to the child",
   );
 
+  // Attachment paths ride as `@<path>` argv tokens alongside the stdin-piped
+  // message, per the mechanism confirmed in ProviderTurnRequest.attachmentPaths.
+  const attachmentPath = join(tempRoot, "attachment-fixtures", "photo.png");
+  await new PiCliClient(config).generateTurn({
+    conversationId: "api-with-attachments",
+    instructions: "attachment instructions",
+    input: "look at this",
+    sessionMode: "none",
+    attachmentPaths: [attachmentPath],
+    memoryContext: {
+      memoryRoot: join(tempRoot, "memory"),
+      memoryScopes: [],
+      participants: [],
+    },
+  });
+  const attachmentRecord = parseRecord(await readFile(recordPath, "utf8"));
+  assert(
+    attachmentRecord.args.includes(`@${attachmentPath}`),
+    "an attachment path is passed as an @-prefixed argv token",
+  );
+  assert(
+    attachmentRecord.stdin === "look at this",
+    "the turn's message still rides on stdin alongside the @-file token",
+  );
+
+  // No attachments: no @-token at all, so a plain turn's argv is unaffected.
+  await new PiCliClient(config).generateTurn({
+    conversationId: "api-without-attachments",
+    instructions: "no attachment instructions",
+    input: "nothing attached",
+    sessionMode: "none",
+    memoryContext: {
+      memoryRoot: join(tempRoot, "memory"),
+      memoryScopes: [],
+      participants: [],
+    },
+  });
+  const noAttachmentRecord = parseRecord(await readFile(recordPath, "utf8"));
+  assert(
+    !noAttachmentRecord.args.some((arg) => arg.startsWith("@")),
+    "a turn with no attachmentPaths carries no @-prefixed argv token",
+  );
+
   console.log("Pi harness verification passed");
 } finally {
   delete process.env["FAKE_PI_RECORD_PATH"];

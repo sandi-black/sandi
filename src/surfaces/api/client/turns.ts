@@ -32,6 +32,10 @@ export async function sendTurn(input: {
   // server tags the stream with it and the REPL can bind its live preview to the
   // right turn, ignoring a straggler from a prior one.
   turnId?: string;
+  // Attachments already uploaded via POST /v1/attachments, referenced by hash.
+  // Omitted from the body entirely when empty so a plain turn keeps today's
+  // exact wire shape (no attachments field at all).
+  attachments?: { hash: string; name?: string }[];
   signal?: AbortSignal;
 }): Promise<TurnOutcome> {
   let response: JsonResponse;
@@ -43,6 +47,9 @@ export async function sendTurn(input: {
       body: {
         input: input.input,
         ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+        ...(input.attachments && input.attachments.length > 0
+          ? { attachments: input.attachments }
+          : {}),
       },
       timeoutMs: TURN_TIMEOUT_MS,
       ...(input.signal ? { signal: input.signal } : {}),

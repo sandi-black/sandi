@@ -8,8 +8,10 @@ ENV NODE_ENV=production
 
 FROM base AS check
 
+# The desktop app workspace is excluded from server images: install with
+# workspace resolution disabled so the Electron tree never enters the image.
 COPY package.json package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci --workspaces=false
 
 COPY . .
 RUN npm run typecheck
@@ -35,7 +37,7 @@ ENV PATH="/app/node_modules/.bin:${PATH}" \
   SANDI_TOKEN_USAGE_PATH="/app/data/provider-usage/tokens.jsonl"
 
 COPY --chown=node:node package.json package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev \
+RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev --workspaces=false \
   && npm cache clean --force
 
 COPY --chown=node:node tsconfig.json ./

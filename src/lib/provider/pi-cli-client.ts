@@ -56,6 +56,18 @@ export type ProviderTurnRequest = {
   // tags each delta with it and the desktop can scope a turn's stream. When
   // absent, the child falls back to an internally generated id.
   turnId?: string;
+  // Absolute paths to files (materialized from a turn's attachment refs) that
+  // should enter the model's context alongside `input`. Passed to the pi CLI as
+  // `@<path>` argv tokens: pi's print-mode message builder concatenates piped
+  // stdin content, @-file text, and the first positional message into one
+  // initial prompt (confirmed in
+  // node_modules/@earendil-works/pi-coding-agent/dist/cli/initial-message.js),
+  // and processFileArguments (dist/cli/file-processor.js) reads each @-file
+  // independently of argv position and of stdin, converting an image into an
+  // image attachment on that same initial message. So @-file tokens work
+  // alongside the existing stdin-piped `input` without changing how `input` is
+  // delivered.
+  attachmentPaths?: string[];
   signal?: AbortSignal;
 };
 
@@ -247,6 +259,13 @@ export class PiCliClient implements ModelProviderClient {
     const excludeTools = request.surfaceContext?.excludeTools ?? [];
     if (excludeTools.length > 0) {
       args.push("--exclude-tools", excludeTools.join(","));
+    }
+    // Attachment paths ride as `@<path>` argv tokens (see the comment on
+    // ProviderTurnRequest.attachmentPaths for how pi merges these with the
+    // stdin-piped message). Order among the flags above does not matter: pi's
+    // arg parser recognizes an `@`-prefixed token in any position.
+    for (const attachmentPath of request.attachmentPaths ?? []) {
+      args.push(`@${attachmentPath}`);
     }
 
     const auditFields = providerAccountAuditFields({

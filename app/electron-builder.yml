@@ -1,0 +1,45 @@
+# Packaging for the desktop app. Windows is the shipped target (NSIS installer
+# plus a portable exe); the mac and linux blocks are stubs so a future build
+# has a starting point, and nothing in the app code is Windows-only beyond
+# what these targets imply.
+#
+# Known gap: the artifacts are unsigned, so SmartScreen warns on first run.
+
+appId: black.jessica.sandi
+productName: Sandi
+directories:
+  buildResources: build
+  output: release
+
+# electron-vite bundles every runtime dependency into out/, so the packaged
+# app ships only those bundles; node_modules stays out of the artifact.
+files:
+  - out/**
+  - "!node_modules/**"
+asar: true
+npmRebuild: false
+
+win:
+  icon: build/icons/icon.ico
+  target:
+    - nsis
+    - portable
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: Sandi
+  artifactName: ${productName}-${version}-setup.${ext}
+
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}
+
+# Stubs: not built by `npm run package` (which passes --win), kept so the
+# config is one flag away from other platforms.
+mac:
+  category: public.app-category.productivity
+  icon: build/icons/icon.ico
+linux:
+  target:
+    - AppImage
+  category: Utility

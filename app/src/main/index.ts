@@ -273,7 +273,9 @@ async function main(): Promise<void> {
           type: "one-shot",
           row: event.ok ? "jumping" : "failed",
         });
-        if (event.ok && !chat.window.isVisible()) {
+        // Failures earn the marker as much as replies do: either way there is
+        // an outcome waiting in a chat the user cannot currently see.
+        if (!chat.window.isVisible()) {
           pet.sendDisplayEvent({ type: "reply-alert", visible: true });
         }
         refreshPetBackground();

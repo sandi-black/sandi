@@ -68,6 +68,9 @@ async function verifyApiBot(): Promise<void> {
     await verifyUnmappedIdentityIsRejected(base, provider);
     await verifyMalformedTurnIdIsRejected(base, provider);
     await verifyValidTurn(base, provider);
+    await verifyTitleTurn(base, provider);
+    await verifyTitleRejectsEmptyMessage(base, provider);
+    await verifyTitleRequiresAuth(base, provider);
     await verifySecondTurnDoesNotDuplicateParticipant(base);
     await verifyManifestPersisted(dataDir);
     await verifyTokenRevocationAndEnrollment(dataDir);
@@ -285,6 +288,101 @@ async function verifyValidTurn(
   assertEqual(participant.identityId, IDENTITY_ID, "participant identityId");
   console.log(
     "ok POST valid turn returns 200 reusing the human's Discord identity",
+  );
+}
+
+async function verifyTitleTurn(
+  base: string,
+  provider: RecordingProvider,
+): Promise<void> {
+  const response = await fetch(titleUrl(base), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${RAW_TOKEN}`,
+    },
+    body: JSON.stringify({ message: "help me plan a dinner party" }),
+  });
+  assertEqual(response.status, 200, "title status");
+  const body = await response.json();
+  // The fake provider's reply normalizes to a title (trailing period stripped).
+  assertEqual(
+    isRecord(body) && body["title"],
+    "Sandi reply from the fake provider",
+    "title text",
+  );
+
+  const request = provider.lastRequest;
+  if (!request) throw new Error("fake provider received no title request");
+  // A title turn is stateless and runs against a synthetic id so it never
+  // resumes or writes the real conversation's session.
+  assertEqual(request.sessionMode, "none", "title turn sessionMode");
+  assertEqual(
+    request.conversationId,
+    `title:api:${IDENTITY_ID}:${DEVICE_ID}:${CONVERSATION_ID}`,
+    "title turn synthetic conversationId",
+  );
+  assertEqual(
+    request.accountRouting?.identityId,
+    IDENTITY_ID,
+    "title turn accountRouting identityId",
+  );
+  // The message the human sent must reach the model as the thing to title.
+  if (!request.input.includes("help me plan a dinner party")) {
+    console.error("title turn input: expected to carry the user's message");
+    process.exit(1);
+  }
+  console.log("ok POST title returns 200 with a normalized one-off title");
+}
+
+async function verifyTitleRejectsEmptyMessage(
+  base: string,
+  provider: RecordingProvider,
+): Promise<void> {
+  const before = provider.callCount;
+  const response = await fetch(titleUrl(base), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${RAW_TOKEN}`,
+    },
+    body: JSON.stringify({ message: "   " }),
+  });
+  assertEqual(response.status, 400, "empty title message status");
+  const body = await response.json();
+  assertEqual(
+    isRecord(body) && body["error"],
+    "invalid_message",
+    "empty title message error code",
+  );
+  assertEqual(
+    provider.callCount,
+    before,
+    "empty title message provider not called",
+  );
+  console.log(
+    "ok POST title with an empty message returns 400, provider untouched",
+  );
+}
+
+async function verifyTitleRequiresAuth(
+  base: string,
+  provider: RecordingProvider,
+): Promise<void> {
+  const before = provider.callCount;
+  const response = await fetch(titleUrl(base), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "hello" }),
+  });
+  assertEqual(response.status, 401, "title without auth status");
+  assertEqual(
+    provider.callCount,
+    before,
+    "title without auth provider not called",
+  );
+  console.log(
+    "ok POST title without Authorization returns 401, provider untouched",
   );
 }
 
@@ -648,6 +746,10 @@ async function writeFixtures(dataDir: string): Promise<void> {
 
 function turnsUrl(base: string): string {
   return `${base}/v1/conversations/${encodeURIComponent(CONVERSATION_ID)}/turns`;
+}
+
+function titleUrl(base: string): string {
+  return `${base}/v1/conversations/${encodeURIComponent(CONVERSATION_ID)}/title`;
 }
 
 class RecordingProvider implements ModelProviderClient {

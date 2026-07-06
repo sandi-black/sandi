@@ -72,8 +72,14 @@ const IndexSchema = z.object({
 
 const PREVIEW_CHARS = 120;
 
+// The title a conversation carries until it is named: created with it, and
+// auto-titling treats it as "still untitled" so it fires exactly once and never
+// overwrites a real title.
+export const DEFAULT_SESSION_TITLE = "New conversation";
+
 export type TranscriptStore = {
   listSessions(): SessionSummary[];
+  getSession(conversationId: string): SessionSummary | undefined;
   createSession(title?: string): Promise<SessionSummary>;
   getTranscript(conversationId: string): Promise<TranscriptEntry[]>;
   appendEntry(conversationId: string, entry: TranscriptEntry): Promise<void>;
@@ -104,13 +110,20 @@ export async function createTranscriptStore(
       return sessions.map((session) => ({ ...session }));
     },
 
+    getSession(conversationId) {
+      const session = sessions.find(
+        (candidate) => candidate.conversationId === conversationId,
+      );
+      return session ? { ...session } : undefined;
+    },
+
     async createSession(title) {
       const now = new Date().toISOString();
       const session: SessionSummary = {
         // The same shape the reference CLI mints; the server treats it as an
         // opaque per-device conversation segment.
         conversationId: `desktop-${randomUUID()}`,
-        title: title ?? "New conversation",
+        title: title ?? DEFAULT_SESSION_TITLE,
         createdAt: now,
         updatedAt: now,
         lastPreview: "",

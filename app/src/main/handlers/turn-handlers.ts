@@ -4,6 +4,7 @@ import { IPC } from "@shared/ipc-contract";
 import { ipcMain } from "electron";
 
 import type { AttachmentStaging } from "../attachment-staging";
+import type { AutoTitler } from "../auto-titler";
 import { SubmitTurnSchema, TurnIdSchema } from "../ipc-schemas";
 import type { TranscriptStore } from "../transcript-store";
 import type { TurnManager } from "../turn-manager";
@@ -16,8 +17,9 @@ export function registerTurnHandlers(input: {
   turnManager: TurnManager;
   store: TranscriptStore;
   staging: AttachmentStaging;
+  autoTitler: AutoTitler;
 }): void {
-  const { turnManager, store, staging } = input;
+  const { turnManager, store, staging, autoTitler } = input;
 
   ipcMain.handle(IPC.turnSubmit, async (_event, payload: unknown) => {
     const parsed = SubmitTurnSchema.parse(payload);
@@ -43,6 +45,13 @@ export function registerTurnHandlers(input: {
       text: parsed.text,
       turnId,
       attachmentIds: parsed.attachmentIds,
+    });
+    // Name a fresh conversation from its opening message, in the background:
+    // the guard inside only titles a still-unnamed conversation once, so this
+    // is a no-op on every later message.
+    void autoTitler.maybeTitle({
+      conversationId: parsed.conversationId,
+      message: parsed.text,
     });
     return { turnId };
   });

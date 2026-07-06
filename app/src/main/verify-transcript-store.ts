@@ -20,6 +20,19 @@ async function main(): Promise<void> {
     assert.equal(ada.title, "New conversation", "default title");
     assert.equal(store.listSessions().length, 2);
 
+    // getSession returns a copy of one session by id, and undefined for an
+    // unknown id (the auto-titler leans on both).
+    assert.equal(
+      store.getSession(ada.conversationId)?.title,
+      "New conversation",
+      "getSession finds a session by id",
+    );
+    assert.equal(
+      store.getSession("desktop-nope"),
+      undefined,
+      "getSession returns undefined for an unknown id",
+    );
+
     await store.appendEntry(grace.conversationId, {
       type: "user",
       turnId: "t1",

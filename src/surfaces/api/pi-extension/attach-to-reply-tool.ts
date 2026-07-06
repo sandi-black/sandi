@@ -102,6 +102,9 @@ export function validateAttachParams(
   if (path.length === 0 || path.length > 4096) {
     return { ok: false, reason: "path must be 1 to 4096 characters" };
   }
+  if (path.includes(String.fromCharCode(0))) {
+    return { ok: false, reason: "path must not contain a NUL byte" };
+  }
   const rawName = "name" in raw ? raw.name : undefined;
   if (rawName !== undefined && typeof rawName !== "string") {
     return { ok: false, reason: "name must be a string when present" };
@@ -111,10 +114,10 @@ export function validateAttachParams(
     if (name.length === 0 || name.length > 200) {
       return { ok: false, reason: "name must be 1 to 200 characters" };
     }
-    if (name.includes("/") || name.includes("\\")) {
+    if (!isSafeFilename(name)) {
       return {
         ok: false,
-        reason: "name must be a single filename, not a path",
+        reason: "name must be a filesystem-safe single filename",
       };
     }
   }
@@ -122,6 +125,18 @@ export function validateAttachParams(
     ok: true,
     params: { path, ...(name !== undefined ? { name } : {}) },
   };
+}
+
+// A safe single filename: no path separators and no C0/DEL control bytes (code
+// points 0-31 and 127), which corrupt the name the desktop offers as a save-as
+// suggestion. Code-point checks keep the source plain ASCII.
+function isSafeFilename(value: string): boolean {
+  for (const char of value) {
+    if (char === "/" || char === "\\") return false;
+    const code = char.charCodeAt(0);
+    if (code <= 31 || code === 127) return false;
+  }
+  return true;
 }
 
 export default function attachToReplyToolExtension(pi: ExtensionAPI): void {

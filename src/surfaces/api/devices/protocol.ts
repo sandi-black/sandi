@@ -342,17 +342,40 @@ export type ResponseChunk = z.infer<typeof ResponseChunkSchema>;
 // a single bounded filename (the desktop offers it as a save-as suggestion)
 // and mimeType a plain type/subtype token pair.
 export const RESPONSE_ATTACHMENT_EVENT = "response_attachment";
+
+// A safe single filename for the save-as suggestion: no path separators and no
+// C0/DEL control bytes (code points 0-31 and 127). Code-point checks keep the
+// source plain ASCII rather than embedding a control-char regex literal.
+function isSafeAttachmentName(value: string): boolean {
+  for (const char of value) {
+    if (char === "/" || char === "\\") return false;
+    const code = char.charCodeAt(0);
+    if (code <= 31 || code === 127) return false;
+  }
+  return true;
+}
+
 export const ResponseAttachmentSchema = z.object({
   turnId: z.string().min(1),
   seq: z.number().int().nonnegative(),
-  path: z.string().min(1).max(4096),
+  // A NUL byte makes the desktop's fs calls throw once it resolves this to an
+  // absolute path, so it is rejected here even though the server never reads
+  // the path itself.
+  path: z
+    .string()
+    .min(1)
+    .max(4096)
+    .refine(
+      (value) => !value.includes(String.fromCharCode(0)),
+      "path must not contain a NUL byte",
+    ),
   name: z
     .string()
     .min(1)
     .max(200)
     .refine(
-      (value) => !value.includes("/") && !value.includes("\\"),
-      "name must be a single filename, not a path",
+      isSafeAttachmentName,
+      "name must be a filesystem-safe single filename",
     )
     .optional(),
   mimeType: z

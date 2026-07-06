@@ -1,7 +1,8 @@
-import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { net, protocol } from "electron";
+
+import { LocalPathSchema } from "./ipc-schemas";
 
 // Serves local files to the renderers as sandi-asset://<encoded absolute
 // path>, for inline images and attachment previews. Any absolute path is
@@ -37,9 +38,10 @@ export function assetUrl(path: string): string {
 }
 
 // Renderer content is what mints these URLs, so the decoded value is parsed
-// into the one shape the handler serves (an absolute local path, bounded in
-// length) rather than passed to pathToFileURL as whatever string survived
-// decoding.
+// into the one shape the handler serves (a bounded, NUL-free, absolute local
+// path) rather than passed to pathToFileURL as whatever string survived
+// decoding. It reuses LocalPathSchema so this boundary and the IPC path
+// boundary cannot drift apart.
 function decodeAssetUrl(url: string): string | undefined {
   const prefix = `${ASSET_SCHEME}://`;
   if (!url.startsWith(prefix)) return undefined;
@@ -49,7 +51,6 @@ function decodeAssetUrl(url: string): string | undefined {
   } catch {
     return undefined;
   }
-  if (decoded.length === 0 || decoded.length > 4096) return undefined;
-  if (!isAbsolute(decoded)) return undefined;
-  return decoded;
+  const parsed = LocalPathSchema.safeParse(decoded);
+  return parsed.success ? parsed.data : undefined;
 }

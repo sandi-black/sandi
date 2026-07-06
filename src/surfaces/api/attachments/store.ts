@@ -45,13 +45,27 @@ export type SupportedAttachmentMimeType = z.infer<
   typeof SupportedAttachmentMimeTypeSchema
 >;
 
+// A safe single on-disk filename: no path separators (it must not escape its
+// directory when used as a materialized blob's basename) and no C0/DEL control
+// bytes (code points 0-31 and 127), which corrupt the name copyFile and the
+// desktop save-as later rely on. Written with code-point checks rather than a
+// control-char regex literal so the source stays plain ASCII.
+export function isFilesystemSafeName(value: string): boolean {
+  for (const char of value) {
+    if (char === "/" || char === "\\") return false;
+    const code = char.charCodeAt(0);
+    if (code <= 31 || code === 127) return false;
+  }
+  return true;
+}
+
 export const AttachmentNameSchema = z
   .string()
   .min(1)
   .max(200)
   .refine(
-    (value) => !value.includes("/") && !value.includes("\\"),
-    "name must be a single filename, not a path",
+    isFilesystemSafeName,
+    "name must be a filesystem-safe single filename",
   );
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -75,8 +89,8 @@ const AttachmentMetadataSchema = z.object({
     .min(1)
     .max(200)
     .refine(
-      (value) => !value.includes("/") && !value.includes("\\"),
-      "name must be a single filename, not a path",
+      isFilesystemSafeName,
+      "name must be a filesystem-safe single filename",
     ),
   ownerIdentityIds: z.array(z.string().min(1)),
   createdAt: z.iso.datetime(),

@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { z } from "zod/v4";
-import type { AttachmentStore } from "@/surfaces/api/attachments/store";
+import {
+  AttachmentNameSchema,
+  type AttachmentStore,
+} from "@/surfaces/api/attachments/store";
 
 // A turn's attachment refs name blobs already in the store; the provider needs
 // real files on disk (so pi's `@file` mechanism and, eventually, any local tool
@@ -23,17 +26,10 @@ export const AttachmentRefSchema = z.object({
     .string()
     .regex(ATTACHMENT_HASH, "hash must be 64 lowercase hex chars"),
   // The override name becomes a materialized file's basename, so it is bound
-  // to a single filename at the wire boundary; sanitizeFileName below stays
+  // to a filesystem-safe single filename at the wire boundary (reusing the
+  // store's own schema so the two cannot drift); sanitizeFileName below stays
   // as defense in depth for the stored name path.
-  name: z
-    .string()
-    .min(1)
-    .max(200)
-    .refine(
-      (value) => !value.includes("/") && !value.includes("\\"),
-      "name must be a single filename, not a path",
-    )
-    .optional(),
+  name: AttachmentNameSchema.optional(),
 });
 export type AttachmentRef = z.infer<typeof AttachmentRefSchema>;
 

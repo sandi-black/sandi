@@ -59,12 +59,13 @@ Main owns all state; the renderers are pure UI over typed IPC.
   size untouched, that rounding compounds across a move loop and the sprite
   grows without bound.
 - The chat window is a popover anchored next to the pet (pure
-  `computeAnchoredPosition` with edge flipping). While it is open it trails
-  her: the pet window's `onMove` hook fires on every reposition and calls
-  `chat.follow`, which re-anchors (and re-flips sides near an edge) only when
-  the popover is already visible. It is created hidden at startup and lives for
-  the whole app life: closing hides it, and only the tray's Quit destroys it.
-  There is deliberately no blur handler; it stays up when clicked away.
+  `computeAnchoredPosition` with edge flipping). While open, the pet window's
+  `onMove` hook fires on every reposition and calls `chat.follow`, which
+  re-anchors (and re-flips sides near an edge) only when the popover is already
+  visible, so it trails her as she is dragged. It is created hidden at startup
+  and lives for the whole app life: closing hides it, and only the tray's Quit
+  destroys it. There is deliberately no blur handler; it stays up when clicked
+  away.
 - The tray is the pet's only conventional chrome. Left click toggles her
   visibility; the context menu has open chat, outfit, wander, start-with-
   Windows, the link status line, and Quit. The `Tray` instance stays in

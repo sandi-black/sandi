@@ -244,7 +244,7 @@ function frameWindows(data, width, height) {
 // Alpha-weighted centroid x of the frame's base: the pixels within FEET_BAND
 // of its lowest occupied row. This is where the eye reads ground contact, so
 // it is the anchor that decides whether she stands still or skates.
-function feetX(data, width, height, bbox) {
+function feetX(data, width, bbox) {
   const top = Math.max(0, bbox.maxY - FEET_BAND + 1);
   let sum = 0;
   let weight = 0;
@@ -310,7 +310,7 @@ async function buildRow(name, rowIndex) {
   const residuals = new Array(COLUMNS).fill(0);
   if (PLANTED.has(name)) {
     const anchors = frames.map((frame) =>
-      feetX(frame.data, frame.width, height, frame.bbox),
+      feetX(frame.data, frame.width, frame.bbox),
     );
     const target = anchors.reduce((s, v) => s + v, 0) / anchors.length;
     frames = windows.map((window, i) => {

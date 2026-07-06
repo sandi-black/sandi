@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 
 import react from "@vitejs/plugin-react";
-import { defineConfig, type RendererViteConfig } from "electron-vite";
+import { defineConfig } from "electron-vite";
 
 // The desktop app reuses the server repo's client modules (device link, turns,
 // credentials, pairing) as TypeScript source. Only the main process may import
@@ -53,12 +53,11 @@ export default defineConfig({
     },
   },
   renderer: {
-    // plugin-react 6 is typed against vite 8, while electron-vite bundles vite
-    // 7's plugin types. The two Plugin declarations are structurally identical
-    // but come from different vite copies, so the array is bridged to the exact
-    // type electron-vite's renderer config expects rather than pinning the
-    // plugin back to 5.
-    plugins: [react()] as unknown as NonNullable<RendererViteConfig["plugins"]>,
+    // plugin-react and vite are pinned in package.json below 6/8 until
+    // electron-vite supports vite 8: electron-vite 5 runs vite 7, and
+    // plugin-react 6 targets rolldown-based vite 8, so the newer pair neither
+    // typechecks nor matches what actually runs. Bump all three together.
+    plugins: [react()],
     resolve: {
       alias: {
         "@shared": shared,

@@ -14,6 +14,7 @@ import sheetUrl from "@assets/sandi-spritesheet.webp";
 
 export type SpritePlayer = {
   setRow(row: PetRow): void;
+  setReplyAlertVisible(visible: boolean): void;
   // Alpha (0-255) of the currently displayed frame at canvas-CSS-pixel
   // coordinates, for click-through sampling.
   alphaAt(x: number, y: number): number;
@@ -49,6 +50,28 @@ export async function createSpritePlayer(
   let lastDrawn: { row: PetRow; frame: number } | undefined;
   let completeListener: (() => void) | undefined;
   let completeFired = false;
+  let replyAlertVisible = false;
+
+  const drawReplyAlert = (target: CanvasRenderingContext2D): void => {
+    if (!replyAlertVisible) return;
+
+    target.save();
+    target.textAlign = "center";
+    target.textBaseline = "middle";
+    target.font = "bold 34px sans-serif";
+    target.lineJoin = "round";
+    // A tiny outlined shout-mark, visible on bright and dark desktop clutter
+    // without needing a larger pet window.
+    target.strokeStyle = "white";
+    target.lineWidth = 7;
+    target.strokeText("!", FRAME_WIDTH / 2, 30);
+    target.strokeStyle = "#7f0000";
+    target.lineWidth = 3;
+    target.strokeText("!", FRAME_WIDTH / 2, 30);
+    target.fillStyle = "#ff2020";
+    target.fillText("!", FRAME_WIDTH / 2, 30);
+    target.restore();
+  };
 
   // Paint one sheet frame over a whole target context, honoring the row's
   // mirror flag (the walk art faces left; rightward walks draw flipped).
@@ -110,7 +133,9 @@ export async function createSpritePlayer(
     }
     lastDrawn = { row, frame };
     paintFrame(context, spec, frame);
+    drawReplyAlert(context);
     paintFrame(sampleContext, spec, frame);
+    drawReplyAlert(sampleContext);
     requestAnimationFrame(draw);
   };
   requestAnimationFrame(draw);
@@ -121,6 +146,11 @@ export async function createSpritePlayer(
       row = next;
       rowStartedAt = performance.now();
       completeFired = false;
+    },
+    setReplyAlertVisible(visible) {
+      if (replyAlertVisible === visible) return;
+      replyAlertVisible = visible;
+      lastDrawn = undefined;
     },
     alphaAt(x, y) {
       const px = Math.floor(x);

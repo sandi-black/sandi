@@ -30,7 +30,8 @@
     "verify:idle-fidget-scheduler": "tsx --tsconfig tsconfig.main.json src/main/verify-idle-fidget-scheduler.ts",
     "verify:turn-pipeline": "tsx --tsconfig tsconfig.main.json src/main/verify-turn-pipeline.ts",
     "verify:auto-titler": "tsx --tsconfig tsconfig.main.json src/main/verify-auto-titler.ts",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run verify:pet-state-machine && npm run verify:response-buffer && npm run verify:anchor-position && npm run verify:renderer-url && npm run verify:transcript-store && npm run verify:turn-manager-queue && npm run verify:wander-scheduler && npm run verify:idle-fidget-scheduler && npm run verify:turn-pipeline && npm run verify:auto-titler"
+    "verify:update-state": "tsx --tsconfig tsconfig.main.json src/main/verify-update-state.ts",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run verify:pet-state-machine && npm run verify:response-buffer && npm run verify:anchor-position && npm run verify:renderer-url && npm run verify:transcript-store && npm run verify:turn-manager-queue && npm run verify:wander-scheduler && npm run verify:idle-fidget-scheduler && npm run verify:turn-pipeline && npm run verify:auto-titler && npm run verify:update-state"
   },
   "dependencies": {
     "motion": "^12.42.2",
@@ -46,9 +47,10 @@
     "@types/node": "^26.0.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.2.0",
+    "@vitejs/plugin-react": "^6.0.3",
     "electron": "43.0.0",
     "electron-builder": "^26.15.3",
+    "electron-updater": "^6.8.9",
     "electron-vite": "^5.0.0",
     "highlight.js": "^11.11.1",
     "png-to-ico": "^3.0.2",

@@ -35,7 +35,13 @@ async function main(): Promise<void> {
   };
 
   player.onOneShotComplete(() => dispatch({ type: "animation-complete" }));
-  bridge.onDisplayEvent((event) => dispatch(event));
+  bridge.onDisplayEvent((event) => {
+    if (event.type === "reply-alert") {
+      player.setReplyAlertVisible(event.visible);
+      return;
+    }
+    dispatch(event);
+  });
 
   // Pointer gestures. Dragging is manual: main follows the OS cursor, the
   // renderer only signals grip, ticks, and release (see pet-window.ts).

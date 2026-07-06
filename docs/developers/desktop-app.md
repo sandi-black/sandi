@@ -66,10 +66,26 @@ Main owns all state; the renderers are pure UI over typed IPC.
   and lives for the whole app life: closing hides it, and only the tray's Quit
   destroys it. There is deliberately no blur handler; it stays up when clicked
   away.
+- The popover is movable and resizable, down to a minimum that keeps the
+  composer usable. Moving uses a `-webkit-app-region` drag area on the header
+  (safe here because the header sits on opaque pixels, unlike the pet).
+  Resizing is manual: Windows drops `WS_THICKFRAME` from transparent windows,
+  so there is no native resize frame, and the renderer's edge grips
+  (`ResizeGrips.tsx`) report grip/tick/release while main applies bounds from
+  the true cursor (pure `computeResizedBounds`), the same pattern as the pet
+  drag. Both choices persist in settings: the size as-is, the position as an
+  offset from the pet's top-left, so it reopens beside her wherever she has
+  wandered and `follow` trails at the chosen offset instead of the default
+  anchor. Restores clamp into the current work area (pure
+  `computeOffsetPosition` and `clampSizeIntoWorkArea`) without rewriting the
+  saved values, so a temporary small display does not erase the intent.
+  Programmatic placements set a guard flag so only real gestures are recorded.
 - The tray is the pet's only conventional chrome. Left click toggles her
   visibility; the context menu has open chat, wander, start-with-Windows, the
-  link status line, and Quit. The `Tray` instance stays in module scope
-  because a garbage-collected wrapper silently drops the icon.
+  link status line, the update section (packaged builds only: status line,
+  manual check, and the automatic-update toggle), and Quit. The `Tray`
+  instance stays in module scope because a garbage-collected wrapper silently
+  drops the icon.
 - Conversations are app-local. The server has no list or transcript endpoint
   (conversations are implicit and device-scoped), so main keeps one
   append-only JSONL per conversation plus an `index.json` for the sidebar,
@@ -137,9 +153,9 @@ CLI uses, so pairing once covers both.
 `npm run check -w app` is the app's verification gate: typecheck (three
 tsconfig projects), Biome lint and format, and the verify scripts for the pet
 state machine, response buffer, window anchoring, transcript store, turn
-queue, and wander scheduler. All of them are pure logic run with tsx; none
-need Electron. CI runs this as its own job with the Electron binary download
-skipped.
+queue, wander scheduler, and update state. All of them are pure logic run
+with tsx; none need Electron. CI runs this as its own job with the Electron
+binary download skipped.
 
 ## Packaging
 
@@ -161,10 +177,11 @@ Known gap: the artifacts are unsigned, so SmartScreen warns on first run.
 Packaging runs in CI only on a version tag. Push a `vX.Y.Z` tag and the
 `Package` workflow (`.github/workflows/package.yml`) builds both Windows
 targets on a Windows runner and attaches the installers to that tag's GitHub
-Release. The workflow passes the tag to electron-builder as
-`extraMetadata.version`, so `app.getVersion()` (shown in the tray menu) and the
-`${version}` in each artifact filename match the tag rather than the committed
-`0.1.0` in `app/package.json`.
+Release, along with the auto-update feed (`latest.yml` and the `.blockmap`
+files) described below. The workflow stamps the tag's version into
+`app/package.json` before building, so `app.getVersion()` (shown in the tray
+menu) and the `${version}` in each artifact filename match the tag rather
+than the committed `0.1.0`.
 
 ```sh
 git tag v0.2.0
@@ -177,6 +194,34 @@ missing icon, an asar path problem) surfaces at tag time, not on the PR. To
 rehearse the pipeline without cutting a tag, run the workflow by hand via
 `workflow_dispatch`, which packages at `app/package.json`'s own version and
 uploads the artifacts to the run instead of a release.
+
+### Auto-update
+
+Existing installs pick up new releases on their own. The moving parts:
+
+- The `publish` block in `app/electron-builder.yml` names this repo as the
+  update source. At package time it makes electron-builder emit `latest.yml`
+  (the feed: newest version, installer filename, hash) and a `.blockmap` per
+  exe (for differential downloads), and embed the feed location into the
+  installed app's resources (`app-update.yml`).
+- The `Package` workflow uploads those files to the GitHub Release next to
+  the installers. A release without `latest.yml` is invisible to existing
+  installs, so the upload steps treat the feed files as required.
+- `app/src/main/updater.ts` runs the client side, in three flavors. The
+  installed (NSIS) app uses electron-updater: it checks shortly after launch
+  and every few hours, downloads in the background, and stages the update to
+  install on quit; the tray also offers "Restart to update". The portable exe
+  cannot replace itself, so it only compares the latest release tag (GitHub's
+  `releases/latest` API) against its own version and links to the download
+  page. A dev run gets no updater at all.
+- The phase transitions and tray copy are pure logic in
+  `app/src/main/update-state.ts`, covered by `verify-update-state`. The tray's
+  "Update automatically" checkbox (the `autoUpdate` setting, default on)
+  gates the scheduled checks; a manual "Check for updates" always works.
+
+The artifacts being unsigned does not block any of this: electron-updater
+only enforces signature checks on Windows when the installed app itself is
+signed.
 
 ## Manual smoke checklist
 
@@ -206,8 +251,19 @@ desktop. After a change that touches windows, input, or packaging, check:
    renders inline and save-as writes it where pointed.
 9. Persistence: close the popover, reopen from the pet; the transcript is
    intact. Relaunch the app; sessions and transcripts are intact.
-10. Wander: enable it, leave her idle; she eventually strolls and any
+10. Chat geometry: drag the popover by its header and resize it from an edge;
+    close and reopen it (pet click and tray both) and it comes back at the
+    same size and the same position relative to the pet. Drag the pet and the
+    popover trails at that offset. Relaunch the app; both survive. With the
+    session drawer open, the drawer's own header buttons still click (they sit
+    over the drag region).
+11. Wander: enable it, leave her idle; she eventually strolls and any
     activity (a message, a drag, opening chat) stops her immediately.
-11. Packaged build: the NSIS installer installs and launches; the portable
+12. Packaged build: the NSIS installer installs and launches; the portable
     exe runs from a bare folder; start-with-Windows takes effect on the
     packaged app.
+12. Updates: on an installed build older than the latest release, the tray
+    reaches "Restart to update to X" within a minute of launch and the
+    restart lands on the new version; on the portable exe the same situation
+    shows "Update X available" and opens the release page; an up-to-date
+    install settles on "Sandi is up to date".

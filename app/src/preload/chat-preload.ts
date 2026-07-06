@@ -53,6 +53,9 @@ const bridge: SandiChatBridge = {
   pair: (code) => ipcRenderer.invoke(IPC.pairRedeem, code),
   getLinkStatus: () => ipcRenderer.invoke(IPC.linkStatusGet),
   closeWindow: () => ipcRenderer.send(IPC.chatClose),
+  beginResize: (edge) => ipcRenderer.send(IPC.chatResizeStart, edge),
+  resizeMove: () => ipcRenderer.send(IPC.chatResizeMove),
+  endResize: () => ipcRenderer.send(IPC.chatResizeEnd),
 
   onLinkStatus: subscribe<LinkStatus>(IPC.linkStatus),
   onTurnDelta: subscribe<TurnDeltaEvent>(IPC.turnDelta),

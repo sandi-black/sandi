@@ -109,13 +109,19 @@ export type PetDisplayEvent =
   | { type: "background"; background: PetBackground }
   | { type: "one-shot"; row: PetOneShot }
   | { type: "wander"; direction: WanderDirection }
-  | { type: "wander-stop" };
+  | { type: "wander-stop" }
+  | { type: "reply-alert"; visible: boolean };
 
 export type PairOutcomeSummary =
   | { ok: true; identityId: string; deviceId: string }
   | { ok: false; error: string };
 
 export type SaveAsOutcome = { ok: true; path: string } | { ok: false };
+
+// Which edge or corner of the chat window a resize grip grabbed. Windows
+// gives transparent windows no native resize frame, so the renderer's grips
+// drive resizing manually (see ResizeGrips.tsx and chat-window.ts).
+export type ResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
 // The bridge exposed to the pet window as window.sandiPet.
 export type SandiPetBridge = {
@@ -154,6 +160,9 @@ export type SandiChatBridge = {
   pair(code: string): Promise<PairOutcomeSummary>;
   getLinkStatus(): Promise<LinkStatus>;
   closeWindow(): void;
+  beginResize(edge: ResizeEdge): void;
+  resizeMove(): void;
+  endResize(): void;
 
   onLinkStatus(listener: (status: LinkStatus) => void): () => void;
   onTurnDelta(listener: (event: TurnDeltaEvent) => void): () => void;
@@ -199,4 +208,7 @@ export const IPC = {
   linkStatusGet: "link:status-get",
 
   chatClose: "chat:close",
+  chatResizeStart: "chat:resize-start",
+  chatResizeMove: "chat:resize-move",
+  chatResizeEnd: "chat:resize-end",
 } as const;

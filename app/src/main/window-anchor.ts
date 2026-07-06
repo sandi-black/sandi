@@ -1,5 +1,7 @@
-// Pure geometry for placing the chat popover next to the pet. Kept free of
-// Electron imports so the placement rules are verifiable as plain functions.
+// Pure geometry for placing, restoring, and resizing the chat popover. Kept
+// free of Electron imports so the rules are verifiable as plain functions.
+
+import type { ResizeEdge } from "@shared/ipc-contract";
 
 export type Rect = { x: number; y: number; width: number; height: number };
 export type Size = { width: number; height: number };
@@ -41,6 +43,38 @@ export function computeAnchoredPosition(
   };
 }
 
+// Places the chat at the human's saved offset from the pet's top-left,
+// clamped into the work area. The clamp handles an offset that no longer fits
+// (the pet near a screen edge, a smaller display since last run) for this
+// placement only; the caller keeps the stored offset untouched so the intent
+// survives the temporary geometry.
+export function computeOffsetPosition(
+  petBounds: Rect,
+  offset: Point,
+  chatSize: Size,
+  workArea: Rect,
+): Point {
+  return clampIntoWorkArea(
+    { x: petBounds.x + offset.x, y: petBounds.y + offset.y },
+    chatSize,
+    workArea,
+  );
+}
+
+// Shrinks a restored window size to fit the work area. The minimum wins over
+// an absurdly small work area: a barely-overflowing window beats one crushed
+// past usability.
+export function clampSizeIntoWorkArea(
+  size: Size,
+  minSize: Size,
+  workArea: Rect,
+): Size {
+  return {
+    width: Math.max(Math.min(size.width, workArea.width), minSize.width),
+    height: Math.max(Math.min(size.height, workArea.height), minSize.height),
+  };
+}
+
 // Clamps a restored window position into the given work area so a monitor
 // unplugged since last run cannot strand the window off-screen.
 export function clampIntoWorkArea(
@@ -56,6 +90,41 @@ export function clampIntoWorkArea(
       workArea.y + workArea.height - size.height,
     ),
   };
+}
+
+// Applies a resize gesture's cursor delta to the window's starting bounds.
+// The edge names which sides follow the cursor; the opposite sides stay
+// pinned, including when the minimum size stops a shrink (a north or west
+// grip must never let the fixed south or east edge drift).
+export function computeResizedBounds(
+  start: Rect,
+  edge: ResizeEdge,
+  delta: Point,
+  minSize: Size,
+): Rect {
+  let left = start.x;
+  let right = start.x + start.width;
+  let top = start.y;
+  let bottom = start.y + start.height;
+  if (edge.includes("e")) right += delta.x;
+  if (edge.includes("w")) left += delta.x;
+  if (edge.includes("s")) bottom += delta.y;
+  if (edge.includes("n")) top += delta.y;
+  if (right - left < minSize.width) {
+    if (edge.includes("w")) {
+      left = right - minSize.width;
+    } else {
+      right = left + minSize.width;
+    }
+  }
+  if (bottom - top < minSize.height) {
+    if (edge.includes("n")) {
+      top = bottom - minSize.height;
+    } else {
+      bottom = top + minSize.height;
+    }
+  }
+  return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
 function clamp(value: number, min: number, max: number): number {

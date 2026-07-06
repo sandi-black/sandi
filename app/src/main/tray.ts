@@ -1,8 +1,15 @@
 import type { LinkStatus } from "@shared/ipc-contract";
-import { app, Menu, nativeImage, Tray } from "electron";
+import {
+  app,
+  Menu,
+  type MenuItemConstructorOptions,
+  nativeImage,
+  Tray,
+} from "electron";
 
 import trayIconPath from "../../build/icons/tray-icon.png?asset";
 import type { SettingsStore } from "./settings-store";
+import { type UpdateState, updateMenuEntry } from "./update-state";
 
 // The tray icon is the pet's only conventional chrome: she has no window
 // buttons, so showing/hiding her and quitting live here. The Tray instance is
@@ -12,6 +19,19 @@ import type { SettingsStore } from "./settings-store";
 export type TrayController = {
   tray: Tray;
   setLinkStatus(status: LinkStatus): void;
+  setUpdateState(state: UpdateState): void;
+};
+
+// Present only when an updater exists for this install (packaged builds);
+// a dev run has no update section at all.
+export type TrayUpdates = {
+  initialState: UpdateState;
+  onCheck(): void;
+  // Restart into the staged update (the installed app's "ready" line).
+  onInstall(): void;
+  // Open the release download page (the portable exe's "available" line).
+  onDownload(): void;
+  onAutoUpdateChange(enabled: boolean): void;
 };
 
 export function createTray(input: {
@@ -19,6 +39,7 @@ export function createTray(input: {
   onToggleSandi(): void;
   onOpenChat(): void;
   onWanderChange(enabled: boolean): void;
+  updates?: TrayUpdates;
 }): TrayController {
   const icon = nativeImage.createFromPath(trayIconPath);
   const tray = new Tray(icon);
@@ -28,6 +49,43 @@ export function createTray(input: {
   // injected as the app version; in dev it is package.json's own version.
   const version = app.getVersion();
   let linkLabel = "Link: starting...";
+  let updateState = input.updates?.initialState ?? { phase: "idle" };
+
+  // The update section of the menu: the status line for the current phase
+  // (clickable when there is something to do), the manual check, and the
+  // automatic-check toggle. Empty in dev, where no updater exists.
+  const updateItems = (): MenuItemConstructorOptions[] => {
+    const updates = input.updates;
+    if (!updates) return [];
+    const entry = updateMenuEntry(updateState);
+    const busy =
+      updateState.phase === "checking" || updateState.phase === "downloading";
+    return [
+      ...(entry
+        ? [
+            {
+              label: entry.label,
+              enabled: entry.action !== undefined,
+              click: () => {
+                if (entry.action === "install") updates.onInstall();
+                if (entry.action === "download") updates.onDownload();
+              },
+            },
+          ]
+        : []),
+      { label: "Check for updates", enabled: !busy, click: updates.onCheck },
+      {
+        label: "Update automatically",
+        type: "checkbox",
+        checked: input.settings.get().autoUpdate,
+        click: (item) => {
+          input.settings.update({ autoUpdate: item.checked });
+          updates.onAutoUpdateChange(item.checked);
+          rebuildMenu();
+        },
+      },
+    ];
+  };
 
   const rebuildMenu = (): void => {
     const settings = input.settings.get();
@@ -64,6 +122,7 @@ export function createTray(input: {
         },
         { type: "separator" },
         { label: `Sandi ${version}`, enabled: false },
+        ...updateItems(),
         { label: "Quit Sandi", click: () => app.quit() },
       ]),
     );
@@ -80,6 +139,10 @@ export function createTray(input: {
     setLinkStatus(status) {
       linkLabel = describeLink(status);
       tray.setToolTip(`Sandi (${linkLabel.toLowerCase()})`);
+      rebuildMenu();
+    },
+    setUpdateState(state) {
+      updateState = state;
       rebuildMenu();
     },
   };

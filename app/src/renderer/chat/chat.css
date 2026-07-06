@@ -56,6 +56,8 @@ body,
 
 /* Header */
 
+/* The window is frameless, so the header doubles as its title bar: dragging
+   it moves the whole popover. Interactive children opt back out below. */
 .header {
   display: flex;
   align-items: center;
@@ -63,6 +65,7 @@ body,
   padding: 10px 12px 8px;
   border-bottom: 1px solid rgba(236, 230, 247, 0.07);
   flex: none;
+  -webkit-app-region: drag;
 }
 
 .header-title {
@@ -81,6 +84,7 @@ body,
   place-items: center;
   width: 26px;
   height: 26px;
+  -webkit-app-region: no-drag;
   border: none;
   border-radius: 8px;
   background: transparent;
@@ -579,12 +583,15 @@ body,
 
 /* Session drawer */
 
+/* Both overlap the header strip while open; without no-drag the header's
+   drag region would swallow their clicks (regions ignore stacking order). */
 .drawer-scrim {
   position: absolute;
   inset: 0;
   background: rgba(10, 8, 16, 0.45);
   border-radius: var(--radius);
   z-index: 9;
+  -webkit-app-region: no-drag;
 }
 
 .drawer {
@@ -593,6 +600,7 @@ body,
   bottom: 0;
   left: 0;
   width: 264px;
+  -webkit-app-region: no-drag;
   z-index: 10;
   display: flex;
   flex-direction: column;
@@ -702,6 +710,81 @@ body,
 
 .session-delete:hover {
   color: var(--danger);
+}
+
+/* Resize grips: thin strips along the edges and squares on the corners. The
+   transparent window has no native resize frame on Windows, so these drive a
+   manual resize through the bridge (see ResizeGrips.tsx). Above the drawer so
+   the popover stays resizable while it is open. */
+
+.resize-grip {
+  position: absolute;
+  z-index: 30;
+  -webkit-app-region: no-drag;
+}
+
+.resize-grip.n {
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 5px;
+  cursor: ns-resize;
+}
+
+.resize-grip.s {
+  bottom: 0;
+  left: 14px;
+  right: 14px;
+  height: 5px;
+  cursor: ns-resize;
+}
+
+.resize-grip.e {
+  right: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 5px;
+  cursor: ew-resize;
+}
+
+.resize-grip.w {
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 5px;
+  cursor: ew-resize;
+}
+
+.resize-grip.ne {
+  top: 0;
+  right: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nesw-resize;
+}
+
+.resize-grip.nw {
+  top: 0;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+
+.resize-grip.se {
+  bottom: 0;
+  right: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+
+.resize-grip.sw {
+  bottom: 0;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nesw-resize;
 }
 
 /* Drag-over highlight */

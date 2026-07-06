@@ -101,12 +101,18 @@ async function main(): Promise<void> {
   let wander: WanderScheduler | undefined;
   let fidget: IdleFidgetScheduler | undefined;
 
-  const chat = createChatWindow({ isQuitting: () => quitting });
+  const chat = createChatWindow({ isQuitting: () => quitting, settings });
+  const waveOnChatOpen = (): void => {
+    if (chat.window.isVisible()) return;
+    pet.sendDisplayEvent({ type: "one-shot", row: "waving" });
+  };
   const pet = createPetWindow({
     settings,
     onOpenChat: () => {
       wander?.interrupt();
       fidget?.interrupt();
+      pet.sendDisplayEvent({ type: "reply-alert", visible: false });
+      waveOnChatOpen();
       chat.toggleNear(pet.window.getBounds());
     },
     onDragStart: () => {
@@ -278,6 +284,11 @@ async function main(): Promise<void> {
           type: "one-shot",
           row: event.ok ? "jumping" : "failed",
         });
+        // Failures earn the marker as much as replies do: either way there is
+        // an outcome waiting in a chat the user cannot currently see.
+        if (!chat.window.isVisible()) {
+          pet.sendDisplayEvent({ type: "reply-alert", visible: true });
+        }
         refreshPetBackground();
         sendToChat(IPC.turnSettled, event);
       },
@@ -367,6 +378,8 @@ async function main(): Promise<void> {
     onOpenChat: () => {
       wanderScheduler.interrupt();
       fidgetScheduler.interrupt();
+      pet.sendDisplayEvent({ type: "reply-alert", visible: false });
+      waveOnChatOpen();
       chat.openNear(pet.window.getBounds());
     },
     onOutfitChange: (outfit: PetOutfit) => pet.sendOutfit(outfit),

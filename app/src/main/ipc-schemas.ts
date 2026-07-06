@@ -51,6 +51,17 @@ export const CursorPointSchema = z.object({
 
 export const IgnoreMouseSchema = z.boolean();
 
+export const ResizeEdgeSchema = z.enum([
+  "n",
+  "s",
+  "e",
+  "w",
+  "ne",
+  "nw",
+  "se",
+  "sw",
+]);
+
 // Conversation ids become JSONL filenames in the transcript store, so the
 // shape is strict everywhere one crosses a boundary: IPC, the on-disk index,
 // and turn submission all share this schema.

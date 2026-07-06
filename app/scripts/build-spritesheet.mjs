@@ -44,6 +44,27 @@ const ROWS = [
   "picked_up_dragged_wiggle_8f",
 ];
 
+// Rows whose character stands (or floats) in place, played either parked on
+// the desktop or while the window itself glides. In these, any sideways
+// motion of her base across the loop is generation noise that reads as her
+// feet skating, so each frame is re-anchored on the feet. Not listed:
+// happy_celebrate (a genuine sideways hop with a clean loop seam) and
+// picked_up_dragged (the dangling swing is the point).
+const PLANTED = new Set([
+  "idle_breath_blink_8f",
+  "walk_float_bob_8f",
+  "listening_curious_8f",
+  "thinking_8f",
+  "typing_working_8f",
+  "startled_error_recovery_8f",
+  "magic_cast_8f",
+  "sleepy_yawn_nap_8f",
+]);
+
+// Height of the base band the feet anchor is measured over, in source pixels
+// up from each frame's lowest occupied row.
+const FEET_BAND = 30;
+
 // Pixels at least this opaque count as character when measuring bounding
 // boxes; anything fainter is keying residue or anti-aliased haze.
 const BBOX_ALPHA = 10;
@@ -220,6 +241,24 @@ function frameWindows(data, width, height) {
   });
 }
 
+// Alpha-weighted centroid x of the frame's base: the pixels within FEET_BAND
+// of its lowest occupied row. This is where the eye reads ground contact, so
+// it is the anchor that decides whether she stands still or skates.
+function feetX(data, width, height, bbox) {
+  const top = Math.max(0, bbox.maxY - FEET_BAND + 1);
+  let sum = 0;
+  let weight = 0;
+  for (let y = top; y <= bbox.maxY; y++) {
+    for (let x = 0; x < width; x++) {
+      const a = data[(y * width + x) * 4 + 3];
+      if (a <= BBOX_ALPHA) continue;
+      sum += x * a;
+      weight += a;
+    }
+  }
+  return sum / weight;
+}
+
 // Copy one frame window out of the sheet buffer with its seam edges erased,
 // so a neighbor's bleed sliver cannot widen the bounding box or survive into
 // the output. Windows may overlap, so the erase happens on the copy.
@@ -252,12 +291,38 @@ async function buildRow(name, rowIndex) {
   bleedEdgeColors(raw.data, width, height);
 
   const windows = frameWindows(raw.data, width, height);
-  const frames = windows.map((window) => {
+  const cut = (window) => {
     const data = extractWindow(raw.data, width, window, height);
     const bbox = bboxIn(data, window.width, height, 0, window.width);
     if (!bbox) throw new Error(`${name}: a recut frame is empty`);
     return { data, width: window.width, bbox };
-  });
+  };
+  let frames = windows.map(cut);
+
+  // Planted rows get a second cut with each window nudged so every frame's
+  // feet land on the row's mean feet position. The pitch fit above removes
+  // the slicing drift; this removes the art's own base drift, which
+  // otherwise reads as her feet sliding through the loop and snapping back
+  // at the seam. Her lean and gesture survive, in the upper body where they
+  // belong. A window at the sheet's edge cannot absorb its full nudge, so
+  // whatever the clamp swallows is carried as a residual and applied when
+  // the frame is placed in its cell.
+  const residuals = new Array(COLUMNS).fill(0);
+  if (PLANTED.has(name)) {
+    const anchors = frames.map((frame) =>
+      feetX(frame.data, frame.width, height, frame.bbox),
+    );
+    const target = anchors.reduce((s, v) => s + v, 0) / anchors.length;
+    frames = windows.map((window, i) => {
+      const nudge = Math.round(anchors[i] - target);
+      const left = Math.max(
+        0,
+        Math.min(window.left + nudge, width - window.width),
+      );
+      residuals[i] = nudge - (left - window.left);
+      return cut({ left, width: window.width });
+    });
+  }
 
   // The union of all frame bounding boxes, in window-local coordinates, is
   // the animation's stage. Scaling and anchoring the stage (not each frame)
@@ -299,9 +364,16 @@ async function buildRow(name, rowIndex) {
       .resize(scaledWidth, scaledHeight, { kernel: "lanczos3" })
       .png()
       .toBuffer();
+    const offset = Math.max(
+      0,
+      Math.min(
+        cellX - Math.round(residuals[i] * scale),
+        FRAME_WIDTH - scaledWidth,
+      ),
+    );
     composites.push({
       input: stage,
-      left: i * FRAME_WIDTH + cellX,
+      left: i * FRAME_WIDTH + offset,
       top: rowIndex * FRAME_HEIGHT + cellY,
     });
   }

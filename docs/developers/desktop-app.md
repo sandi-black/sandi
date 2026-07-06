@@ -262,7 +262,7 @@ desktop. After a change that touches windows, input, or packaging, check:
 12. Packaged build: the NSIS installer installs and launches; the portable
     exe runs from a bare folder; start-with-Windows takes effect on the
     packaged app.
-12. Updates: on an installed build older than the latest release, the tray
+13. Updates: on an installed build older than the latest release, the tray
     reaches "Restart to update to X" within a minute of launch and the
     restart lands on the new version; on the portable exe the same situation
     shows "Update X available" and opens the release page; an up-to-date

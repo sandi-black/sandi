@@ -17,7 +17,6 @@ export type LiveTurn = {
   turnId: string;
   conversationId: string;
   text: string;
-  thinking: string;
 };
 
 type ChatState = {
@@ -29,7 +28,6 @@ type ChatState = {
   queue: QueueState | undefined;
   link: LinkStatus;
   staged: StagedAttachment[];
-  showThinking: boolean;
   drawerOpen: boolean;
   // The most recent failed bridge call, surfaced as a dismissible strip; every
   // fire-and-forget IPC promise routes its rejection here (see guard.ts).
@@ -51,7 +49,6 @@ type ChatState = {
   setStaged(staged: StagedAttachment[]): void;
   addStaged(attachment: StagedAttachment): void;
   removeStaged(id: string): void;
-  setShowThinking(show: boolean): void;
   setDrawerOpen(open: boolean): void;
   setUiError(message: string | undefined): void;
 };
@@ -65,7 +62,6 @@ export const useChatStore = create<ChatState>((set) => ({
   queue: undefined,
   link: { state: "connecting" },
   staged: [],
-  showThinking: false,
   drawerOpen: false,
   uiError: undefined,
 
@@ -82,19 +78,17 @@ export const useChatStore = create<ChatState>((set) => ({
     set((state) => ({ transcript: [...state.transcript, entry] })),
   beginLiveTurn: (turnId, conversationId) =>
     set({
-      liveTurn: { turnId, conversationId, text: "", thinking: "" },
+      liveTurn: { turnId, conversationId, text: "" },
       liveAttachments: [],
     }),
   appendDelta: (turnId, channel, delta) =>
     set((state) => {
       if (state.liveTurn?.turnId !== turnId) return state;
-      const liveTurn = { ...state.liveTurn };
-      if (channel === "thinking") {
-        liveTurn.thinking += delta;
-      } else {
-        liveTurn.text += delta;
-      }
-      return { liveTurn };
+      // Thinking deltas are still streamed by main but no longer rendered.
+      if (channel === "thinking") return state;
+      return {
+        liveTurn: { ...state.liveTurn, text: state.liveTurn.text + delta },
+      };
     }),
   appendLiveAttachment: (turnId, attachment) =>
     set((state) => {
@@ -116,7 +110,6 @@ export const useChatStore = create<ChatState>((set) => ({
     set((state) => ({
       staged: state.staged.filter((candidate) => candidate.id !== id),
     })),
-  setShowThinking: (showThinking) => set({ showThinking }),
   setDrawerOpen: (drawerOpen) => set({ drawerOpen }),
   setUiError: (uiError) => set({ uiError }),
 }));

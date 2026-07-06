@@ -19,7 +19,6 @@ export function ChatApp(): JSX.Element {
     (state) => state.activeConversationId,
   );
   const sessions = useChatStore((state) => state.sessions);
-  const showThinking = useChatStore((state) => state.showThinking);
   const [dragOver, setDragOver] = useState(false);
 
   // The store constant is module-scoped, so these callbacks depend on nothing.
@@ -188,14 +187,6 @@ export function ChatApp(): JSX.Element {
           ☰
         </button>
         <span className="header-title">{activeTitle}</span>
-        <button
-          type="button"
-          className={`icon-button${showThinking ? " active" : ""}`}
-          title="Show Sandi's thinking"
-          onClick={() => useChatStore.getState().setShowThinking(!showThinking)}
-        >
-          ✦
-        </button>
         <button
           type="button"
           className="icon-button"

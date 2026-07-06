@@ -19,7 +19,6 @@ export function TranscriptView({
   const liveTurn = useChatStore((state) => state.liveTurn);
   const liveAttachments = useChatStore((state) => state.liveAttachments);
   const queue = useChatStore((state) => state.queue);
-  const showThinking = useChatStore((state) => state.showThinking);
 
   const scroller = useRef<HTMLDivElement>(null);
   const pinnedToBottom = useRef(true);
@@ -55,7 +54,6 @@ export function TranscriptView({
           entry={entry}
           key={`${entry.turnId}-${entry.type}-${entry.ts}`}
           onRetry={onRetry}
-          showThinking={showThinking}
           transcript={transcript}
         />
       ))}
@@ -63,9 +61,6 @@ export function TranscriptView({
         <div className="msg-sandi">
           <img src={avatarUrl} alt="" className="avatar" />
           <div className="msg-sandi-body">
-            {showThinking && liveTurn && liveTurn.thinking.length > 0 && (
-              <div className="thinking">{liveTurn.thinking}</div>
-            )}
             {liveTurn && liveTurn.text.length > 0 ? (
               <MarkdownMessage text={liveTurn.text} />
             ) : null}
@@ -81,12 +76,10 @@ export function TranscriptView({
 function TranscriptRow({
   entry,
   transcript,
-  showThinking,
   onRetry,
 }: {
   entry: TranscriptEntry;
   transcript: TranscriptEntry[];
-  showThinking: boolean;
   onRetry(text: string): void;
 }): JSX.Element {
   if (entry.type === "user") {
@@ -132,12 +125,6 @@ function TranscriptRow({
     <div className="msg-sandi">
       <img src={avatarUrl} alt="" className="avatar" />
       <div className="msg-sandi-body">
-        {showThinking && entry.thinking && entry.thinking.length > 0 && (
-          <details className="thinking">
-            <summary className="thinking-summary">thoughts</summary>
-            {entry.thinking}
-          </details>
-        )}
         <MarkdownMessage text={entry.text} />
         <AttachmentList attachments={entry.attachments ?? []} />
       </div>

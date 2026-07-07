@@ -1,18 +1,29 @@
-import type { ReplyAttachment } from "@shared/ipc-contract";
 import type { JSX } from "react";
 
 import { assetUrl } from "./asset-url";
 import { guard } from "./guard";
 
-// Attachments sandi added to a reply: images render inline with a hover
-// save button; other files show as chips with an explicit save action.
+// A file shown in the transcript, whichever side attached it: sandi's reply
+// attachments (path plus an optional mimeType, image-ness inferred) and the
+// human's own attachments (which already carry an explicit image/file kind)
+// both render through here. Images render inline with a hover save button;
+// other files show as chips with an explicit save action.
+export type DisplayAttachment = {
+  path: string;
+  name?: string;
+  mimeType?: string;
+  kind?: "image" | "file";
+};
 
-function isImage(attachment: ReplyAttachment): boolean {
+function isImage(attachment: DisplayAttachment): boolean {
+  // Trust an explicit kind (the human's attachments carry one, classified when
+  // they were staged) over guessing from the path or mimeType.
+  if (attachment.kind) return attachment.kind === "image";
   if (attachment.mimeType?.startsWith("image/")) return true;
   return /\.(png|jpe?g|webp|gif)$/i.test(attachment.path);
 }
 
-function displayName(attachment: ReplyAttachment): string {
+function displayName(attachment: DisplayAttachment): string {
   if (attachment.name) return attachment.name;
   const parts = attachment.path.split(/[\\/]/);
   return parts[parts.length - 1] ?? attachment.path;
@@ -21,7 +32,7 @@ function displayName(attachment: ReplyAttachment): string {
 export function AttachmentList({
   attachments,
 }: {
-  attachments: ReplyAttachment[];
+  attachments: DisplayAttachment[];
 }): JSX.Element | null {
   if (attachments.length === 0) return null;
   const images = attachments.filter(isImage);

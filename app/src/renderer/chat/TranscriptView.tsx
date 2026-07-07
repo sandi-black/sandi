@@ -109,17 +109,7 @@ const TranscriptRow = memo(function TranscriptRow({
     return (
       <div className="msg-user">
         {entry.text}
-        {entry.attachments && entry.attachments.length > 0 && (
-          <div className="attachment-row">
-            {entry.attachments.map((attachment) => (
-              <span className="attachment-chip" key={attachment.path}>
-                <span className="chip-name" title={attachment.path}>
-                  {attachment.name}
-                </span>
-              </span>
-            ))}
-          </div>
-        )}
+        <AttachmentList attachments={entry.attachments ?? []} />
       </div>
     );
   }

@@ -88,7 +88,7 @@
     "@earendil-works/pi-coding-agent": "0.80.6",
     "@huggingface/transformers": "^4.2.0",
     "croner": "^10.0.1",
-    "discord.js": "^14.19.3",
+    "discord.js": "^14.26.5",
     "dotenv": "^17.4.2",
     "tsx": "^4.23.0",
     "zod": "^4.3.6"

@@ -25,6 +25,17 @@
 # The removed reviewers live in git history and can be restored when budget
 # allows.
 
+# Attestation. When an author runs `bastion review` locally to a clean gate and
+# signs it (`bastion attest`, then `git push origin refs/notes/bastion`), CI
+# verifies that signed note against the head commit and replays the reviewers
+# from the sealed bundle instead of re-running Codex, so confirming a green local
+# run costs no subscription tokens. The note binds to the head tree, the author's
+# SSH signature, and this registry's hash, so a stale or tampered note fails
+# closed to an ordinary fresh review, never to a silent pass. Alongside the
+# reviewer trim above, this is the main budget lever: attest locally once, and CI
+# spends nothing to replay it.
+attestations: true
+
 # Registry-wide defaults, inherited by every reviewer that does not set the field
 # itself (an explicit field on a reviewer wins). Every reviewer below pins
 # `backend: codex`, which satisfies the rule that an inherited model needs a pinned

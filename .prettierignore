@@ -1,9 +1,0 @@
-# oxfmt reads this file by default. Entries here are excluded from
-# `npm run format` and `npm run format:check`.
-
-# Bastion generates these agent-skill files from the installed binary and
-# verifies them byte-for-byte with `bastion skills check`. oxfmt would only
-# realign their markdown table columns, and the next `bastion skills install`
-# would revert that, so leave them exactly as the generator emits them.
-.claude/skills/using-bastion/
-.agents/skills/using-bastion/

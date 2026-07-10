@@ -1,3 +1,5 @@
+import { z } from "zod/v4";
+
 // The default `sandi_js_run` runtime entry. Every surface points here so a turn
 // composes the same unified runtime regardless of where it originated: the
 // module at this path re-exports every surface's server-side helpers. It is a
@@ -43,35 +45,62 @@ export type ReadPlatformContextOptions = {
   legacyEnvVar?: string;
 };
 
+// A minimal envelope for sniffing which surface a platform context blob names,
+// checked before the surface's own schema runs. Kept loose (unknown keys
+// pass through) since its only job is reading the discriminant, not
+// validating the rest of the shape that the caller's schema owns.
+const PlatformEnvelopeSchema = z.looseObject({ platform: z.string() });
+
 /**
- * Reads the current turn's platform context (the raw SANDI_PLATFORM_CONTEXT
- * JSON) when it names the given surface, so a runtime helper can trust the
- * blob actually describes the surface it is about to act as. Shared by every
- * surface's `read<Surface>PlatformContext` wrapper; the surface id and any
- * legacy fallback env var are passed in rather than hardcoded here, so this
- * helper itself names no surface.
+ * Reads the current turn's platform context (the SANDI_PLATFORM_CONTEXT JSON)
+ * when it names the given surface, parses it exactly once against the
+ * surface's own schema, and returns the typed result. Shared by every
+ * surface's `read<Surface>PlatformContext` wrapper; the surface id, its
+ * schema, and any legacy fallback env var are passed in rather than
+ * hardcoded here, so this helper itself names no surface and no shape.
+ *
+ * Returns undefined when: the unified var is unset; its JSON fails to parse;
+ * it names a different platform and no legacy var is set (or the legacy var
+ * is also unset/unparseable); or the matched blob fails the surface's schema.
  */
-export function readPlatformContext(
+export function readPlatformContext<T>(
   platform: SurfaceId,
+  schema: z.ZodType<T>,
   options: ReadPlatformContextOptions = {},
-): string | undefined {
+): T | undefined {
   const raw = process.env["SANDI_PLATFORM_CONTEXT"]?.trim();
   if (raw) {
+    let parsed: unknown;
     try {
-      const parsed: unknown = JSON.parse(raw);
-      if (
-        typeof parsed === "object" &&
-        parsed !== null &&
-        "platform" in parsed &&
-        parsed.platform === platform
-      ) {
-        return raw;
-      }
+      parsed = JSON.parse(raw);
     } catch {
       return undefined;
     }
+    const envelope = PlatformEnvelopeSchema.safeParse(parsed);
+    if (envelope.success && envelope.data.platform === platform) {
+      return parseAgainstSchema(parsed, schema);
+    }
+    // The unified context is set but names a different platform (or has no
+    // platform field at all): fall through to the legacy var below, matching
+    // the pre-unification behavior of trusting a surface-specific env var.
   }
-  return options.legacyEnvVar
+  const legacyRaw = options.legacyEnvVar
     ? process.env[options.legacyEnvVar]?.trim()
     : undefined;
+  if (!legacyRaw) return undefined;
+  let legacyParsed: unknown;
+  try {
+    legacyParsed = JSON.parse(legacyRaw);
+  } catch {
+    return undefined;
+  }
+  return parseAgainstSchema(legacyParsed, schema);
+}
+
+function parseAgainstSchema<T>(
+  value: unknown,
+  schema: z.ZodType<T>,
+): T | undefined {
+  const result = schema.safeParse(value);
+  return result.success ? result.data : undefined;
 }

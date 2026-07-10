@@ -122,6 +122,28 @@ async function main(): Promise<void> {
       "delete removes the transcript file",
     );
 
+    // Concurrent writers serialize instead of racing on index.json.tmp: an
+    // immediate write, a flush, and another immediate write all in flight at
+    // once must leave a parseable index reflecting the last mutation.
+    const [anna] = [await store.createSession("Anna's plate measurements")];
+    await Promise.all([
+      store.renameSession(anna.conversationId, "Anna's star catalogue"),
+      store.flushIndex(),
+      store.renameSession(anna.conversationId, "Anna's final catalogue"),
+    ]);
+    await store.flushIndex();
+    const afterRace: { sessions: SessionSummary[] } = JSON.parse(
+      await readFile(join(dir, "index.json"), "utf8"),
+    );
+    assert.equal(
+      afterRace.sessions.find(
+        (session) => session.conversationId === anna.conversationId,
+      )?.title,
+      "Anna's final catalogue",
+      "overlapping index writes serialize and keep the latest state",
+    );
+    await store.deleteSession(anna.conversationId);
+
     // The index file itself is valid JSON on disk.
     const rawIndex = JSON.parse(
       await readFile(join(dir, "index.json"), "utf8"),

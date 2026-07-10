@@ -1,6 +1,5 @@
 import type { z } from "zod/v4";
 import { generateTimestampId } from "@/lib/ids";
-import { isRecord } from "@/lib/type-guards";
 import {
   completedReminder,
   nextRecurrenceRun,
@@ -248,14 +247,12 @@ function buildReminder(input: {
 }
 
 function currentDiscordTarget(): ReminderTarget | undefined {
-  const raw = readDiscordPlatformContext();
-  if (!raw) return undefined;
-  const parsed: unknown = JSON.parse(raw);
-  if (!isRecord(parsed)) return undefined;
-  const threadId = stringField(parsed, "threadId");
-  if (threadId) return { kind: "thread", threadId };
-  const channelId = stringField(parsed, "channelId");
-  if (channelId) return { kind: "channel", channelId };
+  const context = readDiscordPlatformContext();
+  if (!context) return undefined;
+  if (context.threadId) return { kind: "thread", threadId: context.threadId };
+  if (context.channelId) {
+    return { kind: "channel", channelId: context.channelId };
+  }
   return undefined;
 }
 
@@ -273,12 +270,4 @@ function minutesFromNow(minutes: number | undefined): string {
     );
   }
   return new Date(Date.now() + minutes * 60_000).toISOString();
-}
-
-function stringField(
-  record: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

@@ -40,7 +40,6 @@ import {
   type DiscordChannel,
   DiscordChannelSchema,
   type DiscordContext,
-  DiscordContextSchema,
   type DiscordMessage,
   DiscordMessageSchema,
   discordGet,
@@ -553,9 +552,7 @@ async function listChannelsForContext(
 // reaching into Discord), where there is no "current" channel or message and
 // every helper must name an explicit target.
 function optionalContext(): DiscordContext | undefined {
-  const raw = readDiscordPlatformContext();
-  if (!raw) return undefined;
-  return DiscordContextSchema.parse(JSON.parse(raw));
+  return readDiscordPlatformContext();
 }
 
 // The current Discord message context, or an error. Used by helpers that only

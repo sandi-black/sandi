@@ -17,26 +17,17 @@ import {
 } from "../events/store";
 import { readDiscordPlatformContext } from "../runtime/context";
 import { eventTargetMatches } from "../shared/targets";
-import { z } from "zod/v4";
 
+// A narrower view of the shared Discord platform context: event tools only
+// need a target and, once mapped to a Sandi identity, an EventCreator. The
+// shared context's author block leaves identityId optional (it is only set
+// once the Discord user has a mapped identity), so that field is promoted
+// here only when present.
 type DiscordContext = {
   channelId?: string;
   threadId?: string;
   author?: EventCreator;
 };
-
-const DiscordContextSchema = z.object({
-  channelId: z.string().optional(),
-  threadId: z.string().optional(),
-  author: z
-    .object({
-      discordUserId: z.string().min(1),
-      identityId: z.string().min(1),
-      username: z.string().min(1).optional(),
-      displayName: z.string().min(1).optional(),
-    })
-    .optional(),
-});
 
 const EventIdParam = Type.String({
   description:
@@ -254,13 +245,20 @@ function readEventsRoot(): string {
 }
 
 function readDiscordContext(): DiscordContext {
-  const raw = readDiscordPlatformContext();
-  if (!raw) return {};
-  const parsed = DiscordContextSchema.parse(JSON.parse(raw));
+  const platformContext = readDiscordPlatformContext();
+  if (!platformContext) return {};
   const context: DiscordContext = {};
-  if (parsed.channelId) context.channelId = parsed.channelId;
-  if (parsed.threadId) context.threadId = parsed.threadId;
-  if (parsed.author) context.author = parsed.author;
+  if (platformContext.channelId) context.channelId = platformContext.channelId;
+  if (platformContext.threadId) context.threadId = platformContext.threadId;
+  const author = platformContext.author;
+  if (author?.identityId) {
+    context.author = {
+      discordUserId: author.discordUserId,
+      identityId: author.identityId,
+      ...(author.username ? { username: author.username } : {}),
+      ...(author.displayName ? { displayName: author.displayName } : {}),
+    };
+  }
   return context;
 }
 

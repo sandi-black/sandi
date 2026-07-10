@@ -1,8 +1,10 @@
-import { z } from "zod/v4";
 import { recordDeliverySideEffect } from "@/lib/provider/side-effects";
 import { GitHubApi } from "@/surfaces/github/github/api";
 import { GhCli } from "@/surfaces/github/github/gh-cli";
-import { readGitHubPlatformContext } from "@/surfaces/github/runtime/context";
+import {
+  type GitHubContext,
+  readGitHubPlatformContext,
+} from "@/surfaces/github/runtime/context";
 import {
   CommentInputSchema,
   CreatePullRequestReviewInputSchema,
@@ -13,74 +15,7 @@ import {
   resolveRepoIssueTarget,
 } from "@/surfaces/github/runtime/targets";
 
-const GitHubContextSchema = z.object({
-  platform: z.literal("github"),
-  bot: z.object({
-    id: z.number(),
-    login: z.string(),
-    htmlUrl: z.string().optional(),
-  }),
-  repository: z.object({
-    owner: z.string(),
-    repo: z.string(),
-    fullName: z.string(),
-    htmlUrl: z.string(),
-    defaultBranch: z.string().optional(),
-  }),
-  thread: z.object({
-    kind: z.enum(["issue", "pull"]),
-    number: z.number(),
-    title: z.string(),
-    htmlUrl: z.string(),
-  }),
-  trigger: z.object({
-    key: z.string(),
-    kind: z.enum(["mention", "review_requested"]),
-    notificationId: z.string(),
-    notificationReason: z.string(),
-    notificationUpdatedAt: z.string(),
-    source: z
-      .discriminatedUnion("kind", [
-        z.object({
-          kind: z.literal("issue_comment"),
-          id: z.number(),
-          htmlUrl: z.string(),
-          createdAt: z.string(),
-          updatedAt: z.string(),
-          body: z.string(),
-        }),
-        z.object({
-          kind: z.literal("review_comment"),
-          id: z.number(),
-          htmlUrl: z.string(),
-          createdAt: z.string(),
-          updatedAt: z.string(),
-          body: z.string(),
-          path: z.string(),
-          diffHunk: z.string().optional(),
-        }),
-        z.object({
-          kind: z.literal("review_request"),
-          id: z.number(),
-          createdAt: z.string(),
-        }),
-        z.object({
-          kind: z.literal("subject_body"),
-          htmlUrl: z.string(),
-          updatedAt: z.string(),
-          body: z.string(),
-        }),
-      ])
-      .optional(),
-    actor: z.object({
-      id: z.number(),
-      login: z.string(),
-      htmlUrl: z.string().optional(),
-    }),
-  }),
-});
-
-export type GitHubContext = z.infer<typeof GitHubContextSchema>;
+export type { GitHubContext } from "@/surfaces/github/runtime/context";
 
 export type RepoIssueInput = {
   owner?: string;
@@ -177,9 +112,7 @@ export async function createPullRequestReview(
 // reaching into GitHub), where there is no current thread and every helper must
 // name an explicit owner, repo, and number.
 function optionalContext(): GitHubContext | undefined {
-  const raw = readGitHubPlatformContext();
-  if (!raw) return undefined;
-  return GitHubContextSchema.parse(JSON.parse(raw));
+  return readGitHubPlatformContext();
 }
 
 // The current GitHub thread context, or an error. Used by helpers that only make

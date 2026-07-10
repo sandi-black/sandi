@@ -11,12 +11,59 @@ import { z } from "zod/v4";
 
 export const MAX_DISCORD_FILE_BYTES = 24 * 1024 * 1024;
 
+// Trims a raw JSON field the way the platform context has always been read:
+// any non-string value, or a string that is empty once trimmed, is treated
+// as though the field were absent rather than rejecting the whole object.
+function trimmedStringField(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+// The author block a Discord turn's platform context carries when it has an
+// identified human behind it (a message author, a reminder/event creator).
+// discordUserId is the one field every consumer needs; identityId is only
+// populated once that Discord user has a mapped Sandi identity, so it stays
+// optional here and callers that require it (event creation, which charges
+// model usage to the mapped account) enforce that themselves.
+export type DiscordContextAuthor = {
+  discordUserId: string;
+  username?: string;
+  displayName?: string;
+  identityId?: string;
+};
+
+const DiscordContextAuthorSchema = z
+  .object({
+    discordUserId: z.unknown().transform(trimmedStringField),
+    username: z.unknown().transform(trimmedStringField),
+    displayName: z.unknown().transform(trimmedStringField),
+    identityId: z.unknown().transform(trimmedStringField),
+  })
+  .transform((value, ctx): DiscordContextAuthor => {
+    if (!value.discordUserId) {
+      ctx.addIssue({
+        code: "custom",
+        message: "author.discordUserId is required",
+      });
+      return z.NEVER;
+    }
+    return {
+      discordUserId: value.discordUserId,
+      ...(value.username ? { username: value.username } : {}),
+      ...(value.displayName ? { displayName: value.displayName } : {}),
+      ...(value.identityId ? { identityId: value.identityId } : {}),
+    };
+  });
+
 export const DiscordContextSchema = z.object({
   guildId: z.string().optional(),
   channelId: z.string(),
   parentChannelId: z.string().optional(),
   threadId: z.string().optional(),
   messageId: z.string(),
+  // A malformed author block (e.g. missing discordUserId) is dropped rather
+  // than failing the whole context: channelId/messageId are still usable,
+  // and callers that require an author check for its absence themselves.
+  author: DiscordContextAuthorSchema.optional().catch(undefined),
 });
 
 export const DiscordUserSchema = z.object({

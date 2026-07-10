@@ -124,17 +124,35 @@ export async function createTranscriptStore(
   };
 
   let indexSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  // Every index write goes through this chain so two writers (a fired debounce
+  // and an immediate rename/delete, or a flush racing either) can never overlap
+  // on the shared index.json.tmp staging file. Each enqueued write serializes
+  // the sessions array as of when it runs, so a later link never writes staler
+  // data than an earlier one. The stored chain swallows rejections (each caller
+  // observes its own write's failure via the returned promise) so one failed
+  // write does not wedge every later one.
+  let indexWriteChain: Promise<void> = Promise.resolve();
+  const enqueueIndexWrite = (): Promise<void> => {
+    const write = indexWriteChain.then(writeIndex, writeIndex);
+    indexWriteChain = write.catch(() => undefined);
+    return write;
+  };
   const flushIndex = async (): Promise<void> => {
-    if (!indexSaveTimer) return;
-    clearTimeout(indexSaveTimer);
-    indexSaveTimer = undefined;
-    await writeIndex();
+    if (indexSaveTimer) {
+      clearTimeout(indexSaveTimer);
+      indexSaveTimer = undefined;
+      await enqueueIndexWrite();
+      return;
+    }
+    // No pending timer, but the timer may have fired with its write still in
+    // flight; wait the chain out so a quit path never exits mid-write.
+    await indexWriteChain;
   };
   const scheduleIndexSave = (): void => {
     if (indexSaveTimer) clearTimeout(indexSaveTimer);
     indexSaveTimer = setTimeout(() => {
       indexSaveTimer = undefined;
-      writeIndex().catch((error: unknown) => {
+      enqueueIndexWrite().catch((error: unknown) => {
         console.error("failed to persist the transcript index", error);
       });
     }, INDEX_SAVE_DEBOUNCE_MS);
@@ -149,7 +167,7 @@ export async function createTranscriptStore(
       clearTimeout(indexSaveTimer);
       indexSaveTimer = undefined;
     }
-    await writeIndex();
+    await enqueueIndexWrite();
   };
 
   const transcriptPath = (conversationId: string): string =>

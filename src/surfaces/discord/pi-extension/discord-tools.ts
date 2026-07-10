@@ -27,7 +27,6 @@ import {
   createRest,
   type DiscordAttachmentSchema,
   DiscordChannelSchema,
-  DiscordContextSchema,
   DiscordMessageSchema,
   DiscordUserSchema,
   discordGet,
@@ -1515,18 +1514,19 @@ export default function discordToolsExtension(pi: ExtensionAPI): void {
 }
 
 function readContext(): DiscordContext {
-  const raw = readDiscordPlatformContext();
-  if (!raw) {
+  const platformContext = readDiscordPlatformContext();
+  if (!platformContext) {
     throw new Error("Discord platform context is not set");
   }
-  const parsed = DiscordContextSchema.parse(JSON.parse(raw));
   const context: DiscordContext = {
-    channelId: parsed.channelId,
-    messageId: parsed.messageId,
+    channelId: platformContext.channelId,
+    messageId: platformContext.messageId,
   };
-  if (parsed.guildId) context.guildId = parsed.guildId;
-  if (parsed.parentChannelId) context.parentChannelId = parsed.parentChannelId;
-  if (parsed.threadId) context.threadId = parsed.threadId;
+  if (platformContext.guildId) context.guildId = platformContext.guildId;
+  if (platformContext.parentChannelId) {
+    context.parentChannelId = platformContext.parentChannelId;
+  }
+  if (platformContext.threadId) context.threadId = platformContext.threadId;
   return context;
 }
 

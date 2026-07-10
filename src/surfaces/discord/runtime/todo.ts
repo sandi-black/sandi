@@ -29,6 +29,7 @@ import {
 } from "@/surfaces/discord/runtime/context";
 import { resolveGuildId } from "@/surfaces/discord/runtime/guild";
 import { explicitChannelId } from "@/surfaces/discord/runtime/targets";
+import type { DiscordContext } from "@/surfaces/discord/shared/rest";
 import {
   type ChannelTodoState,
   cleanItemText,
@@ -55,18 +56,8 @@ const DiscordMessageSchema = z.object({
   content: z.string(),
 });
 
-const DiscordContextSchema = z.object({
-  platform: z.literal("discord"),
-  guildId: z.string().optional(),
-  channelId: z.string(),
-  parentChannelId: z.string().optional(),
-  threadId: z.string().optional(),
-  messageId: z.string(),
-});
-
 type TodoListState = z.infer<typeof TodoListStateSchema>;
 type DiscordMessage = z.infer<typeof DiscordMessageSchema>;
-type DiscordContext = z.infer<typeof DiscordContextSchema>;
 
 export type TodoItemSummary = {
   id: string;
@@ -678,9 +669,7 @@ function currentTodoTarget(channelRef: string | undefined): {
 // The current Discord context, or undefined on a turn from another surface
 // where every todo helper must name an explicit channel target.
 function optionalContext(): DiscordContext | undefined {
-  const raw = readDiscordPlatformContext();
-  if (!raw) return undefined;
-  return DiscordContextSchema.parse(JSON.parse(raw));
+  return readDiscordPlatformContext();
 }
 
 function createRest(): REST {

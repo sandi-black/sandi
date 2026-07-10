@@ -5,8 +5,8 @@ import {
   type SandiSurfaceContext,
   UNIFIED_RUNTIME_ENTRY,
 } from "../../../lib/surface-context";
-import { isRecord } from "../../../lib/type-guards";
-import type { ReminderUser } from "@/surfaces/discord/reminders/schemas";
+import type { ReminderUser } from "../reminders/schemas";
+import { type DiscordContext, DiscordContextSchema } from "../shared/rest";
 
 export const DISCORD_RUNTIME_IMPORT = "./sandi/runtime.ts";
 // Every surface composes the unified runtime, so a Discord turn can also reach
@@ -26,8 +26,8 @@ export const DISCORD_SURFACE_CONTEXT: SandiSurfaceContext = {
 // working.
 const DISCORD_LEGACY_CONTEXT_ENV = "SANDI_DISCORD_CONTEXT";
 
-export function readDiscordPlatformContext(): string | undefined {
-  return readPlatformContext("discord", {
+export function readDiscordPlatformContext(): DiscordContext | undefined {
+  return readPlatformContext("discord", DiscordContextSchema, {
     legacyEnvVar: DISCORD_LEGACY_CONTEXT_ENV,
   });
 }
@@ -48,32 +48,5 @@ function discordAttachmentsRoot(): string {
 // runtime helpers, both of which need this to stamp a created/updated-by
 // identity when the turn does not pass one explicitly.
 export function currentDiscordReminderUser(): ReminderUser | undefined {
-  const raw = readDiscordPlatformContext();
-  if (!raw) return undefined;
-  const parsed: unknown = JSON.parse(raw);
-  if (!isRecord(parsed)) return undefined;
-  const author = parsed["author"];
-  if (!isRecord(author)) return undefined;
-  const discordUserId = stringField(author, "discordUserId");
-  if (!discordUserId) return undefined;
-  return {
-    discordUserId,
-    ...(stringField(author, "username")
-      ? { username: stringField(author, "username") }
-      : {}),
-    ...(stringField(author, "displayName")
-      ? { displayName: stringField(author, "displayName") }
-      : {}),
-    ...(stringField(author, "identityId")
-      ? { identityId: stringField(author, "identityId") }
-      : {}),
-  };
-}
-
-function stringField(
-  record: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  return readDiscordPlatformContext()?.author;
 }

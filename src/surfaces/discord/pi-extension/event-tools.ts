@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import { Type } from "@earendil-works/pi-ai";
 import {
   type AgentToolResult,
@@ -7,6 +5,7 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 
+import { generateTimestampId } from "../../../lib/ids";
 import { discordChannelIdFromRef } from "../discord/ids";
 import type { EventCreator, EventTarget, SandiEvent } from "../events/schemas";
 import {
@@ -17,26 +16,18 @@ import {
   writeEvent,
 } from "../events/store";
 import { readDiscordPlatformContext } from "../runtime/context";
-import { z } from "zod/v4";
+import { eventTargetMatches } from "../shared/targets";
 
+// A narrower view of the shared Discord platform context: event tools only
+// need a target and, once mapped to a Sandi identity, an EventCreator. The
+// shared context's author block leaves identityId optional (it is only set
+// once the Discord user has a mapped identity), so that field is promoted
+// here only when present.
 type DiscordContext = {
   channelId?: string;
   threadId?: string;
   author?: EventCreator;
 };
-
-const DiscordContextSchema = z.object({
-  channelId: z.string().optional(),
-  threadId: z.string().optional(),
-  author: z
-    .object({
-      discordUserId: z.string().min(1),
-      identityId: z.string().min(1),
-      username: z.string().min(1).optional(),
-      displayName: z.string().min(1).optional(),
-    })
-    .optional(),
-});
 
 const EventIdParam = Type.String({
   description:
@@ -135,7 +126,9 @@ export default function eventToolsExtension(pi: ExtensionAPI): void {
           channelId: params.channelId,
         });
         const type = inferEventType(params.type, params.at, params.schedule);
-        const id = normalizeEventId(params.id ?? generatedEventId(type));
+        const id = normalizeEventId(
+          params.id ?? generateTimestampId(type.replace("-", "_")),
+        );
         const event = buildEvent({
           type,
           target,
@@ -252,13 +245,20 @@ function readEventsRoot(): string {
 }
 
 function readDiscordContext(): DiscordContext {
-  const raw = readDiscordPlatformContext();
-  if (!raw) return {};
-  const parsed = DiscordContextSchema.parse(JSON.parse(raw));
+  const platformContext = readDiscordPlatformContext();
+  if (!platformContext) return {};
   const context: DiscordContext = {};
-  if (parsed.channelId) context.channelId = parsed.channelId;
-  if (parsed.threadId) context.threadId = parsed.threadId;
-  if (parsed.author) context.author = parsed.author;
+  if (platformContext.channelId) context.channelId = platformContext.channelId;
+  if (platformContext.threadId) context.threadId = platformContext.threadId;
+  const author = platformContext.author;
+  if (author?.identityId) {
+    context.author = {
+      discordUserId: author.discordUserId,
+      identityId: author.identityId,
+      ...(author.username ? { username: author.username } : {}),
+      ...(author.displayName ? { displayName: author.displayName } : {}),
+    };
+  }
   return context;
 }
 
@@ -326,16 +326,6 @@ function targetForScope(
   throw new Error(`Unknown event list scope: ${scope}`);
 }
 
-function eventTargetMatches(event: SandiEvent, target: EventTarget): boolean {
-  if (event.target.kind === "thread" && target.kind === "thread") {
-    return event.target.threadId === target.threadId;
-  }
-  if (event.target.kind === "channel" && target.kind === "channel") {
-    return event.target.channelId === target.channelId;
-  }
-  return false;
-}
-
 function inferEventType(
   requested: string | undefined,
   at: string | undefined,
@@ -386,14 +376,6 @@ function buildEvent(input: {
     timezone:
       input.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
-}
-
-function generatedEventId(type: SandiEvent["type"]): string {
-  const stamp = new Date()
-    .toISOString()
-    .replaceAll(/[^0-9]/g, "")
-    .slice(0, 14);
-  return `${type.replace("-", "_")}_${stamp}_${randomUUID().slice(0, 8)}`;
 }
 
 function formatEvent(id: string, event: SandiEvent): string {

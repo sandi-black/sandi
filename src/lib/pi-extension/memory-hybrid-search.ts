@@ -4,7 +4,7 @@ import {
   contentHashForSourceFiles,
   type EmbeddingIndexSourceFile,
   embeddingIndexCacheRootForSourceRoot,
-  type IndexedSearchPassage,
+  filterIndexedPassagesForSearch,
   loadCurrentEmbeddingIndex,
   type RebuildEmbeddingIndexResult,
   readSourceFiles,
@@ -28,8 +28,6 @@ import {
   type MemoryContext,
   parseFrontmatter,
   parseMemorySummary,
-  readMemoryContext,
-  readMemoryRoot,
   resolveAllowedRef,
 } from "./memory-common";
 import { formatSearchSignals } from "./skill-hybrid-search";
@@ -285,18 +283,6 @@ function memoryIndexPassages(
   );
 }
 
-function filterIndexedPassagesForSearch(
-  passages: readonly IndexedSearchPassage[],
-  refs: ReadonlySet<string>,
-  mode: "passages" | "metadata" | undefined,
-): IndexedSearchPassage[] {
-  return passages.filter(
-    (passage) =>
-      refs.has(passage.sourcePath) &&
-      (mode !== "metadata" || passage.passageId.startsWith("metadata-")),
-  );
-}
-
 function memoryMetadataContent(ref: string, content: string): string {
   const parsed = parseFrontmatter(content);
   const preview = parsed.summary
@@ -315,36 +301,6 @@ function memoryMetadataContent(ref: string, content: string): string {
   ]
     .filter((line) => line.length > 0)
     .join("\n");
-}
-
-export async function searchCurrentMemoryHybrid(input: {
-  query: string;
-  area?: string | undefined;
-  maxResults?: number | undefined;
-  maxSnippets?: number | undefined;
-  minScore?: number | undefined;
-  minEmbeddingScore?: number | undefined;
-  minBm25NormalizedScore?: number | undefined;
-  lexicalMode?: "boost" | "fallback" | "disabled" | undefined;
-  embeddingEngine?: EmbeddingEngine | null | undefined;
-  contentMode?: "passages" | "metadata" | undefined;
-  supportingScoreWeight?: number | undefined;
-}): Promise<MemoryHybridSearchResponse> {
-  return await searchMemoryHybrid({
-    root: readMemoryRoot(),
-    context: readMemoryContext(),
-    query: input.query,
-    area: input.area,
-    maxResults: input.maxResults,
-    maxSnippets: input.maxSnippets,
-    minScore: input.minScore,
-    minEmbeddingScore: input.minEmbeddingScore,
-    minBm25NormalizedScore: input.minBm25NormalizedScore,
-    lexicalMode: input.lexicalMode,
-    embeddingEngine: input.embeddingEngine,
-    contentMode: input.contentMode,
-    supportingScoreWeight: input.supportingScoreWeight,
-  });
 }
 
 export function formatMemoryHybridResult(

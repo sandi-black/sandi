@@ -5,6 +5,7 @@ import type {
   ConversationParticipant,
 } from "@/lib/conversations/types";
 import { participantRef } from "@/lib/conversations/types";
+import { isRecord } from "@/lib/type-guards";
 
 export type DiscordThreadConversationSource =
   | {
@@ -260,10 +261,6 @@ function discordThreadSourceFromManifest(
     bridgeSummary,
     createdByUserId,
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function stringField(

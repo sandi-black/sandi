@@ -1,6 +1,6 @@
 import { Cron } from "croner";
 
-import { readEnv } from "@/lib/config/env";
+import { readBooleanEnv, readEnv } from "@/lib/config/env";
 
 // How automatic memory consolidation is paced. Short-term encoding fires after a
 // conversation has been quiet for idleMs; the deeper overnight dream runs on
@@ -94,20 +94,4 @@ function parseTimezone(value: string): string {
     );
   }
   return value;
-}
-
-function readBooleanEnv(
-  names: readonly string[],
-  defaultValue: boolean,
-): boolean {
-  const value = readEnv(names);
-  if (!value) return defaultValue;
-  const normalized = value.toLowerCase();
-  if (normalized === "true" || normalized === "1" || normalized === "yes") {
-    return true;
-  }
-  if (normalized === "false" || normalized === "0" || normalized === "no") {
-    return false;
-  }
-  throw new Error(`${names[0]} must be true or false`);
 }

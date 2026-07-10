@@ -38,6 +38,161 @@ const desktopParam = Type.Optional(
   Type.String({ description: DESKTOP_SELECTOR_HINT }),
 );
 
+// One entry per proxy tool: its registered name, its UI label, its
+// description, and its parameter schema. `execute` is identical for every
+// tool but the name it forwards, so it is built once in the registration loop
+// below rather than repeated per tool.
+const TOOL_SPECS = [
+  {
+    name: "local_read",
+    label: "Read Local File",
+    description: `Read a file from the human's desktop. ${DESKTOP_HINT}`,
+    parameters: Type.Object({
+      desktop: desktopParam,
+      path: Type.String({
+        description: "Absolute or desktop-relative path.",
+      }),
+      offset: Type.Optional(
+        Type.Number({ description: "First line to read (0-based)." }),
+      ),
+      limit: Type.Optional(
+        Type.Number({ description: "Maximum number of lines to read." }),
+      ),
+    }),
+  },
+  {
+    name: "local_write",
+    label: "Write Local File",
+    description: `Create or overwrite a file on the human's desktop. ${DESKTOP_HINT}`,
+    parameters: Type.Object({
+      desktop: desktopParam,
+      path: Type.String({ description: "Path to write." }),
+      content: Type.String({ description: "Full file contents to write." }),
+    }),
+  },
+  {
+    name: "local_edit",
+    label: "Edit Local File",
+    description: `Replace an exact substring in a file on the human's desktop. ${DESKTOP_HINT}`,
+    parameters: Type.Object({
+      desktop: desktopParam,
+      path: Type.String({ description: "Path to edit." }),
+      oldString: Type.String({ description: "Exact text to replace." }),
+      newString: Type.String({ description: "Replacement text." }),
+      replaceAll: Type.Optional(
+        Type.Boolean({ description: "Replace every occurrence." }),
+      ),
+    }),
+  },
+  {
+    name: "local_ls",
+    label: "List Local Directory",
+    description: `List the entries of a directory on the human's desktop. ${DESKTOP_HINT}`,
+    parameters: Type.Object({
+      desktop: desktopParam,
+      path: Type.String({ description: "Directory to list." }),
+    }),
+  },
+  {
+    name: "local_glob",
+    label: "Find Local Files",
+    description: `Find files on the human's desktop by glob pattern (supports ** and *). ${DESKTOP_HINT}`,
+    parameters: Type.Object({
+      desktop: desktopParam,
+      pattern: Type.String({
+        description: "Glob pattern, e.g. src/**/*.ts.",
+      }),
+      path: Type.Optional(
+        Type.String({ description: "Directory to search from." }),
+      ),
+    }),
+  },
+  {
+    name: "local_grep",
+    label: "Search Local Files",
+    description: `Search file contents on the human's desktop with a regular expression. ${DESKTOP_HINT}`,
+    parameters: Type.Object({
+      desktop: desktopParam,
+      pattern: Type.String({
+        description: "Regular expression to search for.",
+      }),
+      path: Type.Optional(
+        Type.String({ description: "File or directory to search." }),
+      ),
+      glob: Type.Optional(
+        Type.String({ description: "Only search files matching this glob." }),
+      ),
+      ignoreCase: Type.Optional(
+        Type.Boolean({ description: "Case-insensitive search." }),
+      ),
+    }),
+  },
+  {
+    name: "local_bash",
+    label: "Run Local Shell Command",
+    description: `Run a shell command on the human's desktop and return its output. ${DESKTOP_HINT}`,
+    parameters: Type.Object({
+      desktop: desktopParam,
+      command: Type.String({ description: "Shell command to run." }),
+      cwd: Type.Optional(
+        Type.String({ description: "Working directory for the command." }),
+      ),
+      timeoutMs: Type.Optional(
+        Type.Number({ description: "Timeout in milliseconds." }),
+      ),
+    }),
+  },
+  {
+    name: "local_list_desktops",
+    label: "List Connected Desktops",
+    description:
+      "List the human's desktops that are currently connected, so a monitor, window, or screenshot tool can target one of them. Returns an id and name for each, with the current desktop marked.",
+    parameters: Type.Object({}),
+  },
+  {
+    name: "local_list_monitors",
+    label: "List Desktop Monitors",
+    description: `List the monitors attached to a connected desktop, with their pixel sizes and positions. ${DESKTOP_HINT}`,
+    parameters: Type.Object({
+      desktop: desktopParam,
+    }),
+  },
+  {
+    name: "local_list_windows",
+    label: "List Desktop Windows",
+    description: `List the visible top-level windows open on a connected desktop, with their titles, owning process, and positions. ${DESKTOP_HINT}`,
+    parameters: Type.Object({
+      desktop: desktopParam,
+    }),
+  },
+  {
+    name: "local_screenshot",
+    label: "Screenshot Desktop",
+    description: `Capture a screenshot of a connected desktop and return it as an image. Capture one monitor or one window; with neither, the primary monitor is captured. ${DESKTOP_HINT}`,
+    parameters: Type.Object({
+      desktop: desktopParam,
+      monitor: Type.Optional(
+        Type.String({
+          description:
+            "Monitor to capture, by index or device name from local_list_monitors.",
+        }),
+      ),
+      window: Type.Optional(
+        Type.String({
+          description:
+            "Window to capture, by handle or title from local_list_windows.",
+        }),
+      ),
+      maxDimension: Type.Optional(
+        Type.Number({
+          description:
+            "Longest-edge cap in pixels before encoding (default 1568).",
+        }),
+      ),
+    }),
+  },
+];
+
 export default function localExecToolsExtension(pi: ExtensionAPI): void {
   const broker = readBroker();
   if (!broker) {
@@ -47,219 +202,19 @@ export default function localExecToolsExtension(pi: ExtensionAPI): void {
     return;
   }
 
-  pi.registerTool(
-    defineTool({
-      name: "local_read",
-      label: "Read Local File",
-      description: `Read a file from the human's desktop. ${DESKTOP_HINT}`,
-      parameters: Type.Object({
-        desktop: desktopParam,
-        path: Type.String({
-          description: "Absolute or desktop-relative path.",
-        }),
-        offset: Type.Optional(
-          Type.Number({ description: "First line to read (0-based)." }),
-        ),
-        limit: Type.Optional(
-          Type.Number({ description: "Maximum number of lines to read." }),
-        ),
+  for (const spec of TOOL_SPECS) {
+    pi.registerTool(
+      defineTool({
+        name: spec.name,
+        label: spec.label,
+        description: spec.description,
+        parameters: spec.parameters,
+        async execute(_id, params) {
+          return callTool(broker, spec.name, params);
+        },
       }),
-      async execute(_id, params) {
-        return callTool(broker, "local_read", params);
-      },
-    }),
-  );
-
-  pi.registerTool(
-    defineTool({
-      name: "local_write",
-      label: "Write Local File",
-      description: `Create or overwrite a file on the human's desktop. ${DESKTOP_HINT}`,
-      parameters: Type.Object({
-        desktop: desktopParam,
-        path: Type.String({ description: "Path to write." }),
-        content: Type.String({ description: "Full file contents to write." }),
-      }),
-      async execute(_id, params) {
-        return callTool(broker, "local_write", params);
-      },
-    }),
-  );
-
-  pi.registerTool(
-    defineTool({
-      name: "local_edit",
-      label: "Edit Local File",
-      description: `Replace an exact substring in a file on the human's desktop. ${DESKTOP_HINT}`,
-      parameters: Type.Object({
-        desktop: desktopParam,
-        path: Type.String({ description: "Path to edit." }),
-        oldString: Type.String({ description: "Exact text to replace." }),
-        newString: Type.String({ description: "Replacement text." }),
-        replaceAll: Type.Optional(
-          Type.Boolean({ description: "Replace every occurrence." }),
-        ),
-      }),
-      async execute(_id, params) {
-        return callTool(broker, "local_edit", params);
-      },
-    }),
-  );
-
-  pi.registerTool(
-    defineTool({
-      name: "local_ls",
-      label: "List Local Directory",
-      description: `List the entries of a directory on the human's desktop. ${DESKTOP_HINT}`,
-      parameters: Type.Object({
-        desktop: desktopParam,
-        path: Type.String({ description: "Directory to list." }),
-      }),
-      async execute(_id, params) {
-        return callTool(broker, "local_ls", params);
-      },
-    }),
-  );
-
-  pi.registerTool(
-    defineTool({
-      name: "local_glob",
-      label: "Find Local Files",
-      description: `Find files on the human's desktop by glob pattern (supports ** and *). ${DESKTOP_HINT}`,
-      parameters: Type.Object({
-        desktop: desktopParam,
-        pattern: Type.String({
-          description: "Glob pattern, e.g. src/**/*.ts.",
-        }),
-        path: Type.Optional(
-          Type.String({ description: "Directory to search from." }),
-        ),
-      }),
-      async execute(_id, params) {
-        return callTool(broker, "local_glob", params);
-      },
-    }),
-  );
-
-  pi.registerTool(
-    defineTool({
-      name: "local_grep",
-      label: "Search Local Files",
-      description: `Search file contents on the human's desktop with a regular expression. ${DESKTOP_HINT}`,
-      parameters: Type.Object({
-        desktop: desktopParam,
-        pattern: Type.String({
-          description: "Regular expression to search for.",
-        }),
-        path: Type.Optional(
-          Type.String({ description: "File or directory to search." }),
-        ),
-        glob: Type.Optional(
-          Type.String({ description: "Only search files matching this glob." }),
-        ),
-        ignoreCase: Type.Optional(
-          Type.Boolean({ description: "Case-insensitive search." }),
-        ),
-      }),
-      async execute(_id, params) {
-        return callTool(broker, "local_grep", params);
-      },
-    }),
-  );
-
-  pi.registerTool(
-    defineTool({
-      name: "local_bash",
-      label: "Run Local Shell Command",
-      description: `Run a shell command on the human's desktop and return its output. ${DESKTOP_HINT}`,
-      parameters: Type.Object({
-        desktop: desktopParam,
-        command: Type.String({ description: "Shell command to run." }),
-        cwd: Type.Optional(
-          Type.String({ description: "Working directory for the command." }),
-        ),
-        timeoutMs: Type.Optional(
-          Type.Number({ description: "Timeout in milliseconds." }),
-        ),
-      }),
-      async execute(_id, params) {
-        return callTool(broker, "local_bash", params);
-      },
-    }),
-  );
-
-  pi.registerTool(
-    defineTool({
-      name: "local_list_desktops",
-      label: "List Connected Desktops",
-      description:
-        "List the human's desktops that are currently connected, so a monitor, window, or screenshot tool can target one of them. Returns an id and name for each, with the current desktop marked.",
-      parameters: Type.Object({}),
-      async execute(_id, params) {
-        return callTool(broker, "local_list_desktops", params);
-      },
-    }),
-  );
-
-  pi.registerTool(
-    defineTool({
-      name: "local_list_monitors",
-      label: "List Desktop Monitors",
-      description: `List the monitors attached to a connected desktop, with their pixel sizes and positions. ${DESKTOP_HINT}`,
-      parameters: Type.Object({
-        desktop: desktopParam,
-      }),
-      async execute(_id, params) {
-        return callTool(broker, "local_list_monitors", params);
-      },
-    }),
-  );
-
-  pi.registerTool(
-    defineTool({
-      name: "local_list_windows",
-      label: "List Desktop Windows",
-      description: `List the visible top-level windows open on a connected desktop, with their titles, owning process, and positions. ${DESKTOP_HINT}`,
-      parameters: Type.Object({
-        desktop: desktopParam,
-      }),
-      async execute(_id, params) {
-        return callTool(broker, "local_list_windows", params);
-      },
-    }),
-  );
-
-  pi.registerTool(
-    defineTool({
-      name: "local_screenshot",
-      label: "Screenshot Desktop",
-      description: `Capture a screenshot of a connected desktop and return it as an image. Capture one monitor or one window; with neither, the primary monitor is captured. ${DESKTOP_HINT}`,
-      parameters: Type.Object({
-        desktop: desktopParam,
-        monitor: Type.Optional(
-          Type.String({
-            description:
-              "Monitor to capture, by index or device name from local_list_monitors.",
-          }),
-        ),
-        window: Type.Optional(
-          Type.String({
-            description:
-              "Window to capture, by handle or title from local_list_windows.",
-          }),
-        ),
-        maxDimension: Type.Optional(
-          Type.Number({
-            description:
-              "Longest-edge cap in pixels before encoding (default 1568).",
-          }),
-        ),
-      }),
-      async execute(_id, params) {
-        return callTool(broker, "local_screenshot", params);
-      },
-    }),
-  );
+    );
+  }
 }
 
 export type Broker = {

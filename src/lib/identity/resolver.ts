@@ -2,10 +2,13 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { z } from "zod/v4";
-import type {
-  HumanIdentityConfig,
-  HumanIdentityRecord,
-  IdentityPlatform,
+import { isMissingPathError } from "@/lib/fs-errors";
+import {
+  type HumanIdentityConfig,
+  type HumanIdentityRecord,
+  IDENTITY_PLATFORMS,
+  type IdentityPlatform,
+  PLATFORM_IDENTITY_DESCRIPTORS,
 } from "@/lib/identity/types";
 
 const HumanIdentitySchema = z.object({
@@ -35,7 +38,6 @@ const HumanIdentityConfigSchema = z.object({
 export async function loadHumanIdentities(
   configDirs: string | readonly string[],
 ): Promise<HumanIdentityConfig> {
-  let lastMissingError: unknown;
   for (const configDir of normalizeConfigDirs(configDirs)) {
     const path = join(configDir, "identities", "humans.json");
     try {
@@ -46,10 +48,8 @@ export async function loadHumanIdentities(
       return parsed;
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
-      lastMissingError = error;
     }
   }
-  if (lastMissingError) return { version: 1, humans: [] };
   return { version: 1, humans: [] };
 }
 
@@ -62,8 +62,9 @@ export async function loadHumanIdentities(
  */
 function assertUniqueIdentities(config: HumanIdentityConfig): void {
   const identityIds = new Set<string>();
-  const discordIds = new Set<string>();
-  const githubIds = new Set<string>();
+  const platformAccountIds = new Map<IdentityPlatform, Set<string>>(
+    IDENTITY_PLATFORMS.map((platform) => [platform, new Set<string>()]),
+  );
   for (const human of config.humans) {
     const id = human.id.toLowerCase();
     if (identityIds.has(id)) {
@@ -73,24 +74,18 @@ function assertUniqueIdentities(config: HumanIdentityConfig): void {
     }
     identityIds.add(id);
 
-    const discordId = human.platforms.discord?.id?.toLowerCase();
-    if (discordId) {
-      if (discordIds.has(discordId)) {
+    for (const platform of IDENTITY_PLATFORMS) {
+      const descriptor = PLATFORM_IDENTITY_DESCRIPTORS[platform];
+      const account = descriptor.readAccount(human.platforms);
+      const accountId = account?.id?.toLowerCase();
+      if (!accountId) continue;
+      const seenIds = platformAccountIds.get(platform);
+      if (seenIds?.has(accountId)) {
         throw new Error(
-          `Duplicate Discord account id in humans.json: ${human.platforms.discord?.id}`,
+          `Duplicate ${descriptor.label} account id in humans.json: ${account?.id}`,
         );
       }
-      discordIds.add(discordId);
-    }
-
-    const githubId = human.platforms.github?.id?.toLowerCase();
-    if (githubId) {
-      if (githubIds.has(githubId)) {
-        throw new Error(
-          `Duplicate GitHub account id in humans.json: ${human.platforms.github?.id}`,
-        );
-      }
-      githubIds.add(githubId);
+      seenIds?.add(accountId);
     }
   }
 }
@@ -103,17 +98,12 @@ export function findHumanIdentity(input: {
 }): HumanIdentityRecord | undefined {
   const username = input.username.toLowerCase();
   const platformUserId = input.platformUserId.toLowerCase();
+  const descriptor = PLATFORM_IDENTITY_DESCRIPTORS[input.platform];
   return input.identities.humans.find((human) => {
-    const account = human.platforms[input.platform];
+    const account = descriptor.readAccount(human.platforms);
     if (!account) return false;
     if (account.id && account.id.toLowerCase() === platformUserId) return true;
-    if (input.platform === "discord" && "username" in account) {
-      return account.username.toLowerCase() === username;
-    }
-    if (input.platform === "github" && "login" in account) {
-      return account.login.toLowerCase() === username;
-    }
-    return false;
+    return account.username.toLowerCase() === username;
   });
 }
 
@@ -131,8 +121,9 @@ export function findHumanIdentityByPlatformId(input: {
   platformUserId: string;
 }): HumanIdentityRecord | undefined {
   const platformUserId = input.platformUserId.toLowerCase();
+  const descriptor = PLATFORM_IDENTITY_DESCRIPTORS[input.platform];
   return input.identities.humans.find((human) => {
-    const account = human.platforms[input.platform];
+    const account = descriptor.readAccount(human.platforms);
     if (!account?.id) return false;
     return account.id.toLowerCase() === platformUserId;
   });
@@ -196,15 +187,6 @@ export class HumanIdentityStore {
     }
     return parts.join("|");
   }
-}
-
-function isMissingPathError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error.code === "ENOENT" || error.code === "ENOTDIR")
-  );
 }
 
 function normalizeConfigDirs(configDirs: string | readonly string[]): string[] {

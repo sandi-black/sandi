@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import type { ConversationManifest } from "@/lib/conversations/types";
+import { isMissingFileError } from "@/lib/fs-errors";
 import { parseFrontmatter } from "@/lib/pi-extension/memory-common";
 import { withManagedWrite } from "@/lib/state/managed-write";
 import {
@@ -142,13 +143,4 @@ export function notesTouchedSince(
 ): EpisodicNote[] {
   if (!since) return notes;
   return notes.filter((note) => note.updatedAt.getTime() > since.getTime());
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "ENOENT"
-  );
 }

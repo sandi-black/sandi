@@ -4,10 +4,11 @@ import { join } from "node:path";
 import { REST, Routes } from "discord.js";
 
 import { z } from "zod/v4";
+import { generateTimestampId } from "@/lib/ids";
 import { JsonFileStore } from "@/lib/state/file-store";
 import {
+  completedReminder,
   nextRecurrenceRun,
-  nextReminderRecurrenceRun,
   validateReminderRecurrence,
 } from "@/surfaces/discord/reminders/recurrence";
 import type {
@@ -22,47 +23,28 @@ import {
   readReminder,
   writeReminder,
 } from "@/surfaces/discord/reminders/store";
-import { readDiscordPlatformContext } from "@/surfaces/discord/runtime/context";
+import {
+  currentDiscordReminderUser,
+  readDiscordPlatformContext,
+} from "@/surfaces/discord/runtime/context";
 import { resolveGuildId } from "@/surfaces/discord/runtime/guild";
 import { explicitChannelId } from "@/surfaces/discord/runtime/targets";
+import type { DiscordContext } from "@/surfaces/discord/shared/rest";
+import {
+  type ChannelTodoState,
+  cleanItemText,
+  emptyGuildState,
+  formatTodoList,
+  GuildTodoStateSchema,
+  listForChannel,
+  type TodoItem,
+  type TodoListRef,
+  updateGuildList,
+} from "@/surfaces/discord/shared/todo-format";
 
 const TODO_STATE_PATH = "todo-list/state.json";
-const DISCORD_MESSAGE_LIMIT = 2_000;
-const DISPLAY_ITEM_LIMIT = 160;
 const MAX_TODO_ITEMS = 10;
 const DEFAULT_FOLLOWUP_INTERVAL_MINUTES = 60;
-const PACIFIC_TIME_ZONE = "America/Los_Angeles";
-
-const TodoItemSchema = z.object({
-  id: z.string(),
-  text: z.string(),
-  authorName: z.string(),
-  sourceUrl: z.string().optional(),
-  reason: z.string().optional(),
-  createdAt: z.string(),
-  reminderAt: z.string().optional(),
-  reminderRepeat: z.string().optional(),
-  reminderId: z.string().optional(),
-});
-
-const ChannelTodoStateSchema = z.object({
-  channelId: z.string(),
-  targetKind: z.enum(["channel", "thread"]).optional(),
-  title: z.string().optional(),
-  instructions: z.string().optional(),
-  emptyText: z.string().optional(),
-  completionMode: z.enum(["select", "buttons"]).optional(),
-  displayMode: z.enum(["default", "grouped-reminders"]).optional(),
-  messageId: z.string().optional(),
-  items: z.array(TodoItemSchema),
-});
-
-const GuildTodoStateSchema = z.object({
-  channelId: z.string().optional(),
-  messageId: z.string().optional(),
-  items: z.array(TodoItemSchema),
-  lists: z.record(z.string(), ChannelTodoStateSchema).optional(),
-});
 
 const TodoListStateSchema = z.object({
   guilds: z.record(z.string(), GuildTodoStateSchema),
@@ -74,21 +56,8 @@ const DiscordMessageSchema = z.object({
   content: z.string(),
 });
 
-const DiscordContextSchema = z.object({
-  platform: z.literal("discord"),
-  guildId: z.string().optional(),
-  channelId: z.string(),
-  parentChannelId: z.string().optional(),
-  threadId: z.string().optional(),
-  messageId: z.string(),
-});
-
-type TodoItem = z.infer<typeof TodoItemSchema>;
-type ChannelTodoState = z.infer<typeof ChannelTodoStateSchema>;
-type GuildTodoState = z.infer<typeof GuildTodoStateSchema>;
 type TodoListState = z.infer<typeof TodoListStateSchema>;
 type DiscordMessage = z.infer<typeof DiscordMessageSchema>;
-type DiscordContext = z.infer<typeof DiscordContextSchema>;
 
 export type TodoItemSummary = {
   id: string;
@@ -156,7 +125,7 @@ export async function listItems(
   const state = await store().read(EMPTY_STATE);
   const current = state.guilds[guildId] ?? emptyGuildState();
   const list =
-    listForChannel(current, channelId) ?? emptyChannelList(channelId);
+    listForChannel(current, channelId)?.list ?? emptyChannelList(channelId);
   return todoListResult(list);
 }
 
@@ -271,13 +240,21 @@ async function updateStoredList(
   let next: ChannelTodoState | undefined;
   await store().updateManaged(async (state) => {
     const current = state.guilds[guildId] ?? emptyGuildState();
-    const existing =
-      listForChannel(current, channelId) ?? emptyChannelList(channelId);
-    next = await upsertRenderedList(await mutator(existing));
+    const ref = listForChannel(current, channelId);
+    const existing = ref?.list ?? emptyChannelList(channelId);
+    const mutated = await upsertRenderedList(await mutator(existing));
+    next = mutated;
+    // Preserve the slot (legacy vs the per-channel map) the list was already
+    // living in; a brand-new list not found by listForChannel always lands in
+    // the map, matching listForChannel's own map-first lookup order.
+    const nextRef: TodoListRef =
+      ref?.kind === "legacy"
+        ? { kind: "legacy", list: mutated }
+        : { kind: "channel", channelId, list: mutated };
     return {
       guilds: {
         ...state.guilds,
-        [guildId]: updateGuildList(current, next),
+        [guildId]: updateGuildList(current, nextRef),
       },
     };
   }, EMPTY_STATE);
@@ -392,31 +369,6 @@ async function completedRecurringItem(
     createdAt: item.createdAt,
     reminderPlan,
   });
-}
-
-function completedReminder(
-  reminder: Reminder,
-  doneBy: ReminderUser | undefined,
-): Reminder {
-  const completedAt = new Date();
-  const nextRun = nextReminderRecurrenceRun(reminder, completedAt);
-  if (nextRun) {
-    return {
-      ...reminder,
-      status: "active",
-      nextFireAt: nextRun.toISOString(),
-      fireCount: 0,
-      messageRefs: [],
-      doneAt: completedAt.toISOString(),
-      ...(doneBy ? { doneBy } : {}),
-    };
-  }
-  return {
-    ...reminder,
-    status: "done",
-    doneAt: completedAt.toISOString(),
-    ...(doneBy ? { doneBy } : {}),
-  };
 }
 
 async function readReminderSafely(id: string): Promise<Reminder | undefined> {
@@ -666,142 +618,9 @@ function itemDoneButtonRows(
   return rows;
 }
 
-function formatTodoList(list: ChannelTodoState): string {
-  if (list.displayMode === "grouped-reminders") {
-    return formatGroupedReminderList(list);
-  }
-
-  const title = list.title ?? "To-do list";
-  const instructions =
-    list.instructions ??
-    "In `todo-` / `tasks-` channels, type what to add or change; Sandi updates this list and removes handled messages. Elsewhere, use **Add item** below or explicit `todo: ...` capture.";
-  const lines = [`# ${title}`, "", instructions, ""];
-
-  if (list.items.length === 0) {
-    lines.push(list.emptyText ?? "_Nothing here yet._");
-    return lines.join("\n");
-  }
-
-  const visibleItems: TodoItem[] = [];
-  let hiddenCount = 0;
-  for (const item of list.items.toReversed()) {
-    const line = formatTodoLine(item);
-    const visibleLines = visibleItems.toReversed().map(formatTodoLine);
-    const next = [...lines, ...visibleLines, line];
-    if (next.join("\n").length > DISCORD_MESSAGE_LIMIT - 80) {
-      hiddenCount += 1;
-      continue;
-    }
-    visibleItems.push(item);
-  }
-
-  if (hiddenCount > 0) {
-    lines.push(
-      `_Plus ${hiddenCount} older item${hiddenCount === 1 ? "" : "s"} hidden to keep this in one Discord message._`,
-      "",
-    );
-  }
-  lines.push(...visibleItems.toReversed().map(formatTodoLine));
-  return lines.join("\n");
-}
-
-function formatGroupedReminderList(list: ChannelTodoState): string {
-  const title = list.title ?? "To-do list";
-  const lines = list.instructions
-    ? [`# ${title}`, "", list.instructions, ""]
-    : [`# ${title}`, ""];
-
-  if (list.items.length === 0) {
-    lines.push(list.emptyText ?? "_Nothing here yet._");
-    return lines.join("\n");
-  }
-
-  const repeatItems = list.items.filter((item) => item.reminderRepeat);
-  const oneTimeItems = list.items.filter((item) => !item.reminderRepeat);
-  lines.push("**Repeat**");
-  if (repeatItems.length === 0) {
-    lines.push("_None._");
-  } else {
-    lines.push(...repeatItems.map(formatGroupedRepeatLine));
-  }
-  lines.push("", "**One time**");
-  if (oneTimeItems.length === 0) {
-    lines.push("_None._");
-  } else {
-    lines.push(...oneTimeItems.map(formatGroupedOneTimeLine));
-  }
-  return lines.join("\n");
-}
-
-function formatGroupedRepeatLine(item: TodoItem): string {
-  const schedule = reminderDateAndTime(item.reminderAt);
-  return `- ${limitDisplayText(item.text)}${schedule ? ` - ${schedule}` : ""}`;
-}
-
-function formatGroupedOneTimeLine(item: TodoItem): string {
-  const schedule = reminderDateAndTime(item.reminderAt);
-  const reason = item.reason ? ` - ${item.reason}` : "";
-  return `- ${limitDisplayText(item.text)}${schedule ? ` - ${schedule}` : ""}${reason}`;
-}
-
-function reminderDateAndTime(iso: string | undefined): string | undefined {
-  if (!iso) return undefined;
-  const date = new Date(iso);
-  if (!Number.isFinite(date.getTime())) return undefined;
-  const day = new Intl.DateTimeFormat("en-US", {
-    timeZone: PACIFIC_TIME_ZONE,
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  }).format(date);
-  const time = new Intl.DateTimeFormat("en-US", {
-    timeZone: PACIFIC_TIME_ZONE,
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(date);
-  return `${day} - ${time}`;
-}
-
-function formatTodoLine(item: TodoItem): string {
-  const source = item.sourceUrl ? ` ([source](${item.sourceUrl}))` : "";
-  const reminder = item.reminderAt
-    ? ` — reminds ${formatDiscordTimestamp(item.reminderAt)}`
-    : "";
-  const repeat = item.reminderRepeat ? ` — repeats ${item.reminderRepeat}` : "";
-  return `- ${limitDisplayText(item.text)} — ${item.authorName}${reminder}${repeat}${source}`;
-}
-
-function formatDiscordTimestamp(iso: string): string {
-  const epochSeconds = Math.floor(new Date(iso).getTime() / 1_000);
-  if (!Number.isFinite(epochSeconds)) return iso;
-  return `<t:${epochSeconds}:f>`;
-}
-
-function limitDisplayText(value: string): string {
-  if (value.length <= DISPLAY_ITEM_LIMIT) return value;
-  return `${value.slice(0, DISPLAY_ITEM_LIMIT - 1)}…`;
-}
-
 function limitOptionText(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength - 1)}…`;
-}
-
-function cleanItemText(value: string): string | undefined {
-  const cleaned = value
-    .replace(/\s+/gu, " ")
-    .replace(/^["“”'‘’]+/u, "")
-    .replace(/["“”'‘’]+$/u, "")
-    .replace(/[.!?]+$/u, "")
-    .trim();
-  if (cleaned.length < 2) return undefined;
-  return sentenceCase(cleaned);
-}
-
-function sentenceCase(value: string): string {
-  const first = value[0] ?? "";
-  const rest = value.slice(1);
-  return `${first.toLocaleUpperCase()}${rest}`;
 }
 
 function todoListResult(list: ChannelTodoState): TodoListResult {
@@ -824,50 +643,6 @@ function todoItemSummary(item: TodoItem): TodoItemSummary {
     ...(item.reminderRepeat ? { reminderRepeat: item.reminderRepeat } : {}),
     ...(item.reminderId ? { reminderId: item.reminderId } : {}),
   };
-}
-
-function listForChannel(
-  guildState: GuildTodoState,
-  channelId: string,
-): ChannelTodoState | undefined {
-  const channelList = guildState.lists?.[channelId];
-  if (channelList) return channelList;
-  if (guildState.channelId === channelId) {
-    return {
-      channelId: guildState.channelId,
-      messageId: guildState.messageId,
-      items: guildState.items,
-    };
-  }
-  return undefined;
-}
-
-function updateGuildList(
-  guildState: GuildTodoState,
-  list: ChannelTodoState,
-): GuildTodoState {
-  if (
-    guildState.channelId === list.channelId &&
-    !guildState.lists?.[list.channelId]
-  ) {
-    return {
-      ...guildState,
-      channelId: list.channelId,
-      messageId: list.messageId,
-      items: list.items,
-    };
-  }
-  return {
-    ...guildState,
-    lists: {
-      ...(guildState.lists ?? {}),
-      [list.channelId]: list,
-    },
-  };
-}
-
-function emptyGuildState(): GuildTodoState {
-  return { items: [] };
 }
 
 function emptyChannelList(channelId: string): ChannelTodoState {
@@ -894,32 +669,7 @@ function currentTodoTarget(channelRef: string | undefined): {
 // The current Discord context, or undefined on a turn from another surface
 // where every todo helper must name an explicit channel target.
 function optionalContext(): DiscordContext | undefined {
-  const raw = readDiscordPlatformContext();
-  if (!raw) return undefined;
-  return DiscordContextSchema.parse(JSON.parse(raw));
-}
-
-function currentDiscordReminderUser(): ReminderUser | undefined {
-  const raw = readDiscordPlatformContext();
-  if (!raw) return undefined;
-  const parsed: unknown = JSON.parse(raw);
-  if (!isRecord(parsed)) return undefined;
-  const author = parsed["author"];
-  if (!isRecord(author)) return undefined;
-  const discordUserId = stringField(author, "discordUserId");
-  if (!discordUserId) return undefined;
-  return {
-    discordUserId,
-    ...(stringField(author, "username")
-      ? { username: stringField(author, "username") }
-      : {}),
-    ...(stringField(author, "displayName")
-      ? { displayName: stringField(author, "displayName") }
-      : {}),
-    ...(stringField(author, "identityId")
-      ? { identityId: stringField(author, "identityId") }
-      : {}),
-  };
+  return readDiscordPlatformContext();
 }
 
 function createRest(): REST {
@@ -957,26 +707,9 @@ function nextReminderAt(
 }
 
 function generatedTodoReminderId(): string {
-  const stamp = new Date()
-    .toISOString()
-    .replace(/[-:]/gu, "")
-    .replace(/\.\d{3}Z$/u, "z")
-    .toLowerCase();
-  return normalizeReminderId(`todo_${stamp}_${randomUUID().slice(0, 8)}`);
+  return normalizeReminderId(generateTimestampId("todo"));
 }
 
 function nullish<T>(value: T | null): T | undefined {
   return value === null ? undefined : value;
-}
-
-function stringField(
-  record: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }

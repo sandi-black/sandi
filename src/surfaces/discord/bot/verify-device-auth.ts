@@ -1,5 +1,3 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { HumanIdentityConfig } from "@/lib/identity/types";
@@ -7,6 +5,7 @@ import {
   consumePairing,
   normalizePairingCode,
 } from "@/lib/pairing/pairing-store";
+import { assertEqual, withTempDir } from "@/lib/verification/harness";
 import { issueDeviceCode } from "@/surfaces/discord/bot/device-auth";
 
 const IDENTITIES: HumanIdentityConfig = {
@@ -86,20 +85,9 @@ async function verifyUnknownOrIdlessUsersDeclined(): Promise<void> {
 async function withPairingsFile(
   run: (path: string) => Promise<void>,
 ): Promise<void> {
-  const dir = await mkdtemp(join(tmpdir(), "sandi-device-auth-"));
-  try {
+  await withTempDir("sandi-device-auth-", async (dir) => {
     await run(join(dir, "api-pairings.json"));
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
+  });
 }
 
 await verifyDeviceAuth();

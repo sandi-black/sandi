@@ -1,5 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { z } from "zod";
@@ -14,6 +13,7 @@ import {
   parseInstalledPiPackages,
   SUPPORTED_PI_VERSION,
 } from "@/lib/provider/pi-runtime-setup";
+import { assert, withTempDir } from "@/lib/verification/harness";
 
 const CodexConversionConfigSchema = z
   .object({
@@ -36,17 +36,13 @@ const CodexConversionConfigSchema = z
   })
   .catchall(z.unknown());
 
-const tempRoot = await mkdtemp(join(tmpdir(), "sandi-pi-setup-"));
-
-try {
+await withTempDir("sandi-pi-setup-", async (tempRoot) => {
   verifyPackageListParsing();
   await verifyPerAccountSetup(tempRoot);
   await verifyStaleConfigReplacement(tempRoot);
   await verifyUnsupportedVersionStopsEarly(tempRoot);
   console.log("Pi runtime setup verification passed");
-} finally {
-  await rm(tempRoot, { recursive: true, force: true });
-}
+});
 
 function verifyPackageListParsing(): void {
   const installed = parseInstalledPiPackages(`User packages:
@@ -296,8 +292,4 @@ function fail(stderr: string): PiSetupCommandResult {
 async function readCodexConversionConfig(path: string) {
   const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
   return CodexConversionConfigSchema.parse(parsed);
-}
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message);
 }

@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { assert, assertEqual, withTempDir } from "@/lib/verification/harness";
 import {
   type ExecutorContext,
   executeLocalTool,
@@ -12,7 +12,7 @@ import {
 // params are a boundary concern, covered by verify-desktop-client, not here.
 
 async function verifyExecutors(): Promise<void> {
-  await withTempDir(async (dir) => {
+  await withTempDir("sandi-executors-", async (dir) => {
     const context: ExecutorContext = { rootDir: dir };
     await verifyWriteAndRead(context);
     await verifyEdit(context);
@@ -342,29 +342,6 @@ async function verifyStateToolRouting(context: ExecutorContext): Promise<void> {
     );
   }
   console.log("ok the state tools route to their executors");
-}
-
-async function withTempDir(run: (dir: string) => Promise<void>): Promise<void> {
-  const dir = await mkdtemp(join(tmpdir(), "sandi-executors-"));
-  try {
-    await run(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (condition) return;
-  console.error(`assertion failed: ${message}`);
-  process.exit(1);
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
 }
 
 await verifyExecutors();

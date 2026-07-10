@@ -5,7 +5,6 @@ import { atomicWriteInPlace, withManagedWrite } from "../state/managed-write";
 
 export type SkillKind = "custom" | "builtin";
 export type SkillScope = "core" | "surface";
-export type SkillWriteScope = SkillScope;
 
 export type SkillSource = {
   scope: SkillScope;
@@ -34,10 +33,6 @@ export type SkillRuntimeContext = {
   root: string;
   surface: string | null;
 };
-
-export function readSkillsRoot(): string {
-  return readSkillsContext().root;
-}
 
 export function readSkillsContext(): SkillRuntimeContext {
   const rootValue = process.env["SANDI_SKILLS_ROOT"]?.trim();
@@ -132,7 +127,7 @@ export async function readSkill(input: {
 export async function writeCustomSkill(input: {
   root: string;
   surface?: string | null;
-  scope: SkillWriteScope;
+  scope: SkillScope;
   name: string;
   content: string;
   mode: "replace" | "append";
@@ -179,7 +174,7 @@ export async function writeCustomSkill(input: {
 export async function deleteCustomSkill(input: {
   root: string;
   surface?: string | null;
-  scope: SkillWriteScope;
+  scope: SkillScope;
   name: string;
 }): Promise<{
   name: string;
@@ -222,16 +217,14 @@ export async function deleteCustomSkill(input: {
   };
 }
 
-export function defaultSkillWriteScope(
-  surface: string | null,
-): SkillWriteScope {
+export function defaultSkillWriteScope(surface: string | null): SkillScope {
   return surface ? "surface" : "core";
 }
 
 export function parseSkillWriteScope(
   value: string | undefined,
   surface: string | null,
-): SkillWriteScope {
+): SkillScope {
   if (!value?.trim()) return defaultSkillWriteScope(surface);
   const normalized = value.trim().toLowerCase();
   if (normalized === "core" || normalized === "surface") return normalized;
@@ -310,7 +303,7 @@ function skillLayers(root: string, surface: string | null): SkillLayer[] {
 
 function customLayerRoot(
   root: string,
-  scope: SkillWriteScope,
+  scope: SkillScope,
   surface: string | null,
 ): string {
   if (scope === "core") return resolve(root, "core", "custom");
@@ -352,7 +345,7 @@ async function listSkillDirectoryNames(root: string): Promise<string[]> {
 async function readEffectiveOrCustom(input: {
   root: string;
   surface: string | null;
-  scope: SkillWriteScope;
+  scope: SkillScope;
   name: string;
   customPath: string;
 }): Promise<string | null> {

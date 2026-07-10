@@ -13,6 +13,7 @@ import { dirname, join, resolve } from "node:path";
 
 import { z } from "zod/v4";
 import { projectDirs } from "@/lib/config/platform-dirs";
+import { isMissingPathError } from "@/lib/fs-errors";
 
 // A per-device bearer token is the api surface's hex secret: 32 bytes rendered
 // as 64 lowercase hex chars. Pinning the exact shape here means a truncated or
@@ -142,7 +143,7 @@ export async function loadDesktopCredentials(
   try {
     raw = await readFile(path, "utf8");
   } catch (error) {
-    if (isMissingFileError(error)) return undefined;
+    if (isMissingPathError(error)) return undefined;
     throw error;
   }
   return DesktopCredentialsSchema.parse(JSON.parse(raw));
@@ -180,16 +181,7 @@ async function pathExists(path: string): Promise<boolean> {
     await access(path, constants.F_OK);
     return true;
   } catch (error) {
-    if (isMissingFileError(error)) return false;
+    if (isMissingPathError(error)) return false;
     throw error;
   }
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error.code === "ENOENT" || error.code === "ENOTDIR")
-  );
 }

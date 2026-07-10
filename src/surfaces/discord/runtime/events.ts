@@ -1,6 +1,5 @@
-import { randomUUID } from "node:crypto";
-
 import type { z } from "zod/v4";
+import { generateTimestampId } from "@/lib/ids";
 import type {
   EventCreator,
   EventTarget,
@@ -20,6 +19,7 @@ import {
   ListScheduledEventsInputSchema,
 } from "@/surfaces/discord/runtime/event-inputs";
 import { explicitChannelId } from "@/surfaces/discord/runtime/targets";
+import { eventTargetMatches } from "@/surfaces/discord/shared/targets";
 
 export type CreateEventInput = z.infer<typeof CreateEventInputSchema>;
 
@@ -48,7 +48,7 @@ export async function createEvent(input: CreateEventInput): Promise<{
   const parsed = CreateEventInputSchema.parse(input);
   const target = resolveCreateTarget(parsed);
   const type = parsed.type ?? inferEventType(parsed.at, parsed.schedule);
-  const id = normalizeEventId(parsed.id ?? generatedEventId(type));
+  const id = normalizeEventId(parsed.id ?? generateTimestampId(type));
   const event = buildEvent({
     type,
     target,
@@ -137,16 +137,6 @@ function targetForScope(
   return currentTarget;
 }
 
-function eventTargetMatches(event: SandiEvent, target: EventTarget): boolean {
-  if (event.target.kind === "thread" && target.kind === "thread") {
-    return event.target.threadId === target.threadId;
-  }
-  if (event.target.kind === "channel" && target.kind === "channel") {
-    return event.target.channelId === target.channelId;
-  }
-  return false;
-}
-
 function buildEvent(input: {
   type: SandiEvent["type"];
   target: EventTarget;
@@ -188,55 +178,39 @@ function inferEventType(
   return "immediate";
 }
 
-function generatedEventId(type: SandiEvent["type"]): string {
-  return `${type}-${randomUUID().slice(0, 8)}`;
-}
-
 function currentDiscordTarget(): EventTarget | undefined {
-  const raw = readDiscordPlatformContext();
-  if (!raw) return undefined;
-  const parsed = JSON.parse(raw);
-  if (!isRecord(parsed)) return undefined;
-  const threadId = stringField(parsed, "threadId");
-  if (threadId) return { kind: "thread", threadId };
-  const channelId = stringField(parsed, "channelId");
-  if (channelId) return { kind: "channel", channelId };
+  const context = readDiscordPlatformContext();
+  if (!context) return undefined;
+  if (context.threadId) return { kind: "thread", threadId: context.threadId };
+  if (context.channelId) {
+    return { kind: "channel", channelId: context.channelId };
+  }
   return undefined;
 }
 
 function currentDiscordCreator(): EventCreator {
-  const raw = readDiscordPlatformContext();
-  if (!raw) {
+  const context = readDiscordPlatformContext();
+  if (!context) {
     throw new Error(
       "createEvent can only run from a Discord turn, because a scheduled event fires as a Discord delivery charged to its creator's Discord-mapped account. Ask the human to schedule it from Discord.",
     );
   }
-  const parsed = JSON.parse(raw);
-  if (!isRecord(parsed)) {
-    throw new Error("Discord platform context is not an object.");
-  }
-  const author = parsed["author"];
-  if (!isRecord(author)) {
+  const author = context.author;
+  if (!author) {
     throw new Error(
       "createEvent needs a Discord author context so future model usage can be charged to the creator's account.",
     );
   }
-  const discordUserId = stringField(author, "discordUserId");
-  const identityId = stringField(author, "identityId");
-  if (!discordUserId || !identityId) {
+  if (!author.identityId) {
     throw new Error(
       "createEvent needs a mapped Discord author identity for account routing.",
     );
   }
   return {
-    discordUserId,
-    identityId,
-    ...(stringField(author, "username")
-      ? { username: stringField(author, "username") }
-      : {}),
-    ...(stringField(author, "displayName")
-      ? { displayName: stringField(author, "displayName") }
-      : {}),
+    discordUserId: author.discordUserId,
+    identityId: author.identityId,
+    ...(author.username ? { username: author.username } : {}),
+    ...(author.displayName ? { displayName: author.displayName } : {}),
   };
 }
 
@@ -245,16 +219,4 @@ function eventsRoot(): string {
     process.env["SANDI_EVENTS_ROOT"]?.trim() ||
     `${process.env["SANDI_DATA_DIR"]?.trim() || "data"}/events`
   );
-}
-
-function stringField(
-  record: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }

@@ -1,11 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { Type } from "@earendil-works/pi-ai";
-import {
-  type AgentToolResult,
-  defineTool,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import {
   deleteCustomSkill,
@@ -21,6 +17,7 @@ import {
   type SkillHybridSearchResponse,
   searchSkillsHybrid,
 } from "./skill-hybrid-search";
+import { textResult } from "./tool-results";
 
 const SkillNameParam = Type.String({
   description: "Skill name, such as skill-creator.",
@@ -263,14 +260,4 @@ function formatSkillDeleteResult(result: {
     lines.push("No effective skill remains with that name.");
   }
   return lines.join("\n");
-}
-
-function textResult(
-  text: string,
-  details: Record<string, unknown>,
-): AgentToolResult<Record<string, unknown>> {
-  return {
-    content: [{ type: "text", text }],
-    details,
-  };
 }

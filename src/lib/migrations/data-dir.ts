@@ -11,6 +11,9 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
+import { isMissingPathError } from "@/lib/fs-errors";
+import { isRecord } from "@/lib/type-guards";
+
 export const CURRENT_DATA_DIR_VERSION = 2;
 
 export type MigrationResult = {
@@ -600,17 +603,4 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function isMissingPathError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error.code === "ENOENT" || error.code === "ENOTDIR")
-  );
 }

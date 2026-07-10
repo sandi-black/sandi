@@ -1,3 +1,4 @@
+import { errorMessage } from "@/lib/errors";
 import { createLogger } from "@/lib/logging";
 
 const log = createLogger("thread-queue");
@@ -71,7 +72,7 @@ export class ThreadQueue {
         log.error("thread job failed", {
           threadKey,
           job: job.name,
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage(error),
         });
       } finally {
         delete queue.activeJob;

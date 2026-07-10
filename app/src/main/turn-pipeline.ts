@@ -31,16 +31,23 @@ export function createTurnPipeline(input: {
     const images = attachments.filter((item) => item.kind === "image");
     const files = attachments.filter((item) => item.kind === "file");
 
+    // Uploaded in parallel; Promise.all preserves the images' order in refs
+    // regardless of which upload lands first.
+    const uploads = await Promise.all(
+      images.map(async (image) => {
+        const uploaded = await uploadAttachment({
+          url: credentials.url,
+          token: credentials.token,
+          path: image.path,
+          name: image.name,
+          mimeType: image.mimeType,
+          signal,
+        });
+        return { image, uploaded };
+      }),
+    );
     const refs: { hash: string; name?: string }[] = [];
-    for (const image of images) {
-      const uploaded = await uploadAttachment({
-        url: credentials.url,
-        token: credentials.token,
-        path: image.path,
-        name: image.name,
-        mimeType: image.mimeType,
-        signal,
-      });
+    for (const { image, uploaded } of uploads) {
       if (!uploaded.ok) {
         return {
           ok: false,

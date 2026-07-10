@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { Cron } from "croner";
 
+import { errorMessage } from "@/lib/errors";
 import { createLogger } from "@/lib/logging";
 import type { SandiEvent } from "@/surfaces/discord/events/schemas";
 import { deleteEvent, readEvent } from "@/surfaces/discord/events/store";
@@ -93,7 +94,7 @@ export class EventWatcher {
     } catch (error) {
       log.error("invalid event file", {
         id,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
       return;
     }
@@ -104,7 +105,7 @@ export class EventWatcher {
     } catch (error) {
       log.error("failed to schedule event", {
         id,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     }
   }

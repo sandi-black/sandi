@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Cron } from "croner";
 
 import type { ConversationStore } from "@/lib/conversations/store";
+import { errorMessage } from "@/lib/errors";
 import type { Logger } from "@/lib/logging";
 import {
   conversationHasUnencodedActivity,
@@ -60,10 +61,6 @@ export function startMemoryDreaming(
 // any burst of idle conversations) from spawning a provider turn per conversation
 // all at once.
 const MAX_CONCURRENT_ENCODES = 3;
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 class DreamingService {
   readonly #input: MemoryDreamingInput;

@@ -6,6 +6,8 @@ import {
   type ServerResponse,
 } from "node:http";
 
+import type { z } from "zod/v4";
+import { errorMessage } from "@/lib/errors";
 import { createLogger } from "@/lib/logging";
 import {
   type DeviceRegistry,
@@ -350,7 +352,7 @@ export class ToolBroker {
       }
     } catch (error) {
       log.error("tool broker request failed", {
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
       if (!response.headersSent) {
         sendJson(response, 500, { error: "internal_error" });
@@ -368,36 +370,12 @@ export class ToolBroker {
     response: ServerResponse,
     binding: TurnBinding,
   ): Promise<void> {
-    const body = await readJsonBody(request, {
+    await this.#relay(request, response, binding, {
       maxBytes: STREAM_MAX_BODY_BYTES,
-      timeoutMs: BROKER_BODY_TIMEOUT_MS,
+      schema: ResponseChunkSchema,
+      invalidError: "invalid_chunk",
+      stream: (key, data) => this.#registry.streamResponseChunk(key, data),
     });
-    if (!body.ok) {
-      sendJson(response, body.status, { error: body.error });
-      return;
-    }
-    const parsed = ResponseChunkSchema.safeParse(body.value);
-    if (!parsed.success) {
-      sendJson(response, 400, { error: "invalid_chunk" });
-      return;
-    }
-    // A delta must name the turn this lease was issued for. The api surface sets
-    // that turn id on the child, so a mismatch means a misrouted or stale stream;
-    // reject it rather than relay a delta the desktop would attribute to the
-    // wrong turn.
-    if (binding.turnId !== undefined && parsed.data.turnId !== binding.turnId) {
-      sendJson(response, 409, { error: "turn_mismatch" });
-      return;
-    }
-    const relayed = this.#registry.streamResponseChunk(
-      binding.key,
-      parsed.data,
-    );
-    if (!relayed) {
-      sendJson(response, 503, { error: "device_unavailable" });
-      return;
-    }
-    sendJson(response, 202, { ok: true });
   }
 
   // Relays one outbound attachment notice from the pi child (the
@@ -411,27 +389,51 @@ export class ToolBroker {
     response: ServerResponse,
     binding: TurnBinding,
   ): Promise<void> {
-    const body = await readJsonBody(request, {
+    await this.#relay(request, response, binding, {
       maxBytes: BROKER_MAX_BODY_BYTES,
+      schema: ResponseAttachmentSchema,
+      invalidError: "invalid_attachment",
+      stream: (key, data) => this.#registry.streamResponseAttachment(key, data),
+    });
+  }
+
+  // Shared body of #handleStream and #handleAttachment: both relay a
+  // turn-scoped wire message from the pi child to the bound device's SSE link
+  // with the same parse/mismatch/dispatch pipeline, differing only in schema,
+  // invalid-body error code, and which registry method carries the payload on.
+  async #relay<T extends { turnId: string }>(
+    request: IncomingMessage,
+    response: ServerResponse,
+    binding: TurnBinding,
+    options: {
+      maxBytes: number;
+      schema: z.ZodType<T>;
+      invalidError: string;
+      stream: (key: string, data: T) => boolean;
+    },
+  ): Promise<void> {
+    const body = await readJsonBody(request, {
+      maxBytes: options.maxBytes,
       timeoutMs: BROKER_BODY_TIMEOUT_MS,
     });
     if (!body.ok) {
       sendJson(response, body.status, { error: body.error });
       return;
     }
-    const parsed = ResponseAttachmentSchema.safeParse(body.value);
+    const parsed = options.schema.safeParse(body.value);
     if (!parsed.success) {
-      sendJson(response, 400, { error: "invalid_attachment" });
+      sendJson(response, 400, { error: options.invalidError });
       return;
     }
+    // A relayed message must name the turn this lease was issued for. The api
+    // surface sets that turn id on the child, so a mismatch means a misrouted or
+    // stale stream; reject it rather than relay a message the desktop would
+    // attribute to the wrong turn.
     if (binding.turnId !== undefined && parsed.data.turnId !== binding.turnId) {
       sendJson(response, 409, { error: "turn_mismatch" });
       return;
     }
-    const relayed = this.#registry.streamResponseAttachment(
-      binding.key,
-      parsed.data,
-    );
+    const relayed = options.stream(binding.key, parsed.data);
     if (!relayed) {
       sendJson(response, 503, { error: "device_unavailable" });
       return;

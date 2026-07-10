@@ -1,6 +1,36 @@
 import { Cron } from "croner";
 
-import type { Reminder, ReminderRecurrence } from "./schemas";
+import type { Reminder, ReminderRecurrence, ReminderUser } from "./schemas";
+
+// Marks a reminder done: if it recurs, rolls it forward to the next run and
+// resets its per-cycle fire bookkeeping; otherwise marks it done outright.
+// Shared because every reminder-completing surface (the live bot's reminder
+// buttons, the bot's todo-list "complete" flow, and the sandi_js_run runtime
+// helpers for both) needs the exact same rollover behavior.
+export function completedReminder(
+  reminder: Reminder,
+  doneBy: ReminderUser | undefined,
+): Reminder {
+  const completedAt = new Date();
+  const nextRun = nextReminderRecurrenceRun(reminder, completedAt);
+  if (nextRun) {
+    return {
+      ...reminder,
+      status: "active",
+      nextFireAt: nextRun.toISOString(),
+      fireCount: 0,
+      messageRefs: [],
+      doneAt: completedAt.toISOString(),
+      ...(doneBy ? { doneBy } : {}),
+    };
+  }
+  return {
+    ...reminder,
+    status: "done",
+    doneAt: completedAt.toISOString(),
+    ...(doneBy ? { doneBy } : {}),
+  };
+}
 
 export function nextReminderRecurrenceRun(
   reminder: Reminder,

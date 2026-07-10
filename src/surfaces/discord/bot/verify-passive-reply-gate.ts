@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 
+import { isRecord } from "@/lib/verification/harness";
 import {
   PASSIVE_REPLY_DECISION_IGNORE,
   PASSIVE_REPLY_DECISION_RESPOND,
@@ -87,7 +88,3 @@ assert.equal(replyingTo["author"], "Sam");
 assert.equal(replyingTo["content"], "wifi is down again");
 
 console.log("Discord passive reply gate verification passed");
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 
+import { isRecord } from "@/lib/verification/harness";
 import {
   DISCORD_THREAD_TITLE_MAX_LENGTH,
   MENTION_THREAD_PLACEHOLDER_TITLE,
@@ -57,7 +58,3 @@ assert.equal(
 assert.equal(MENTION_THREAD_PLACEHOLDER_TITLE, "new thread");
 
 console.log("Discord thread title verification passed");
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}

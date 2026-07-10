@@ -23,11 +23,13 @@ import {
 } from "discord.js";
 
 import { z } from "zod/v4";
+import { errorMessage } from "@/lib/errors";
+import { generateTimestampId } from "@/lib/ids";
 import { createLogger } from "@/lib/logging";
 import { JsonFileStore } from "@/lib/state/file-store";
 import {
+  completedReminder,
   nextRecurrenceRun,
-  nextReminderRecurrenceRun,
 } from "@/surfaces/discord/reminders/recurrence";
 import type {
   Reminder,
@@ -40,17 +42,30 @@ import {
   readReminder,
   writeReminder,
 } from "@/surfaces/discord/reminders/store";
+import { formatDiscordTimestamp } from "@/surfaces/discord/shared/format";
+import {
+  type ChannelTodoState,
+  cleanItemText,
+  DISPLAY_ITEM_LIMIT,
+  emptyGuildState,
+  formatTodoList,
+  type GuildTodoState,
+  GuildTodoStateSchema,
+  legacyList,
+  listForChannel,
+  PACIFIC_TIME_ZONE,
+  type TodoItem,
+  type TodoListRef,
+  updateGuildList,
+} from "@/surfaces/discord/shared/todo-format";
 
 const TODO_CHANNEL_NAME = "to-do-list";
 const TODO_STATE_PATH = "todo-list/state.json";
-const DISCORD_MESSAGE_LIMIT = 2_000;
-const DISPLAY_ITEM_LIMIT = 160;
 const MAX_TODO_ITEMS = 10;
 const MAX_COMPLETION_OPTIONS = 25;
 const TODO_TEXT_INPUT_ID = "todo-text";
 const TODO_CUSTOM_REMINDER_INPUT_ID = "todo-custom-reminder-at";
 const TODO_CUSTOM_REPEAT_INPUT_ID = "todo-custom-repeat";
-const PACIFIC_TIME_ZONE = "America/Los_Angeles";
 const DEFAULT_DATE_ONLY_REMINDER_HOUR = 9;
 const DEFAULT_FOLLOWUP_INTERVAL_MINUTES = 60;
 const NTH_TOKEN_PATTERN =
@@ -70,43 +85,6 @@ const WEEKDAYS = [
 ] as const;
 
 const log = createLogger("todo-list");
-
-const TodoItemSchema = z.object({
-  id: z.string(),
-  text: z.string(),
-  authorName: z.string(),
-  sourceUrl: z.string().optional(),
-  reason: z.string().optional(),
-  createdAt: z.string(),
-  reminderAt: z.string().optional(),
-  reminderRepeat: z.string().optional(),
-  reminderId: z.string().optional(),
-});
-
-type TodoItem = z.infer<typeof TodoItemSchema>;
-
-const ChannelTodoStateSchema = z.object({
-  channelId: z.string(),
-  targetKind: z.enum(["channel", "thread"]).optional(),
-  title: z.string().optional(),
-  instructions: z.string().optional(),
-  emptyText: z.string().optional(),
-  completionMode: z.enum(["select", "buttons"]).optional(),
-  displayMode: z.enum(["default", "grouped-reminders"]).optional(),
-  messageId: z.string().optional(),
-  items: z.array(TodoItemSchema),
-});
-
-type ChannelTodoState = z.infer<typeof ChannelTodoStateSchema>;
-
-const GuildTodoStateSchema = z.object({
-  channelId: z.string().optional(),
-  messageId: z.string().optional(),
-  items: z.array(TodoItemSchema),
-  lists: z.record(z.string(), ChannelTodoStateSchema).optional(),
-});
-
-type GuildTodoState = z.infer<typeof GuildTodoStateSchema>;
 
 const TodoListStateSchema = z.object({
   guilds: z.record(z.string(), GuildTodoStateSchema),
@@ -137,10 +115,6 @@ type CreateTodoListResult = {
   pinned: boolean;
   pinError?: string;
 };
-
-type TodoListRef =
-  | { kind: "channel"; channelId: string; list: ChannelTodoState }
-  | { kind: "legacy"; list: ChannelTodoState };
 
 type AddFromModalResult =
   | { kind: "stale" }
@@ -290,7 +264,7 @@ export class TodoListManager {
         await sent.pin("Created by /sandi todo");
       } catch (error) {
         pinned = false;
-        pinError = error instanceof Error ? error.message : String(error);
+        pinError = errorMessage(error);
         log.warn("failed to pin todo list message", {
           channelId: sent.channelId,
           messageId: sent.id,
@@ -392,7 +366,7 @@ export class TodoListManager {
       }
     } catch (error) {
       log.warn("failed to handle todo interaction", {
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
       await respondToInteractionFailure(interaction);
       return true;
@@ -476,7 +450,7 @@ export class TodoListManager {
       log.error("failed to capture todo item", {
         messageId: message.id,
         guildId,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     }
   }
@@ -1009,7 +983,7 @@ export class TodoListManager {
         }
         updatedItem = withoutReminder(item);
       } else {
-        const reminderId = item.reminderId ?? generatedTodoReminderId();
+        const reminderId = item.reminderId ?? generateTimestampId("todo");
         const reminder: Reminder = {
           target: reminderTargetForList(ref.list),
           text: `Todo: ${item.text}`,
@@ -1130,7 +1104,7 @@ export class TodoListManager {
         log.error("failed to edit todo list message; creating a new one", {
           channelId: channel.id,
           messageId: list.messageId,
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage(error),
         });
       }
     }
@@ -1171,7 +1145,7 @@ export class TodoListManager {
     } catch (error) {
       log.warn("failed to mark linked todo reminder done", {
         reminderId: item.reminderId,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     }
   }
@@ -1221,21 +1195,6 @@ function extractListLine(line: string): string | undefined {
   return undefined;
 }
 
-function cleanItemText(value: string): string | undefined {
-  const cleaned = normalizeWhitespace(value)
-    .replace(/^["“”'‘’]+/u, "")
-    .replace(/["“”'‘’]+$/u, "")
-    .replace(/[.!?]+$/u, "")
-    .trim();
-  if (cleaned.length < 2) return undefined;
-  return sentenceCase(cleaned);
-}
-
-function sentenceCase(value: string): string {
-  const [first = "", ...rest] = value;
-  return `${first.toLocaleUpperCase()}${rest.join("")}`;
-}
-
 function todoMessageCreateOptions(
   list: ChannelTodoState,
 ): MessageCreateOptions {
@@ -1261,114 +1220,6 @@ function todoMessageComponents(
     return itemDoneButtonRows(list.messageId, list.items);
   }
   return [todoButtonRow(list.messageId, list.items)];
-}
-
-function formatTodoList(list: ChannelTodoState): string {
-  if (list.displayMode === "grouped-reminders") {
-    return formatGroupedReminderList(list);
-  }
-
-  const title = list.title ?? "To-do list";
-  const instructions =
-    list.instructions ??
-    "In `todo-` / `tasks-` channels, type what to add or change; Sandi updates this list and removes handled messages. Elsewhere, use **Add item** below or explicit `todo: ...` capture.";
-  const lines = [`# ${title}`, "", instructions, ""];
-
-  if (list.items.length === 0) {
-    lines.push(list.emptyText ?? "_Nothing here yet._");
-    return lines.join("\n");
-  }
-
-  const visibleItems = [];
-  let hiddenCount = 0;
-  for (const item of list.items.toReversed()) {
-    const line = formatTodoLine(item);
-    const visibleLines = visibleItems.toReversed().map(formatTodoLine);
-    const next = [...lines, ...visibleLines, line];
-    if (next.join("\n").length > DISCORD_MESSAGE_LIMIT - 80) {
-      hiddenCount += 1;
-      continue;
-    }
-    visibleItems.push(item);
-  }
-
-  if (hiddenCount > 0) {
-    lines.push(
-      `_Plus ${hiddenCount} older item${hiddenCount === 1 ? "" : "s"} hidden to keep this in one Discord message._`,
-      "",
-    );
-  }
-  lines.push(...visibleItems.toReversed().map(formatTodoLine));
-
-  return lines.join("\n");
-}
-
-function formatGroupedReminderList(list: ChannelTodoState): string {
-  const title = list.title ?? "To-do list";
-  const instructions = list.instructions;
-  const lines = instructions
-    ? [`# ${title}`, "", instructions, ""]
-    : [`# ${title}`, ""];
-
-  if (list.items.length === 0) {
-    lines.push(list.emptyText ?? "_Nothing here yet._");
-    return lines.join("\n");
-  }
-
-  const repeatItems = list.items.filter((item) => item.reminderRepeat);
-  const oneTimeItems = list.items.filter((item) => !item.reminderRepeat);
-  lines.push("**Repeat**");
-  if (repeatItems.length === 0) {
-    lines.push("_None._");
-  } else {
-    lines.push(...repeatItems.map(formatGroupedRepeatLine));
-  }
-  lines.push("", "**One time**");
-  if (oneTimeItems.length === 0) {
-    lines.push("_None._");
-  } else {
-    lines.push(...oneTimeItems.map(formatGroupedOneTimeLine));
-  }
-
-  return lines.join("\n");
-}
-
-function formatGroupedRepeatLine(item: TodoItem): string {
-  const schedule = reminderDateAndTime(item.reminderAt);
-  return `- ${limitDisplayText(item.text)}${schedule ? ` - ${schedule}` : ""}`;
-}
-
-function formatGroupedOneTimeLine(item: TodoItem): string {
-  const schedule = reminderDateAndTime(item.reminderAt);
-  const reason = item.reason ? ` - ${item.reason}` : "";
-  return `- ${limitDisplayText(item.text)}${schedule ? ` - ${schedule}` : ""}${reason}`;
-}
-
-function reminderDateAndTime(iso: string | undefined): string | undefined {
-  if (!iso) return undefined;
-  const date = new Date(iso);
-  if (!Number.isFinite(date.getTime())) return undefined;
-  const day = new Intl.DateTimeFormat("en-US", {
-    timeZone: PACIFIC_TIME_ZONE,
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  }).format(date);
-  const time = new Intl.DateTimeFormat("en-US", {
-    timeZone: PACIFIC_TIME_ZONE,
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(date);
-  return `${day} - ${time}`;
-}
-
-function formatTodoLine(item: TodoItem): string {
-  const source = item.sourceUrl ? ` ([source](${item.sourceUrl}))` : "";
-  const reminder = item.reminderAt
-    ? ` — reminds ${formatDiscordTimestamp(item.reminderAt)}`
-    : "";
-  const repeat = item.reminderRepeat ? ` — repeats ${item.reminderRepeat}` : "";
-  return `- ${limitDisplayText(item.text)} — ${item.authorName}${reminder}${repeat}${source}`;
 }
 
 function todoButtonRow(
@@ -1595,24 +1446,6 @@ function todoAction(value: string | undefined): TodoAction | undefined {
   }
 }
 
-function emptyGuildState(): GuildTodoState {
-  return { items: [] };
-}
-
-function listForChannel(
-  guildState: GuildTodoState,
-  channelId: string,
-): TodoListRef | undefined {
-  const channelList = guildState.lists?.[channelId];
-  if (channelList) {
-    return { kind: "channel", channelId, list: channelList };
-  }
-  if (guildState.channelId === channelId) {
-    return { kind: "legacy", list: legacyList(guildState) };
-  }
-  return undefined;
-}
-
 function legacyItemsForChannel(
   guildState: GuildTodoState,
   channelId: string,
@@ -1636,36 +1469,6 @@ function findListByMessageId(
   }
 
   return undefined;
-}
-
-function legacyList(guildState: GuildTodoState): ChannelTodoState {
-  return {
-    channelId: guildState.channelId ?? "",
-    messageId: guildState.messageId,
-    items: guildState.items,
-  };
-}
-
-function updateGuildList(
-  guildState: GuildTodoState,
-  ref: TodoListRef,
-): GuildTodoState {
-  if (ref.kind === "legacy") {
-    return {
-      ...guildState,
-      channelId: ref.list.channelId,
-      messageId: ref.list.messageId,
-      items: ref.list.items,
-    };
-  }
-
-  return {
-    ...guildState,
-    lists: {
-      ...(guildState.lists ?? {}),
-      [ref.channelId]: ref.list,
-    },
-  };
 }
 
 function buildTodoItem(input: {
@@ -1759,7 +1562,7 @@ async function deleteEphemeralReply(
     await interaction.deleteReply();
   } catch (error) {
     log.warn("failed to delete ephemeral todo response", {
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage(error),
     });
   }
 }
@@ -1787,28 +1590,6 @@ function displayNameFromInteraction(interaction: Interaction): string {
 function userFromInteraction(interaction: Interaction): ReminderUser {
   const username = displayNameFromInteraction(interaction);
   return { discordUserId: interaction.user.id, username };
-}
-
-function completedReminder(reminder: Reminder, doneBy: ReminderUser): Reminder {
-  const completedAt = new Date();
-  const nextRun = nextReminderRecurrenceRun(reminder, completedAt);
-  if (nextRun) {
-    return {
-      ...reminder,
-      status: "active",
-      nextFireAt: nextRun.toISOString(),
-      fireCount: 0,
-      messageRefs: [],
-      doneAt: completedAt.toISOString(),
-      doneBy,
-    };
-  }
-  return {
-    ...reminder,
-    status: "done",
-    doneAt: completedAt.toISOString(),
-    doneBy,
-  };
 }
 
 function buildCreateTodoListResult(
@@ -2405,20 +2186,6 @@ function futureReminderResult(iso: string): ReminderDateParseResult {
   return { kind: "valid", iso };
 }
 
-function formatDiscordTimestamp(iso: string): string {
-  const timestamp = new Date(iso).getTime();
-  if (!Number.isFinite(timestamp)) return iso;
-  return `<t:${Math.floor(timestamp / 1_000)}:f>`;
-}
-
-function generatedTodoReminderId(): string {
-  const stamp = new Date()
-    .toISOString()
-    .replaceAll(/[^0-9]/gu, "")
-    .slice(0, 14);
-  return `todo_${stamp}_${randomUUID().slice(0, 8)}`;
-}
-
 function isPresentString(value: string | undefined): value is string {
   return typeof value === "string" && value.length > 0;
 }
@@ -2427,11 +2194,6 @@ function parseInteger(value: string | undefined): number | undefined {
   if (!value || !/^\d+$/u.test(value)) return undefined;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : undefined;
-}
-
-function limitDisplayText(value: string): string {
-  if (value.length <= DISPLAY_ITEM_LIMIT) return value;
-  return `${value.slice(0, DISPLAY_ITEM_LIMIT - 1)}…`;
 }
 
 function limitOptionText(value: string, maxLength: number): string {

@@ -459,11 +459,20 @@ function eventIsBeforeOrAt(
   event: IssueEvent,
   timestamp: string | null | undefined,
 ): boolean {
-  if (!timestamp) return false;
-  const eventMs = Date.parse(event.created_at);
-  const timestampMs = Date.parse(timestamp);
-  if (!Number.isFinite(eventMs) || !Number.isFinite(timestampMs)) return false;
-  return eventMs <= timestampMs;
+  return isBeforeOrAt(event.created_at, timestamp ?? undefined);
+}
+
+// Shared by GitHubBot's own notification-vs-startup-cutoff check; both compare
+// an ISO timestamp against a cutoff with the same parse-and-guard logic.
+export function isBeforeOrAt(
+  timestamp: string,
+  cutoff: string | undefined,
+): boolean {
+  if (!cutoff) return false;
+  const valueMs = Date.parse(timestamp);
+  const cutoffMs = Date.parse(cutoff);
+  if (!Number.isFinite(valueMs) || !Number.isFinite(cutoffMs)) return false;
+  return valueMs <= cutoffMs;
 }
 
 function threadFromNotification(

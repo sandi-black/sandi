@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { z } from "zod/v4";
+import { isMissingFileError } from "@/lib/fs-errors";
 
 export type TokenUsageTotals = {
   input: number;
@@ -204,13 +205,4 @@ function formatShortNumber(value: number): string {
   if (value >= 100) return Math.round(value).toLocaleString();
   if (value >= 10) return value.toFixed(1).replace(/\.0$/, "");
   return value.toFixed(2).replace(/0$/, "").replace(/\.0$/, "");
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "ENOENT"
-  );
 }

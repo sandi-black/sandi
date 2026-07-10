@@ -1,17 +1,16 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
   PiAccountRouter,
   type PiAccountRoutingConfig,
 } from "@/lib/provider/pi-account-routing";
+import { assert, withTempDir } from "@/lib/verification/harness";
 
-const tempRoot = await mkdtemp(join(tmpdir(), "sandi-pi-routing-"));
-const primaryAgentDir = join(tempRoot, "primary-agent");
-const secondaryAgentDir = join(tempRoot, "secondary-agent");
+await withTempDir("sandi-pi-routing-", async (tempRoot) => {
+  const primaryAgentDir = join(tempRoot, "primary-agent");
+  const secondaryAgentDir = join(tempRoot, "secondary-agent");
 
-try {
   await mkdir(primaryAgentDir, { recursive: true });
   await writeFile(join(primaryAgentDir, "auth.json"), "{}\n", "utf8");
 
@@ -104,13 +103,7 @@ try {
   );
 
   console.log("Pi account routing verification passed");
-} finally {
-  await rm(tempRoot, { recursive: true, force: true });
-}
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message);
-}
+});
 
 function assertRoute(
   candidates: Awaited<ReturnType<PiAccountRouter["candidates"]>>,

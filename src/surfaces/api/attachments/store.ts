@@ -5,6 +5,7 @@ import type { IncomingMessage } from "node:http";
 import { join } from "node:path";
 
 import { z } from "zod/v4";
+import { isMissingFileError } from "@/lib/fs-errors";
 import {
   atomicWriteInPlace,
   withManagedWrite,
@@ -302,13 +303,4 @@ async function blobIsPresent(blobPath: string): Promise<boolean> {
 function addOwner(owners: readonly string[], identityId: string): string[] {
   if (owners.includes(identityId)) return [...owners];
   return [...owners, identityId];
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "ENOENT"
-  );
 }

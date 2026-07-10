@@ -1,15 +1,15 @@
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import {
   createServer,
   request as httpRequest,
   type IncomingMessage,
   type Server,
 } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AttachmentStore, AttachmentTooLargeError } from "./store";
+import { assertEqual, isRecord, withTempDir } from "@/lib/verification/harness";
 
 // Exercises the content-addressed store directly (hashing, dedup, identity
 // scoping, the size cap, name/mime fill-in) plus the on-disk shape the atomic
@@ -18,42 +18,42 @@ import { AttachmentStore, AttachmentTooLargeError } from "./store";
 // this is a genuine Node request object, not a shape approximation.
 
 async function verifyAttachmentStore(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "sandi-attachment-store-"));
-  const server = createServer();
-  const uploads: { body: IncomingMessage; done: () => void }[] = [];
-  server.on("request", (request, response) => {
-    // Held open until the test explicitly signals the handler is done reading
-    // the body, so a single server can serve many uploads across the test.
-    const waiter = new Promise<void>((resolveWaiter) => {
-      uploads.push({ body: request, done: resolveWaiter });
+  await withTempDir("sandi-attachment-store-", async (root) => {
+    const server = createServer();
+    const uploads: { body: IncomingMessage; done: () => void }[] = [];
+    server.on("request", (request, response) => {
+      // Held open until the test explicitly signals the handler is done reading
+      // the body, so a single server can serve many uploads across the test.
+      const waiter = new Promise<void>((resolveWaiter) => {
+        uploads.push({ body: request, done: resolveWaiter });
+      });
+      void waiter.then(() => {
+        // Each request here is a one-shot upload; telling the client to close
+        // rather than keep the socket alive means it is not left open (and
+        // holding this script's event loop) once the response finishes.
+        response.writeHead(200, { connection: "close" }).end();
+      });
     });
-    void waiter.then(() => {
-      // Each request here is a one-shot upload; telling the client to close
-      // rather than keep the socket alive means it is not left open (and
-      // holding this script's event loop) once the response finishes.
-      response.writeHead(200, { connection: "close" }).end();
-    });
+    const port = await listen(server);
+
+    try {
+      const store = new AttachmentStore(root);
+
+      await verifyBasicUploadAndOwnedRead(store, port, uploads);
+      await verifyIdentityScopedRead(store, port, uploads);
+      await verifyDedup(store, port, uploads);
+      await verifyDedupRestoresMissingBlob(store, root, port, uploads);
+      await verifySizeCapAborts(store, port, uploads);
+      await verifyAtomicLayout(store, root, port, uploads);
+      await verifyUnknownHashIsUndefined(store);
+
+      console.log("attachment store verification passed");
+    } finally {
+      await new Promise<void>((resolveClose) =>
+        server.close(() => resolveClose()),
+      );
+    }
   });
-  const port = await listen(server);
-
-  try {
-    const store = new AttachmentStore(root);
-
-    await verifyBasicUploadAndOwnedRead(store, port, uploads);
-    await verifyIdentityScopedRead(store, port, uploads);
-    await verifyDedup(store, port, uploads);
-    await verifyDedupRestoresMissingBlob(store, root, port, uploads);
-    await verifySizeCapAborts(store, port, uploads);
-    await verifyAtomicLayout(store, root, port, uploads);
-    await verifyUnknownHashIsUndefined(store);
-
-    console.log("attachment store verification passed");
-  } finally {
-    await new Promise<void>((resolveClose) =>
-      server.close(() => resolveClose()),
-    );
-    await rm(root, { recursive: true, force: true });
-  }
 }
 
 // Posts a body to the loopback server and hands the resulting IncomingMessage
@@ -375,18 +375,6 @@ function listen(server: Server): Promise<number> {
       resolveListen(address.port);
     });
   });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
 }
 
 await verifyAttachmentStore();

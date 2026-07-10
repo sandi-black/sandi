@@ -8,6 +8,8 @@ import {
   type TextChannel,
 } from "discord.js";
 
+import { formatDuration } from "@/lib/duration";
+import { errorMessage } from "@/lib/errors";
 import { createLogger } from "@/lib/logging";
 import {
   type OpenAIUsageAccount,
@@ -39,7 +41,7 @@ export async function postStartupStatus(
     await channel.send(await startupStatusMessage());
   } catch (error) {
     log.error("failed to post startup status", {
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage(error),
     });
   }
 }
@@ -137,24 +139,10 @@ function formatQueueStatus(input: {
 function formatRuntimeStatus(): string {
   const memory = process.memoryUsage();
   return [
-    `up ${formatDuration(process.uptime())}`,
+    `up ${formatDuration(process.uptime() * 1_000, { granularity: "seconds" })}`,
     `rss ${formatBytes(memory.rss)}`,
     `heap ${formatBytes(memory.heapUsed)}/${formatBytes(memory.heapTotal)}`,
   ].join(", ");
-}
-
-function formatDuration(totalSeconds: number): string {
-  const seconds = Math.max(0, Math.floor(totalSeconds));
-  const days = Math.floor(seconds / 86_400);
-  const hours = Math.floor((seconds % 86_400) / 3_600);
-  const minutes = Math.floor((seconds % 3_600) / 60);
-  const remainingSeconds = seconds % 60;
-  const parts: string[] = [];
-  if (days > 0) parts.push(`${days}d`);
-  if (hours > 0 || parts.length > 0) parts.push(`${hours}h`);
-  if (minutes > 0 || parts.length > 0) parts.push(`${minutes}m`);
-  parts.push(`${remainingSeconds}s`);
-  return parts.join(" ");
 }
 
 function formatBytes(bytes: number): string {

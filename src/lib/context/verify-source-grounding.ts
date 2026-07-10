@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { ContextCompiler } from "@/lib/context/context-compiler";
@@ -8,6 +7,7 @@ import { loadMemory, type MemoryContext } from "@/lib/context/memory";
 import { loadSkillsGuidance } from "@/lib/context/skills";
 import { searchSkillsHybrid } from "@/lib/pi-extension/skill-hybrid-search";
 import type { EmbeddingEngine } from "@/lib/retrieval/embeddings";
+import { withTempDir } from "@/lib/verification/harness";
 
 const testEmbeddingEngine: EmbeddingEngine = {
   name: "test-keyword-embedding",
@@ -16,23 +16,23 @@ const testEmbeddingEngine: EmbeddingEngine = {
   },
 };
 
-const tempRoot = await mkdtemp(join(tmpdir(), "sandi-source-grounding-"));
 const previousProvider = process.env["SANDI_EMBEDDING_PROVIDER"];
 process.env["SANDI_EMBEDDING_PROVIDER"] = "disabled";
 
 try {
-  await verifyCompiledContextIncludesSourceGrounding(tempRoot);
-  await verifyWebResearchHinting(tempRoot);
-  await verifyPromptSkillHintTuning(tempRoot);
-  await verifyPromptMemoryHintTuning(tempRoot);
-  console.log("source grounding verification passed");
+  await withTempDir("sandi-source-grounding-", async (tempRoot) => {
+    await verifyCompiledContextIncludesSourceGrounding(tempRoot);
+    await verifyWebResearchHinting(tempRoot);
+    await verifyPromptSkillHintTuning(tempRoot);
+    await verifyPromptMemoryHintTuning(tempRoot);
+    console.log("source grounding verification passed");
+  });
 } finally {
   if (previousProvider === undefined) {
     delete process.env["SANDI_EMBEDDING_PROVIDER"];
   } else {
     process.env["SANDI_EMBEDDING_PROVIDER"] = previousProvider;
   }
-  await rm(tempRoot, { recursive: true, force: true });
 }
 
 async function verifyCompiledContextIncludesSourceGrounding(

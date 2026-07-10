@@ -233,16 +233,7 @@ export class DeviceRegistry {
   // failed write tears the link down; a full socket buffer just sheds the stream
   // so a slow desktop cannot make the server buffer deltas without bound.
   streamResponseChunk(key: string, chunk: ResponseChunk): boolean {
-    const state = this.#connections.get(key);
-    if (!state || state.closed) return false;
-    try {
-      return state.write(
-        `event: ${RESPONSE_CHUNK_EVENT}\ndata: ${JSON.stringify(chunk)}\n\n`,
-      );
-    } catch {
-      this.#teardown(state, "device link write failed");
-      return false;
-    }
+    return this.#emit(key, RESPONSE_CHUNK_EVENT, chunk);
   }
 
   // Pushes one outbound attachment notice to the keyed device's stream. Same
@@ -253,11 +244,23 @@ export class DeviceRegistry {
     key: string,
     attachment: ResponseAttachment,
   ): boolean {
+    return this.#emit(key, RESPONSE_ATTACHMENT_EVENT, attachment);
+  }
+
+  // Writes one SSE event to a keyed device's stream, tearing the link down on a
+  // failed write. Shared by every fire-and-forget push (a response delta, an
+  // outbound attachment notice): the two differ only in event name and payload,
+  // both already-validated wire objects that serialize as-is.
+  #emit(
+    key: string,
+    event: string,
+    payload: ResponseChunk | ResponseAttachment,
+  ): boolean {
     const state = this.#connections.get(key);
     if (!state || state.closed) return false;
     try {
       return state.write(
-        `event: ${RESPONSE_ATTACHMENT_EVENT}\ndata: ${JSON.stringify(attachment)}\n\n`,
+        `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`,
       );
     } catch {
       this.#teardown(state, "device link write failed");

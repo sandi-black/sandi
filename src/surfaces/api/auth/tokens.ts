@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 
 import { z } from "zod/v4";
+import { isMissingPathError } from "@/lib/fs-errors";
 import {
   atomicWriteInPlace,
   withManagedWrite,
@@ -31,7 +32,7 @@ export async function loadApiTokens(path: string): Promise<ApiTokensFile> {
   try {
     raw = await readFile(path, "utf8");
   } catch (error) {
-    if (isMissingFileError(error)) return EMPTY_TOKENS;
+    if (isMissingPathError(error)) return EMPTY_TOKENS;
     throw error;
   }
   // A malformed token file (bad JSON or a schema violation such as a short or
@@ -168,17 +169,8 @@ export class ApiTokenStore {
       const info = await stat(this.#path);
       return `${info.mtimeMs}:${info.size}`;
     } catch (error) {
-      if (isMissingFileError(error)) return "missing";
+      if (isMissingPathError(error)) return "missing";
       throw error;
     }
   }
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error.code === "ENOENT" || error.code === "ENOTDIR")
-  );
 }

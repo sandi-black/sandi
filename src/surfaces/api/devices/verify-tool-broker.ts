@@ -1,5 +1,6 @@
 import { request as httpRequest } from "node:http";
 
+import { assert, assertEqual } from "@/lib/verification/harness";
 import { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
 import { ToolBroker } from "@/surfaces/api/devices/tool-broker";
 
@@ -793,20 +794,6 @@ function postCall(
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   return { ...value };
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
-}
-
-function assert(condition: unknown, label: string): asserts condition {
-  if (condition) return;
-  console.error(`assertion failed: ${label}`);
-  process.exit(1);
 }
 
 await verifyToolBroker();

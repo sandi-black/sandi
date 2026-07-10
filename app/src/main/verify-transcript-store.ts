@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { SessionSummary } from "@shared/ipc-contract";
+
 import { createTranscriptStore } from "./transcript-store";
 
 // Round-trips the JSONL transcript and index behavior: append/read ordering,
@@ -82,6 +84,24 @@ async function main(): Promise<void> {
     const repaired = await store.getTranscript(grace.conversationId);
     assert.equal(repaired.length, 2, "corrupt line skipped");
 
+    // appendEntry debounces the index write (see transcript-store.ts); the
+    // in-memory session list is current immediately, but the disk copy is not
+    // until flushIndex writes it through, the same escape hatch the app's
+    // quit path uses.
+    await store.flushIndex();
+    const diskIndexAfterFlush: { sessions: SessionSummary[] } = JSON.parse(
+      await readFile(join(dir, "index.json"), "utf8"),
+    );
+    assert.equal(
+      diskIndexAfterFlush.sessions.find(
+        (session) => session.conversationId === grace.conversationId,
+      )?.lastPreview,
+      "Hi Grace! What are we building today?",
+      "flushIndex writes a pending debounced update through immediately",
+    );
+    // Nothing left pending: a second flush is a harmless no-op.
+    await store.flushIndex();
+
     // A fresh store instance reads the same index back (atomic write landed).
     const reopened = await createTranscriptStore(dir);
     assert.equal(reopened.listSessions().length, 2, "index persisted");
@@ -101,6 +121,28 @@ async function main(): Promise<void> {
       [],
       "delete removes the transcript file",
     );
+
+    // Concurrent writers serialize instead of racing on index.json.tmp: an
+    // immediate write, a flush, and another immediate write all in flight at
+    // once must leave a parseable index reflecting the last mutation.
+    const [anna] = [await store.createSession("Anna's plate measurements")];
+    await Promise.all([
+      store.renameSession(anna.conversationId, "Anna's star catalogue"),
+      store.flushIndex(),
+      store.renameSession(anna.conversationId, "Anna's final catalogue"),
+    ]);
+    await store.flushIndex();
+    const afterRace: { sessions: SessionSummary[] } = JSON.parse(
+      await readFile(join(dir, "index.json"), "utf8"),
+    );
+    assert.equal(
+      afterRace.sessions.find(
+        (session) => session.conversationId === anna.conversationId,
+      )?.title,
+      "Anna's final catalogue",
+      "overlapping index writes serialize and keep the latest state",
+    );
+    await store.deleteSession(anna.conversationId);
 
     // The index file itself is valid JSON on disk.
     const rawIndex = JSON.parse(

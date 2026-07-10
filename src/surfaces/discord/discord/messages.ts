@@ -15,12 +15,6 @@ export function chunkDiscordMessage(text: string): string[] {
   return chunks.filter((chunk) => chunk.length > 0);
 }
 
-export function makeTitleFromPrompt(prompt: string): string {
-  const compact = prompt.replace(/\s+/g, " ").trim();
-  if (compact.length <= 80) return compact || "New Sandi conversation";
-  return `${compact.slice(0, 77).trimEnd()}...`;
-}
-
 function findSplitPoint(value: string): number {
   const paragraph = value.lastIndexOf("\n\n");
   if (paragraph > 500) return paragraph;

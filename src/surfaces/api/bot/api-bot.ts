@@ -18,6 +18,7 @@ import type {
   ConversationManifest,
   ConversationParticipant,
 } from "@/lib/conversations/types";
+import { errorMessage } from "@/lib/errors";
 import { HumanIdentityStore } from "@/lib/identity/resolver";
 import { createLogger } from "@/lib/logging";
 import {
@@ -26,7 +27,9 @@ import {
   type ProviderTurnRequest,
 } from "@/lib/provider/pi-cli-client";
 import { ThreadQueue } from "@/lib/turns/turn-queue";
+import { isRecord } from "@/lib/type-guards";
 import {
+  type ApiConversationRef,
   apiConversationStorageId,
   buildApiConversationManifest,
   canonicalApiConversationId,
@@ -230,43 +233,37 @@ export class ApiBot {
       }
 
       if (path === DEVICE_LINK_PATH) {
-        if (method !== "GET") {
-          sendJson(response, 405, { error: "method_not_allowed" });
-          return;
-        }
-        const entry = await this.#authenticate(request);
-        if (!entry) {
-          sendJson(response, 401, { error: "unauthorized" });
-          return;
-        }
+        const entry = await this.#authenticatedRoute(
+          request,
+          response,
+          method,
+          "GET",
+        );
+        if (!entry) return;
         this.#deviceRoutes.handleLink(response, entry);
         return;
       }
 
       if (path === DEVICE_RESULT_PATH) {
-        if (method !== "POST") {
-          sendJson(response, 405, { error: "method_not_allowed" });
-          return;
-        }
-        const entry = await this.#authenticate(request);
-        if (!entry) {
-          sendJson(response, 401, { error: "unauthorized" });
-          return;
-        }
+        const entry = await this.#authenticatedRoute(
+          request,
+          response,
+          method,
+          "POST",
+        );
+        if (!entry) return;
         await this.#deviceRoutes.handleResult(request, response, entry);
         return;
       }
 
       if (path === ATTACHMENTS_PATH) {
-        if (method !== "POST") {
-          sendJson(response, 405, { error: "method_not_allowed" });
-          return;
-        }
-        const entry = await this.#authenticate(request);
-        if (!entry) {
-          sendJson(response, 401, { error: "unauthorized" });
-          return;
-        }
+        const entry = await this.#authenticatedRoute(
+          request,
+          response,
+          method,
+          "POST",
+        );
+        if (!entry) return;
         request.setTimeout(ATTACHMENT_UPLOAD_TIMEOUT_MS);
         await handleAttachmentUpload(request, response, {
           store: this.#attachments,
@@ -277,15 +274,13 @@ export class ApiBot {
 
       const attachmentMatch = ATTACHMENT_PATH.exec(path);
       if (attachmentMatch) {
-        if (method !== "GET") {
-          sendJson(response, 405, { error: "method_not_allowed" });
-          return;
-        }
-        const entry = await this.#authenticate(request);
-        if (!entry) {
-          sendJson(response, 401, { error: "unauthorized" });
-          return;
-        }
+        const entry = await this.#authenticatedRoute(
+          request,
+          response,
+          method,
+          "GET",
+        );
+        if (!entry) return;
         let hash: string;
         try {
           hash = decodeURIComponent(attachmentMatch[1] ?? "");
@@ -349,7 +344,7 @@ export class ApiBot {
       log.error("API request failed", {
         method,
         path,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
       if (!response.headersSent) {
         sendJson(response, 500, { error: "internal_error" });
@@ -357,10 +352,47 @@ export class ApiBot {
     }
   }
 
-  async #handleTurnRequest(
+  // Shared shape of every route that is just a method check followed by bearer
+  // auth: answers 405 or 401 and returns undefined on either failure, so the
+  // caller only has to bail out on a falsy return.
+  async #authenticatedRoute(
+    request: IncomingMessage,
+    response: ServerResponse,
+    method: string,
+    expectedMethod: string,
+  ): Promise<ApiTokenEntry | undefined> {
+    if (method !== expectedMethod) {
+      sendJson(response, 405, { error: "method_not_allowed" });
+      return undefined;
+    }
+    const entry = await this.#authenticate(request);
+    if (!entry) {
+      sendJson(response, 401, { error: "unauthorized" });
+      return undefined;
+    }
+    return entry;
+  }
+
+  // The shared shell of both conversation routes (a turn and a title): bearer
+  // auth, ref validation, identity resolution, and the abort/error plumbing
+  // around a single provider call. `run` gets only what it needs to parse its
+  // own body and make that call, and returns the response to send on success;
+  // everything else (401/400/403, provider-error status mapping, and tying the
+  // call to the client connection) lives here once. `providerErrorLog` is the
+  // one thing that still differs between callers: the log message on a failed
+  // provider call.
+  async #authenticatedConversationCall(
     request: IncomingMessage,
     response: ServerResponse,
     conversationId: string,
+    providerErrorLog: string,
+    run: (ctx: {
+      entry: ApiTokenEntry;
+      ref: ApiConversationRef;
+      participant: ConversationParticipant;
+      canonicalId: string;
+      signal: AbortSignal;
+    }) => Promise<{ status: number; body: Record<string, unknown> }>,
   ): Promise<void> {
     const entry = await this.#authenticate(request);
     if (!entry) {
@@ -368,7 +400,7 @@ export class ApiBot {
       return;
     }
 
-    const ref = {
+    const ref: ApiConversationRef = {
       identityId: entry.identityId,
       deviceId: entry.deviceId,
       conversationId,
@@ -393,43 +425,9 @@ export class ApiBot {
       return;
     }
 
-    const body = await readJsonBody(request, {
-      maxBytes: MAX_REQUEST_BODY_BYTES,
-      timeoutMs: BODY_READ_TIMEOUT_MS,
-    });
-    if (!body.ok) {
-      sendJson(response, body.status, { error: body.error });
-      return;
-    }
-    const parsed = parseTurnBody(body.value);
-    if (!parsed.ok) {
-      sendJson(response, 400, { error: parsed.error });
-      return;
-    }
+    const canonicalId = canonicalApiConversationId(ref);
 
-    // Resolve every attachment ref up front (before the turn is queued), so a
-    // bad ref answers 400 without ever leasing a queue slot or spawning a
-    // provider turn. Materializing copies each blob into a temp dir scoped to
-    // this one turn; it is removed below regardless of how the turn ends.
-    let materialized: { dir: string | undefined; paths: string[] };
-    try {
-      materialized = await materializeAttachmentRefs({
-        store: this.#attachments,
-        identityId: entry.identityId,
-        refs: parsed.attachments ?? [],
-      });
-    } catch (error) {
-      if (error instanceof InvalidAttachmentRefError) {
-        sendJson(response, 400, {
-          error: "invalid_attachment",
-          hash: error.hash,
-        });
-        return;
-      }
-      throw error;
-    }
-
-    // Tie the turn to the client connection: if the client disconnects before
+    // Tie the call to the client connection: if the client disconnects before
     // we finish replying, abort so we neither burn a Pi session nor write to a
     // dead response. We key off the response closing *before* it finished
     // writing, which is the true "client went away" signal. (The request stream
@@ -448,37 +446,15 @@ export class ApiBot {
       // captured by `abort` above.
       if (abort.signal.aborted) return;
 
-      const canonicalId = canonicalApiConversationId(ref);
-      const storageId = apiConversationStorageId(ref);
-      const manifestInput = {
-        ...ref,
+      const result = await run({
+        entry,
+        ref,
         participant,
-        ...(parsed.title !== undefined ? { title: parsed.title } : {}),
-      };
-      const created = await this.#conversations.getOrCreate({
-        storageId,
-        fallback: buildApiConversationManifest(manifestInput),
-      });
-      const conversation = await this.#conversations.addParticipant({
-        storageId,
-        manifest: created,
-        participant,
-      });
-
-      const text = await this.#runQueuedTurn({
         canonicalId,
-        conversation,
-        participant,
-        deviceKey: entry.tokenSha256,
-        input: parsed.input,
-        ...(parsed.turnId !== undefined ? { turnId: parsed.turnId } : {}),
-        ...(materialized.paths.length > 0
-          ? { attachmentPaths: materialized.paths }
-          : {}),
-        requestSignal: abort.signal,
+        signal: abort.signal,
       });
       if (response.destroyed) return;
-      sendJson(response, 200, { conversationId, text });
+      sendJson(response, result.status, result.body);
     } catch (error) {
       // The client went away (socket close or an aborted turn): nothing to
       // report and nowhere to report it.
@@ -490,9 +466,8 @@ export class ApiBot {
         return;
       }
       if (error instanceof ProviderTurnError) {
-        const canonicalId = canonicalApiConversationId(ref);
         const status = providerErrorStatus(error);
-        log.warn("API provider turn failed", {
+        log.warn(providerErrorLog, {
           conversationId: canonicalId,
           reason: error.reason,
         });
@@ -505,8 +480,88 @@ export class ApiBot {
       throw error;
     } finally {
       response.removeListener("close", onClose);
-      await cleanupMaterializedAttachments(materialized.dir);
     }
+  }
+
+  async #handleTurnRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+    conversationId: string,
+  ): Promise<void> {
+    await this.#authenticatedConversationCall(
+      request,
+      response,
+      conversationId,
+      "API provider turn failed",
+      async ({ entry, ref, participant, canonicalId, signal }) => {
+        const body = await readJsonBody(request, {
+          maxBytes: MAX_REQUEST_BODY_BYTES,
+          timeoutMs: BODY_READ_TIMEOUT_MS,
+        });
+        if (!body.ok) {
+          return { status: body.status, body: { error: body.error } };
+        }
+        const parsed = parseTurnBody(body.value);
+        if (!parsed.ok) {
+          return { status: 400, body: { error: parsed.error } };
+        }
+
+        // Resolve every attachment ref up front (before the turn is queued), so
+        // a bad ref answers 400 without ever leasing a queue slot or spawning a
+        // provider turn. Materializing copies each blob into a temp dir scoped
+        // to this one turn; it is removed below regardless of how the turn ends.
+        let materialized: { dir: string | undefined; paths: string[] };
+        try {
+          materialized = await materializeAttachmentRefs({
+            store: this.#attachments,
+            identityId: entry.identityId,
+            refs: parsed.attachments ?? [],
+          });
+        } catch (error) {
+          if (error instanceof InvalidAttachmentRefError) {
+            return {
+              status: 400,
+              body: { error: "invalid_attachment", hash: error.hash },
+            };
+          }
+          throw error;
+        }
+
+        try {
+          const storageId = apiConversationStorageId(ref);
+          const manifestInput = {
+            ...ref,
+            participant,
+            ...(parsed.title !== undefined ? { title: parsed.title } : {}),
+          };
+          const created = await this.#conversations.getOrCreate({
+            storageId,
+            fallback: buildApiConversationManifest(manifestInput),
+          });
+          const conversation = await this.#conversations.addParticipant({
+            storageId,
+            manifest: created,
+            participant,
+          });
+
+          const text = await this.#runQueuedTurn({
+            canonicalId,
+            conversation,
+            participant,
+            deviceKey: entry.tokenSha256,
+            input: parsed.input,
+            ...(parsed.turnId !== undefined ? { turnId: parsed.turnId } : {}),
+            ...(materialized.paths.length > 0
+              ? { attachmentPaths: materialized.paths }
+              : {}),
+            requestSignal: signal,
+          });
+          return { status: 200, body: { conversationId, text } };
+        } finally {
+          await cleanupMaterializedAttachments(materialized.dir);
+        }
+      },
+    );
   }
 
   // Names a conversation from a single message with a one-off, stateless model
@@ -520,86 +575,33 @@ export class ApiBot {
     response: ServerResponse,
     conversationId: string,
   ): Promise<void> {
-    const entry = await this.#authenticate(request);
-    if (!entry) {
-      sendJson(response, 401, { error: "unauthorized" });
-      return;
-    }
-
-    const ref = {
-      identityId: entry.identityId,
-      deviceId: entry.deviceId,
+    await this.#authenticatedConversationCall(
+      request,
+      response,
       conversationId,
-    };
-    try {
-      validateApiConversationRef(ref);
-    } catch (error) {
-      if (error instanceof InvalidApiSegmentError) {
-        sendJson(response, 400, { error: `invalid_${snakeCase(error.field)}` });
-        return;
-      }
-      throw error;
-    }
-
-    const participant = await this.#participantForIdentityId(entry.identityId);
-    if (!participant) {
-      sendJson(response, 403, { error: "identity_unmapped" });
-      return;
-    }
-
-    const body = await readJsonBody(request, {
-      maxBytes: MAX_REQUEST_BODY_BYTES,
-      timeoutMs: BODY_READ_TIMEOUT_MS,
-    });
-    if (!body.ok) {
-      sendJson(response, body.status, { error: body.error });
-      return;
-    }
-    const parsed = parseTitleBody(body.value);
-    if (!parsed.ok) {
-      sendJson(response, 400, { error: parsed.error });
-      return;
-    }
-
-    const canonicalId = canonicalApiConversationId(ref);
-
-    // Tie the title turn to the client connection, so a desktop that closed the
-    // request (it moved on, or a later message already renamed the session)
-    // aborts the model rather than burning a Pi session on a title nobody wants.
-    const abort = new AbortController();
-    const onClose = (): void => {
-      if (!response.writableFinished) abort.abort();
-    };
-    response.on("close", onClose);
-
-    try {
-      if (abort.signal.aborted) return;
-      const title = await this.#generateTitle({
-        canonicalId,
-        participant,
-        message: parsed.message,
-        signal: abort.signal,
-      });
-      if (response.destroyed) return;
-      sendJson(response, 200, { title });
-    } catch (error) {
-      if (abort.signal.aborted || response.destroyed) return;
-      if (error instanceof ProviderTurnError) {
-        const status = providerErrorStatus(error);
-        log.warn("API title turn failed", {
-          conversationId: canonicalId,
-          reason: error.reason,
+      "API title turn failed",
+      async ({ participant, canonicalId, signal }) => {
+        const body = await readJsonBody(request, {
+          maxBytes: MAX_REQUEST_BODY_BYTES,
+          timeoutMs: BODY_READ_TIMEOUT_MS,
         });
-        sendJson(response, status, {
-          error: "provider_error",
-          reason: error.reason,
+        if (!body.ok) {
+          return { status: body.status, body: { error: body.error } };
+        }
+        const parsed = parseTitleBody(body.value);
+        if (!parsed.ok) {
+          return { status: 400, body: { error: parsed.error } };
+        }
+
+        const title = await this.#generateTitle({
+          canonicalId,
+          participant,
+          message: parsed.message,
+          signal,
         });
-        return;
-      }
-      throw error;
-    } finally {
-      response.removeListener("close", onClose);
-    }
+        return { status: 200, body: { title } };
+      },
+    );
   }
 
   async #generateTitle(input: {
@@ -971,10 +973,6 @@ function providerErrorStatus(error: ProviderTurnError): number {
     return 503;
   }
   return 502;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function snakeCase(value: string): string {

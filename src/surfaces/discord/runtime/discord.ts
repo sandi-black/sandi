@@ -12,7 +12,7 @@ import {
 } from "node:path";
 import { promisify, TextDecoder } from "node:util";
 
-import { REST, Routes } from "discord.js";
+import { type REST, Routes } from "discord.js";
 
 import { z } from "zod/v4";
 import {
@@ -32,8 +32,27 @@ import {
   SendImageInputSchema,
   SendMessageInputSchema,
 } from "@/surfaces/discord/runtime/targets";
+import {
+  allowedMentions,
+  clamp,
+  createRest,
+  type DiscordAttachment,
+  type DiscordChannel,
+  DiscordChannelSchema,
+  type DiscordContext,
+  type DiscordMessage,
+  DiscordMessageSchema,
+  discordGet,
+  discordPost,
+  escapeHeaderValue,
+  limitDiscordContent,
+  MAX_DISCORD_FILE_BYTES,
+  readToken,
+  safeFilename,
+} from "@/surfaces/discord/shared/rest";
 
-const MAX_DISCORD_FILE_BYTES = 24 * 1024 * 1024;
+export type { DiscordChannel, DiscordContext, DiscordMessage };
+
 const GIT_BINARY_CHECK_BYTES = 8_000;
 const MAX_TEXT_ATTACHMENT_PREVIEW_BYTES = 256 * 1024;
 const MAX_SEARCH_MESSAGES = 5_000;
@@ -41,64 +60,6 @@ const MAX_SEARCH_RESULTS = 50;
 const SEARCH_SNIPPET_CHARS_BEFORE = 80;
 const SEARCH_SNIPPET_CHARS_AFTER = 160;
 const execFile = promisify(execFileCallback);
-
-const DiscordContextSchema = z.object({
-  guildId: z.string().optional(),
-  channelId: z.string(),
-  parentChannelId: z.string().optional(),
-  threadId: z.string().optional(),
-  messageId: z.string(),
-});
-
-const DiscordUserSchema = z.object({
-  id: z.string(),
-  username: z.string(),
-  global_name: z.string().nullable().optional(),
-  bot: z.boolean().optional(),
-});
-
-const DiscordAttachmentSchema = z.object({
-  id: z.string(),
-  filename: z.string().optional(),
-  content_type: z.string().optional(),
-  size: z.number().optional(),
-  url: z.string().optional(),
-  proxy_url: z.string().optional(),
-  width: z.number().nullable().optional(),
-  height: z.number().nullable().optional(),
-});
-
-const DiscordMessageSchema = z.object({
-  id: z.string(),
-  channel_id: z.string(),
-  guild_id: z.string().optional(),
-  timestamp: z.string(),
-  edited_timestamp: z.string().nullable().optional(),
-  content: z.string(),
-  author: DiscordUserSchema,
-  attachments: z.array(DiscordAttachmentSchema).optional(),
-  pinned: z.boolean().optional(),
-});
-
-const DiscordChannelSchema = z.object({
-  id: z.string(),
-  type: z.number(),
-  name: z.string().optional(),
-  parent_id: z.string().nullable().optional(),
-  topic: z.string().nullable().optional(),
-  thread_metadata: z
-    .object({
-      archived: z.boolean().optional(),
-      locked: z.boolean().optional(),
-      auto_archive_duration: z.number().optional(),
-    })
-    .optional(),
-  applied_tags: z.array(z.string()).optional(),
-});
-
-export type DiscordContext = z.infer<typeof DiscordContextSchema>;
-export type DiscordMessage = z.infer<typeof DiscordMessageSchema>;
-export type DiscordChannel = z.infer<typeof DiscordChannelSchema>;
 
 export type ReadChannelHistoryInput = z.infer<
   typeof ReadChannelHistoryInputSchema
@@ -591,9 +552,7 @@ async function listChannelsForContext(
 // reaching into Discord), where there is no "current" channel or message and
 // every helper must name an explicit target.
 function optionalContext(): DiscordContext | undefined {
-  const raw = readDiscordPlatformContext();
-  if (!raw) return undefined;
-  return DiscordContextSchema.parse(JSON.parse(raw));
+  return readDiscordPlatformContext();
 }
 
 // The current Discord message context, or an error. Used by helpers that only
@@ -605,44 +564,12 @@ function requireContext(): DiscordContext {
   return context;
 }
 
-function readToken(): string {
-  const token = process.env["DISCORD_BOT_TOKEN"]?.trim();
-  if (!token) throw new Error("DISCORD_BOT_TOKEN is not set");
-  return token;
-}
-
-function createRest(): REST {
-  return new REST({ version: "10" }).setToken(readToken());
-}
-
 // The guild a helper should operate in: the current context's guild on a
 // Discord turn, else the configured DISCORD_GUILD_ID (parsed at the env
 // boundary) so a turn from another surface can still resolve channels by name
 // and list the server's channels.
 function resolveGuildId(context: DiscordContext | undefined): string {
   return resolveGuildIdFor(context?.guildId);
-}
-
-async function discordGet<T>(
-  rest: REST,
-  route: `/${string}`,
-  schema: z.ZodType<T>,
-  query?: URLSearchParams,
-): Promise<T> {
-  const response =
-    query === undefined
-      ? await rest.get(route)
-      : await rest.get(route, { query });
-  return schema.parse(response);
-}
-
-async function discordPost<T>(
-  rest: REST,
-  route: `/${string}`,
-  schema: z.ZodType<T>,
-  body: unknown,
-): Promise<T> {
-  return schema.parse(await rest.post(route, { body }));
 }
 
 function discordPostFile(
@@ -730,8 +657,6 @@ function discordPostFile(
     req.end(requestBody);
   });
 }
-
-type DiscordAttachment = z.infer<typeof DiscordAttachmentSchema>;
 
 async function downloadAttachment(
   attachment: DiscordAttachment,
@@ -946,36 +871,4 @@ function mimeFromPath(path: string): string {
   if (ext === ".webp") return "image/webp";
   if (ext === ".yaml" || ext === ".yml") return "application/yaml";
   return "application/octet-stream";
-}
-
-function clamp(
-  value: number | undefined,
-  defaultValue: number,
-  minimum: number,
-  maximum: number,
-): number {
-  if (value === undefined) return defaultValue;
-  return Math.min(maximum, Math.max(minimum, Math.trunc(value)));
-}
-
-function limitDiscordContent(content: string): string {
-  const trimmed = content.trim();
-  if (trimmed.length <= 2000) return trimmed;
-  return `${trimmed.slice(0, 1997)}...`;
-}
-
-function allowedMentions(
-  allowMentions: boolean | undefined,
-): Record<string, unknown> {
-  if (allowMentions) return { parse: ["users", "roles", "everyone"] };
-  return { parse: [] };
-}
-
-function safeFilename(value: string): string {
-  const normalized = value.replace(/[^a-zA-Z0-9._-]/g, "_");
-  return normalized || "image.png";
-}
-
-function escapeHeaderValue(value: string): string {
-  return value.replace(/["\r\n]/g, "_");
 }

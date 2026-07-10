@@ -1,3 +1,4 @@
+import { assert, assertEqual } from "@/lib/verification/harness";
 import {
   listMonitors,
   listWindows,
@@ -93,20 +94,6 @@ async function verifyOnWindows(): Promise<void> {
     "the screenshot is downscaled to the requested longest edge",
   );
   console.log("ok screenshot captures and downscales the primary monitor");
-}
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (condition) return;
-  console.error(`assertion failed: ${message}`);
-  process.exit(1);
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
 }
 
 await verifyDesktopState();

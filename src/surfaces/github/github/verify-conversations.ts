@@ -1,4 +1,5 @@
 import type { ConversationParticipant } from "@/lib/conversations/types";
+import { assertEqual } from "@/lib/verification/harness";
 import {
   buildGitHubThreadManifest,
   canonicalGitHubThreadId,
@@ -66,10 +67,3 @@ assertEqual(
 );
 
 console.log("GitHub conversation verification passed");
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  throw new Error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-}

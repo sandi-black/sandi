@@ -1,5 +1,5 @@
-import { readdir, readFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { dirname, join, relative, resolve } from "node:path";
 
 import { loadCoreConfig } from "@/lib/config/env";
 import { listSkills } from "@/lib/pi-extension/skill-common";
@@ -199,18 +199,28 @@ function isSurfaceLiteralAllowedFile(path: string): boolean {
 function isAllowedSurfaceLiteralLine(path: string, line: string): boolean {
   if (
     path === "src/lib/conversations/store.ts" ||
-    path === "src/lib/context/memory.ts" ||
     path === "src/lib/pi-extension/memory-common.ts"
   ) {
     return (
       line.includes('z.enum(["discord", "github"])') ||
-      line.includes('platform: "discord" | "github"') ||
-      line.includes('root === "discord"') ||
-      line.includes('root === "github"')
+      line.includes('platform: "discord" | "github"')
     );
   }
   if (path === "src/lib/provider/pi-cli-client.ts") {
     return line.includes('delete env["SANDI_DISCORD_CONTEXT"]');
+  }
+  // The single canonical home for the reserved core memory root names: only
+  // the reserved-root list entries themselves may name a surface, so any
+  // other surface coupling added to this file is still caught.
+  if (path === "src/lib/memory-refs.ts") {
+    return line.trim() === '"discord",' || line.trim() === '"github",';
+  }
+  // The single surface registry: only the SURFACE_IDS declaration may name
+  // the surfaces.
+  if (path === "src/lib/surface-context.ts") {
+    return line.includes(
+      'export const SURFACE_IDS = ["discord", "github", "api"] as const;',
+    );
   }
   return false;
 }
@@ -287,21 +297,81 @@ async function verifySkillSurfaceFiltering(): Promise<void> {
 }
 
 async function verifyPiExtensionImports(): Promise<void> {
-  const files = [
+  const entryFiles = [
     ...(await sourceFiles(join(repoRoot, "src", "lib", "pi-extension"))),
     ...(await surfacePiExtensionFiles()),
   ];
-  for (const file of files) {
+  const entrySet = new Set(entryFiles);
+  // Walk the extension dependency graph transitively: the Pi CLI loader
+  // resolves the whole chain, so an alias import three relative hops away
+  // from an extension entry breaks loading just as surely as one in the
+  // entry file itself (and has, in practice).
+  const queue = [...entryFiles];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const file = queue.pop();
+    if (!file || seen.has(file)) continue;
+    seen.add(file);
     const content = await readFile(file, "utf8");
-    for (const source of importSources(content)) {
-      if (!source.startsWith("@/")) continue;
-      findings.push({
-        check: "pi-extension-imports",
-        path: displayPath(file),
-        message: `Pi extensions are loaded directly by the Pi CLI and must not rely on tsconfig path alias ${source}`,
-      });
+    for (const ref of importRefs(content)) {
+      if (ref.source.startsWith("@/")) {
+        // Statement-level `import type` is erased at runtime, so it cannot
+        // break the loader; files outside the pi-extension folders may use it
+        // for cross-boundary type references. Inside the folders the stricter
+        // original rule stands: no alias imports of any kind.
+        if (ref.typeOnly && !entrySet.has(file)) continue;
+        findings.push({
+          check: "pi-extension-imports",
+          path: displayPath(file),
+          message: `Pi extensions are loaded directly by the Pi CLI and must not rely on tsconfig path alias ${ref.source} (reachable from a Pi extension entry)`,
+        });
+        continue;
+      }
+      if (!ref.source.startsWith(".")) continue;
+      const resolved = await resolveRelativeModule(file, ref.source);
+      if (resolved) queue.push(resolved);
     }
   }
+}
+
+async function resolveRelativeModule(
+  fromFile: string,
+  specifier: string,
+): Promise<string | undefined> {
+  const base = resolve(dirname(fromFile), specifier);
+  for (const candidate of [
+    `${base}.ts`,
+    `${base}.tsx`,
+    join(base, "index.ts"),
+  ]) {
+    try {
+      const info = await stat(candidate);
+      if (info.isFile()) return candidate;
+    } catch {
+      // Try the next candidate shape.
+    }
+  }
+  return undefined;
+}
+
+type ImportRef = { source: string; typeOnly: boolean };
+
+// Like importSources, but keeps whether the statement is a type-only import
+// (erased at emit, so invisible to the Pi CLI loader). Mixed forms such as
+// `import { type X, y }` still emit a runtime import and count as value refs.
+function importRefs(content: string): ImportRef[] {
+  const refs: ImportRef[] = [];
+  const patterns = [
+    /\bimport\s+(type\s+)?(?:[^'"]+\s+from\s+)?["']([^"']+)["']/g,
+    /\bexport\s+(type\s+)?(?:[^'"]+\s+from\s+)?["']([^"']+)["']/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of content.matchAll(pattern)) {
+      const source = match[2];
+      if (source) refs.push({ source, typeOnly: match[1] !== undefined });
+    }
+  }
+  return refs;
 }
 
 async function surfacePiExtensionFiles(): Promise<string[]> {

@@ -1,4 +1,5 @@
 import * as runtime from "@/host/runtime/index";
+import { assert } from "@/lib/verification/harness";
 
 // Env that the runtime helpers read to find the current platform target. Cleared
 // before the cross-surface cases so a developer's own .env cannot make a helper
@@ -147,12 +148,6 @@ function assertMessage(
     );
     process.exit(1);
   }
-}
-
-function assert(condition: boolean, label: string): void {
-  if (condition) return;
-  console.error(`assertion failed: ${label}`);
-  process.exit(1);
 }
 
 await verifyUnifiedRuntime();

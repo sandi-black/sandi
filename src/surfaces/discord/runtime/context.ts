@@ -1,9 +1,12 @@
 import { join, resolve } from "node:path";
 
 import {
+  readPlatformContext,
   type SandiSurfaceContext,
   UNIFIED_RUNTIME_ENTRY,
-} from "@/lib/surface-context";
+} from "../../../lib/surface-context";
+import type { ReminderUser } from "../reminders/schemas";
+import { type DiscordContext, DiscordContextSchema } from "../shared/rest";
 
 export const DISCORD_RUNTIME_IMPORT = "./sandi/runtime.ts";
 // Every surface composes the unified runtime, so a Discord turn can also reach
@@ -18,24 +21,15 @@ export const DISCORD_SURFACE_CONTEXT: SandiSurfaceContext = {
   attachmentsRoot: discordAttachmentsRoot(),
 };
 
-export function readDiscordPlatformContext(): string | undefined {
-  const raw = process.env["SANDI_PLATFORM_CONTEXT"]?.trim();
-  if (raw) {
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      if (
-        typeof parsed === "object" &&
-        parsed !== null &&
-        "platform" in parsed &&
-        parsed.platform === "discord"
-      ) {
-        return raw;
-      }
-    } catch {
-      return undefined;
-    }
-  }
-  return process.env["SANDI_DISCORD_CONTEXT"]?.trim();
+// Predates the unified SANDI_PLATFORM_CONTEXT env var; still honored as a
+// fallback so an older host process launching the Discord surface keeps
+// working.
+const DISCORD_LEGACY_CONTEXT_ENV = "SANDI_DISCORD_CONTEXT";
+
+export function readDiscordPlatformContext(): DiscordContext | undefined {
+  return readPlatformContext("discord", DiscordContextSchema, {
+    legacyEnvVar: DISCORD_LEGACY_CONTEXT_ENV,
+  });
 }
 
 function discordAttachmentsRoot(): string {
@@ -47,4 +41,12 @@ function discordAttachmentsRoot(): string {
         "discord-attachments",
       ),
   );
+}
+
+// The reminder-attributed human behind the current Discord turn, read from
+// the platform context's author block. Shared by the todo and reminders
+// runtime helpers, both of which need this to stamp a created/updated-by
+// identity when the turn does not pass one explicitly.
+export function currentDiscordReminderUser(): ReminderUser | undefined {
+  return readDiscordPlatformContext()?.author;
 }

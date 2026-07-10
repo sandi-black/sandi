@@ -1,5 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { buildMemoryContext, loadMemory } from "@/lib/context/memory";
@@ -9,12 +8,11 @@ import {
   loadHumanIdentities,
 } from "@/lib/identity/resolver";
 import { participantMemoryRef } from "@/lib/identity/types";
+import { assert, withTempDir } from "@/lib/verification/harness";
 
-const tempRoot = await mkdtemp(join(tmpdir(), "sandi-identity-memory-"));
-const configDir = join(tempRoot, "config");
-const dataDir = join(tempRoot, "data");
-
-try {
+await withTempDir("sandi-identity-memory-", async (tempRoot) => {
+  const configDir = join(tempRoot, "config");
+  const dataDir = join(tempRoot, "data");
   await mkdir(join(configDir, "identities"), { recursive: true });
   await writeFile(
     join(configDir, "identities", "humans.json"),
@@ -135,10 +133,4 @@ try {
   );
 
   console.log("identity and memory verification passed");
-} finally {
-  await rm(tempRoot, { recursive: true, force: true });
-}
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message);
-}
+});

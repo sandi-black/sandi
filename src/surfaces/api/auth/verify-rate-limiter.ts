@@ -1,3 +1,4 @@
+import { assertEqual } from "@/lib/verification/harness";
 import { FixedWindowLimiter } from "@/surfaces/api/auth/rate-limiter";
 
 function verifyRateLimiter(): void {
@@ -53,14 +54,6 @@ function verifyGlobalCapAndReset(): void {
     "the global window resets once it expires",
   );
   console.log("ok global cap blocks excess and resets after the window");
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
 }
 
 verifyRateLimiter();

@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 
+import { assertEqual, isRecord } from "../../../lib/verification/harness";
 import {
   type AttachTarget,
   attachedResult,
@@ -235,18 +236,6 @@ function restoreEnv(key: string, value: string | undefined): void {
   } else {
     process.env[key] = value;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  const a = JSON.stringify(actual);
-  const b = JSON.stringify(expected);
-  if (a === b) return;
-  console.error(`${label}: expected ${b}, got ${a}`);
-  process.exit(1);
 }
 
 await verifyAttachToReply();

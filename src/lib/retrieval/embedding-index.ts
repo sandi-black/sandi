@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
+import { isMissingFileError } from "../fs-errors";
 import {
   createEmbeddingEngineFromEnv,
   type EmbeddingEngine,
@@ -283,6 +284,26 @@ async function cleanupStaleTmpGeneration(
   await rm(path, { recursive: true, force: true });
 }
 
+/**
+ * Narrows a cached generation's passages down to only the source files still
+ * present in the caller's current listing (a file deleted since the index
+ * was built should not surface stale search results), and to metadata-only
+ * passages when the caller only wants the lighter-weight summary form.
+ * Shared verbatim by skill and memory hybrid search, which otherwise
+ * duplicated this filter identically.
+ */
+export function filterIndexedPassagesForSearch(
+  passages: readonly IndexedSearchPassage[],
+  sourcePaths: ReadonlySet<string>,
+  mode: "passages" | "metadata" | undefined,
+): IndexedSearchPassage[] {
+  return passages.filter(
+    (passage) =>
+      sourcePaths.has(passage.sourcePath) &&
+      (mode !== "metadata" || passage.passageId.startsWith("metadata-")),
+  );
+}
+
 export async function readSourceFiles(input: {
   root: string;
   includeFile(filePath: string): boolean;
@@ -412,7 +433,7 @@ async function readJsonIfExists(path: string): Promise<unknown | null> {
   try {
     return JSON.parse(await readFile(path, "utf8"));
   } catch (error) {
-    if (isFileMissing(error)) return null;
+    if (isMissingFileError(error)) return null;
     throw error;
   }
 }
@@ -477,8 +498,4 @@ function relativeSourcePath(root: string, filePath: string): string {
 
 function normalizedPath(path: string): string {
   return path.replaceAll("\\", "/");
-}
-
-function isFileMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }

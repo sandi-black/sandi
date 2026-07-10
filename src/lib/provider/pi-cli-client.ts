@@ -11,6 +11,7 @@ import { dirname, join, resolve } from "node:path";
 
 import type { PiConfig } from "@/lib/config/env";
 import type { MemoryContext } from "@/lib/context/memory";
+import { isMissingPathError } from "@/lib/fs-errors";
 import { participantMemoryRef } from "@/lib/identity/types";
 import { createLogger } from "@/lib/logging";
 import {
@@ -25,6 +26,7 @@ import {
 } from "@/lib/provider/side-effects";
 import { spawnCommandWithPipeStdin } from "@/lib/provider/spawn-command";
 import type { SandiSurfaceContext } from "@/lib/surface-context";
+import { isRecord } from "@/lib/type-guards";
 
 const log = createLogger("provider");
 const SYSTEM_PROMPT_FILE_NOTICE =
@@ -163,8 +165,11 @@ export class PiCliClient implements ModelProviderClient {
   }
 
   async probe(): Promise<ProviderProbe> {
-    const command = await this.#run(["--help"], 5_000);
-    const version = await this.#run(["--version"], 5_000);
+    const command = await this.#run({ args: ["--help"], timeoutMs: 5_000 });
+    const version = await this.#run({
+      args: ["--version"],
+      timeoutMs: 5_000,
+    });
     return {
       command: {
         ok: command.ok,
@@ -289,19 +294,19 @@ export class PiCliClient implements ModelProviderClient {
     await rm(stopFile, { force: true });
 
     try {
-      const result = await this.#run(
+      const result = await this.#run({
         args,
-        request.timeoutMs ?? this.#timeoutMs,
-        request.platformContext,
-        request.surfaceContext,
-        request.memoryContext,
-        this.#eventsRoot,
-        this.#remindersRoot,
-        this.#feedbackRoot,
-        this.#skillsRoot,
+        timeoutMs: request.timeoutMs ?? this.#timeoutMs,
+        platformContext: request.platformContext,
+        surfaceContext: request.surfaceContext,
+        memoryContext: request.memoryContext,
+        eventsRoot: this.#eventsRoot,
+        remindersRoot: this.#remindersRoot,
+        feedbackRoot: this.#feedbackRoot,
+        skillsRoot: this.#skillsRoot,
         deliverySideEffectFile,
         stopFile,
-        {
+        usageMetadata: {
           conversationId: request.conversationId,
           sessionMode: request.sessionMode ?? "persistent",
           tokenUsagePath: this.#tokenUsagePath,
@@ -310,18 +315,18 @@ export class PiCliClient implements ModelProviderClient {
           accountId: account?.id,
         },
         account,
-        this.#agentDir,
-        this.#packageDir,
-        request.localToolBroker,
+        agentDir: this.#agentDir,
+        packageDir: this.#packageDir,
+        localToolBroker: request.localToolBroker,
         // Only the caller's turn id, set when a client is awaiting this turn's
         // streamed response (the desktop generates one to scope its live
         // preview). Left unset otherwise so the response-stream extension stays
         // off: a turn that merely leased desktop hands while originating on
         // another surface must not push its reply onto that desktop's link.
-        request.turnId,
-        request.input,
-        request.signal,
-      );
+        turnId: request.turnId,
+        stdin: request.input,
+        signal: request.signal,
+      });
       if (!result.ok) {
         const deliverySideEffects = await deliverySideEffectFileHasEntries(
           deliverySideEffectFile,
@@ -368,27 +373,8 @@ export class PiCliClient implements ModelProviderClient {
     }
   }
 
-  async #run(
-    args: string[],
-    timeoutMs: number,
-    platformContext?: ProviderTurnRequest["platformContext"],
-    surfaceContext?: SandiSurfaceContext,
-    memoryContext?: MemoryContext,
-    eventsRoot?: string,
-    remindersRoot?: string,
-    feedbackRoot?: string,
-    skillsRoot?: string,
-    deliverySideEffectFile?: string,
-    stopFile?: string,
-    usageMetadata?: TokenUsageMetadata,
-    account?: PiExecutionAccount,
-    agentDir?: string,
-    packageDir?: string,
-    localToolBroker?: LocalToolBroker,
-    turnId?: string,
-    stdin?: string,
-    signal?: AbortSignal,
-  ): Promise<CommandResult> {
+  async #run(options: RunOptions): Promise<CommandResult> {
+    const { args, timeoutMs, stdin, signal, stopFile } = options;
     return new Promise((resolve) => {
       if (signal?.aborted) {
         resolve({
@@ -404,23 +390,7 @@ export class PiCliClient implements ModelProviderClient {
 
       const child = spawnCommandWithPipeStdin(this.#command, args, {
         cwd: process.cwd(),
-        env: childEnv(
-          platformContext,
-          surfaceContext,
-          memoryContext,
-          eventsRoot,
-          remindersRoot,
-          feedbackRoot,
-          skillsRoot,
-          deliverySideEffectFile,
-          stopFile,
-          usageMetadata,
-          account,
-          agentDir,
-          packageDir,
-          localToolBroker,
-          turnId,
-        ),
+        env: childEnv(options),
       });
       child.stdin.on("error", () => {
         // Close reports the real failure if the child exits before reading stdin.
@@ -481,6 +451,47 @@ export class PiCliClient implements ModelProviderClient {
     });
   }
 }
+
+type RunOptions = {
+  args: string[];
+  timeoutMs: number;
+  platformContext?: ProviderTurnRequest["platformContext"] | undefined;
+  surfaceContext?: SandiSurfaceContext | undefined;
+  memoryContext?: MemoryContext | undefined;
+  eventsRoot?: string | undefined;
+  remindersRoot?: string | undefined;
+  feedbackRoot?: string | undefined;
+  skillsRoot?: string | undefined;
+  deliverySideEffectFile?: string | undefined;
+  stopFile?: string | undefined;
+  usageMetadata?: TokenUsageMetadata | undefined;
+  account?: PiExecutionAccount | undefined;
+  agentDir?: string | undefined;
+  packageDir?: string | undefined;
+  localToolBroker?: LocalToolBroker | undefined;
+  turnId?: string | undefined;
+  stdin?: string | undefined;
+  signal?: AbortSignal | undefined;
+};
+
+type ChildEnvOptions = Pick<
+  RunOptions,
+  | "platformContext"
+  | "surfaceContext"
+  | "memoryContext"
+  | "eventsRoot"
+  | "remindersRoot"
+  | "feedbackRoot"
+  | "skillsRoot"
+  | "deliverySideEffectFile"
+  | "stopFile"
+  | "usageMetadata"
+  | "account"
+  | "agentDir"
+  | "packageDir"
+  | "localToolBroker"
+  | "turnId"
+>;
 
 type CommandResult = {
   ok: boolean;
@@ -600,7 +611,7 @@ async function repairMissingSessionCwd(
   try {
     text = await readFile(persistentSessionPath, "utf8");
   } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return;
+    if (isMissingPathError(error)) return;
     throw error;
   }
 
@@ -613,7 +624,7 @@ async function repairMissingSessionCwd(
   } catch {
     return;
   }
-  if (!isObjectRecord(firstEntry)) return;
+  if (!isRecord(firstEntry)) return;
   if (firstEntry["type"] !== "session") return;
   const storedCwd = firstEntry["cwd"];
   if (typeof storedCwd !== "string" || storedCwd === currentCwd) return;
@@ -636,37 +647,29 @@ async function pathExists(path: string): Promise<boolean> {
     await access(path);
     return true;
   } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return false;
-    if (isNodeError(error) && error.code === "ENOTDIR") return false;
+    if (isMissingPathError(error)) return false;
     throw error;
   }
 }
 
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
-}
-
-function childEnv(
-  platformContext: ProviderTurnRequest["platformContext"],
-  surfaceContext: SandiSurfaceContext | undefined,
-  memoryContext: MemoryContext | undefined,
-  eventsRoot: string | undefined,
-  remindersRoot: string | undefined,
-  feedbackRoot: string | undefined,
-  skillsRoot: string | undefined,
-  deliverySideEffectFile: string | undefined,
-  stopFile: string | undefined,
-  usageMetadata: TokenUsageMetadata | undefined,
-  account: PiExecutionAccount | undefined,
-  agentDir: string | undefined,
-  packageDir: string | undefined,
-  localToolBroker: LocalToolBroker | undefined,
-  turnId: string | undefined,
-): NodeJS.ProcessEnv {
+function childEnv(options: ChildEnvOptions): NodeJS.ProcessEnv {
+  const {
+    platformContext,
+    surfaceContext,
+    memoryContext,
+    eventsRoot,
+    remindersRoot,
+    feedbackRoot,
+    skillsRoot,
+    deliverySideEffectFile,
+    stopFile,
+    usageMetadata,
+    account,
+    agentDir,
+    packageDir,
+    localToolBroker,
+    turnId,
+  } = options;
   const env: NodeJS.ProcessEnv = {
     ...process.env,
   };

@@ -5,11 +5,9 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { Type } from "@earendil-works/pi-ai";
-import {
-  type AgentToolResult,
-  defineTool,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+import { textResult } from "./tool-results";
 
 const MAX_CODE_CHARS = 80_000;
 const MAX_OUTPUT_CHARS = 40_000;
@@ -221,15 +219,5 @@ function truncate(text: string): { text: string; truncated: boolean } {
   return {
     text: `${text.slice(0, MAX_OUTPUT_CHARS)}\n[truncated to ${MAX_OUTPUT_CHARS} characters]`,
     truncated: true,
-  };
-}
-
-function textResult(
-  text: string,
-  details: Record<string, unknown>,
-): AgentToolResult<Record<string, unknown>> {
-  return {
-    content: [{ type: "text", text }],
-    details,
   };
 }

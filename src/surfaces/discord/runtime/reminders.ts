@@ -1,9 +1,8 @@
-import { randomUUID } from "node:crypto";
-
 import type { z } from "zod/v4";
+import { generateTimestampId } from "@/lib/ids";
 import {
+  completedReminder,
   nextRecurrenceRun,
-  nextReminderRecurrenceRun,
   validateReminderRecurrence,
 } from "@/surfaces/discord/reminders/recurrence";
 import type {
@@ -18,7 +17,10 @@ import {
   readReminder,
   writeReminder,
 } from "@/surfaces/discord/reminders/store";
-import { readDiscordPlatformContext } from "@/surfaces/discord/runtime/context";
+import {
+  currentDiscordReminderUser,
+  readDiscordPlatformContext,
+} from "@/surfaces/discord/runtime/context";
 import {
   CreateReminderInputSchema,
   ListHumanRemindersInputSchema,
@@ -27,6 +29,7 @@ import {
   SnoozeReminderInputSchema,
 } from "@/surfaces/discord/runtime/reminder-inputs";
 import { explicitChannelId } from "@/surfaces/discord/runtime/targets";
+import { targetMatches } from "@/surfaces/discord/shared/targets";
 
 const MIN_FOLLOWUP_INTERVAL_MINUTES = 60;
 
@@ -56,7 +59,7 @@ export async function createReminder(input: CreateReminderInput): Promise<{
 }> {
   const parsed = CreateReminderInputSchema.parse(input);
   const target = resolveCreateTarget(parsed);
-  const id = normalizeReminderId(parsed.id ?? generatedReminderId());
+  const id = normalizeReminderId(parsed.id ?? generateTimestampId("reminder"));
   const reminder = buildReminder({
     target,
     text: parsed.text,
@@ -195,16 +198,6 @@ function targetForScope(
   return currentTarget;
 }
 
-function targetMatches(reminder: Reminder, target: ReminderTarget): boolean {
-  if (reminder.target.kind === "thread" && target.kind === "thread") {
-    return reminder.target.threadId === target.threadId;
-  }
-  if (reminder.target.kind === "channel" && target.kind === "channel") {
-    return reminder.target.channelId === target.channelId;
-  }
-  return false;
-}
-
 function buildReminder(input: {
   target: ReminderTarget;
   text: string;
@@ -253,72 +246,14 @@ function buildReminder(input: {
   };
 }
 
-function completedReminder(
-  reminder: Reminder,
-  doneBy: ReminderUser | undefined,
-): Reminder {
-  const completedAt = new Date();
-  const nextRun = nextReminderRecurrenceRun(reminder, completedAt);
-  if (nextRun) {
-    return {
-      ...reminder,
-      status: "active",
-      nextFireAt: nextRun.toISOString(),
-      fireCount: 0,
-      messageRefs: [],
-      doneAt: completedAt.toISOString(),
-      ...(doneBy ? { doneBy } : {}),
-    };
-  }
-  return {
-    ...reminder,
-    status: "done",
-    doneAt: completedAt.toISOString(),
-    ...(doneBy ? { doneBy } : {}),
-  };
-}
-
-function generatedReminderId(): string {
-  const stamp = new Date()
-    .toISOString()
-    .replaceAll(/[^0-9]/g, "")
-    .slice(0, 14);
-  return `reminder_${stamp}_${randomUUID().slice(0, 8)}`;
-}
-
 function currentDiscordTarget(): ReminderTarget | undefined {
-  const raw = readDiscordPlatformContext();
-  if (!raw) return undefined;
-  const parsed: unknown = JSON.parse(raw);
-  if (!isRecord(parsed)) return undefined;
-  const threadId = stringField(parsed, "threadId");
-  if (threadId) return { kind: "thread", threadId };
-  const channelId = stringField(parsed, "channelId");
-  if (channelId) return { kind: "channel", channelId };
+  const context = readDiscordPlatformContext();
+  if (!context) return undefined;
+  if (context.threadId) return { kind: "thread", threadId: context.threadId };
+  if (context.channelId) {
+    return { kind: "channel", channelId: context.channelId };
+  }
   return undefined;
-}
-
-function currentDiscordReminderUser(): ReminderUser | undefined {
-  const raw = readDiscordPlatformContext();
-  if (!raw) return undefined;
-  const parsed: unknown = JSON.parse(raw);
-  if (!isRecord(parsed)) return undefined;
-  const author = parsed["author"];
-  if (!isRecord(author)) return undefined;
-  const discordUserId = stringField(author, "discordUserId");
-  if (!discordUserId) return undefined;
-  return {
-    discordUserId,
-    ...(stringField(author, "username")
-      ? { username: stringField(author, "username") }
-      : {}),
-    ...(stringField(author, "displayName")
-      ? { displayName: stringField(author, "displayName") }
-      : {}),
-    ...(stringField(author, "identityId")
-      ? { identityId: stringField(author, "identityId") }
-      : {}),
-  };
 }
 
 function remindersRoot(): string {
@@ -335,16 +270,4 @@ function minutesFromNow(minutes: number | undefined): string {
     );
   }
   return new Date(Date.now() + minutes * 60_000).toISOString();
-}
-
-function stringField(
-  record: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }

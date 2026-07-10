@@ -2,6 +2,7 @@ import {
   type DirContext,
   resolveProjectDirs,
 } from "@/lib/config/platform-dirs";
+import { assertEqual } from "@/lib/verification/harness";
 
 // resolveProjectDirs is a pure function of the platform, the home directory, and
 // the environment, so the per-OS conventions can be checked without running on
@@ -156,14 +157,6 @@ function verifyLinuxDefaults(): void {
     "linux cache falls back to ~/.cache",
   );
   console.log("ok linux falls back to the XDG defaults");
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
 }
 
 verifyPlatformDirs();

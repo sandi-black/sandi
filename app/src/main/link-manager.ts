@@ -1,7 +1,6 @@
 import type { LinkStatus } from "@shared/ipc-contract";
 
 import {
-  type DesktopCredentials,
   desktopConfigPath,
   loadDesktopCredentials,
 } from "@sandi-server/surfaces/api/client/credentials";
@@ -29,7 +28,6 @@ export type LinkManager = {
   restart(): Promise<void>;
   stop(): void;
   status(): LinkStatus;
-  credentials(): DesktopCredentials | undefined;
 };
 
 export function createLinkManager(input: {
@@ -39,7 +37,6 @@ export function createLinkManager(input: {
 }): LinkManager {
   let controller: AbortController | undefined;
   let current: LinkStatus = { state: "connecting" };
-  let creds: DesktopCredentials | undefined;
 
   const setStatus = (status: LinkStatus): void => {
     current = status;
@@ -47,12 +44,11 @@ export function createLinkManager(input: {
   };
 
   const runLoop = async (): Promise<void> => {
-    creds = await loadDesktopCredentials(desktopConfigPath());
-    if (!creds) {
+    const credentials = await loadDesktopCredentials(desktopConfigPath());
+    if (!credentials) {
       setStatus({ state: "unpaired" });
       return;
     }
-    const credentials = creds;
     controller = new AbortController();
     setStatus({ state: "connecting" });
     await runDesktopClient({
@@ -99,9 +95,6 @@ export function createLinkManager(input: {
     },
     status() {
       return current;
-    },
-    credentials() {
-      return creds;
     },
   };
 }

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import type { ConversationManifest } from "@/lib/conversations/types";
@@ -36,6 +35,7 @@ import type {
   ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
 import { piSessionFilePath } from "@/lib/provider/pi-cli-client";
+import { withTempDir } from "@/lib/verification/harness";
 
 // A surface-neutral fixture: this is a core (src/lib) module, so it must not
 // couple to a specific surface. The github platform exercises the same code
@@ -193,8 +193,7 @@ const SESSION_JSONL = [
   noScope.memoryScopes = [];
   assert.equal(episodicScopePrefix(noScope), undefined);
 
-  const tempRoot = await mkdtemp(join(tmpdir(), "sandi-notes-"));
-  try {
+  await withTempDir("sandi-notes-", async (tempRoot) => {
     const memoryRoot = join(tempRoot, "memory");
     await writeEpisodicNote({
       memoryRoot,
@@ -214,15 +213,12 @@ const SESSION_JSONL = [
     assert.equal(notesTouchedSince(notes, before).length, 1);
     assert.equal(notesTouchedSince(notes, after).length, 0);
     assert.equal(notesTouchedSince(notes, null).length, 1);
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
+  });
 }
 
 // 3. Encoding summarizes the transcript into an episodic note on low thinking.
 {
-  const tempRoot = await mkdtemp(join(tmpdir(), "sandi-encode-"));
-  try {
+  await withTempDir("sandi-encode-", async (tempRoot) => {
     const dataDir = join(tempRoot, "data");
     const sessionDir = join(dataDir, "pi-sessions");
     const manifest = manifestFor();
@@ -263,15 +259,12 @@ const SESSION_JSONL = [
     const written = await readFile(notePath, "utf8");
     assert.match(written, /summary: Garden planning chat\./);
     assert.match(written, /raised beds/);
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
+  });
 }
 
 // 4. Dreaming consolidates fresh notes on high thinking and surfaces them.
 {
-  const tempRoot = await mkdtemp(join(tmpdir(), "sandi-dream-"));
-  try {
+  await withTempDir("sandi-dream-", async (tempRoot) => {
     const dataDir = join(tempRoot, "data");
     const sessionDir = join(dataDir, "pi-sessions");
     const memoryRoot = join(dataDir, "memory");
@@ -314,15 +307,12 @@ const SESSION_JSONL = [
     assert.equal(request.surfaceContext?.name, "dreaming");
     assert.notEqual(request.surfaceContext?.disableBuiltinTools, true);
     assert.equal(request.surfaceContext?.excludeTools, undefined);
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
+  });
 }
 
 // 5. The dream watermark is tracked and advanced per conversation.
 {
-  const tempRoot = await mkdtemp(join(tmpdir(), "sandi-state-"));
-  try {
+  await withTempDir("sandi-state-", async (tempRoot) => {
     const store = new DreamStateStore(join(tempRoot, "data"));
     assert.equal(await store.lastDreamAt("c1"), null);
 
@@ -343,9 +333,7 @@ const SESSION_JSONL = [
       "utf8",
     );
     await assert.rejects(() => store.lastDreamAt("c3"));
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
+  });
 }
 
 // 6. Dreaming config strictly validates its env boundary.
@@ -399,8 +387,7 @@ const SESSION_JSONL = [
 
 // 7. A non-missing transcript read error is surfaced, not treated as empty.
 {
-  const tempRoot = await mkdtemp(join(tmpdir(), "sandi-readerr-"));
-  try {
+  await withTempDir("sandi-readerr-", async (tempRoot) => {
     const dataDir = join(tempRoot, "data");
     const sessionDir = join(dataDir, "pi-sessions");
     const manifest = manifestFor();
@@ -423,15 +410,12 @@ const SESSION_JSONL = [
       }),
     );
     assert.equal(provider.requests.length, 0);
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
+  });
 }
 
 // 8. conversationHasUnencodedActivity drives the startup/restart-window encode.
 {
-  const tempRoot = await mkdtemp(join(tmpdir(), "sandi-pending-"));
-  try {
+  await withTempDir("sandi-pending-", async (tempRoot) => {
     const memoryRoot = join(tempRoot, "memory");
 
     // No recap yet: pending (covers the first run with dreaming enabled).
@@ -469,9 +453,7 @@ const SESSION_JSONL = [
       await conversationHasUnencodedActivity({ memoryRoot, manifest: noScope }),
       false,
     );
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
+  });
 }
 
 logger.info("dreaming verification passed");

@@ -1,14 +1,11 @@
 import { readdir, readFile, rm } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
+import { relative, resolve, sep } from "node:path";
 
 import {
   atomicWriteManaged,
   withManagedWrite,
-} from "@/lib/state/managed-write";
-import {
-  type SandiEvent,
-  SandiEventSchema,
-} from "@/surfaces/discord/events/schemas";
+} from "../../../lib/state/managed-write";
+import { type SandiEvent, SandiEventSchema } from "./schemas";
 
 const EVENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,79}$/;
 
@@ -82,8 +79,4 @@ export function normalizeEventId(id: string): string {
     );
   }
   return normalized;
-}
-
-export function defaultEventsRoot(dataDir: string): string {
-  return join(dataDir, "events");
 }

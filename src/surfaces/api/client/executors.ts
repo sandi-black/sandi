@@ -3,6 +3,7 @@ import type { Dirent, Stats } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import { errorMessage } from "@/lib/errors";
 import {
   listMonitors,
   listWindows,
@@ -471,8 +472,4 @@ function refused(error: string): ToolCallOutcome {
 function truncate(text: string): string {
   if (text.length <= MAX_OUTPUT_CHARS) return text;
   return `${text.slice(0, MAX_OUTPUT_CHARS)}\n[truncated to ${MAX_OUTPUT_CHARS} characters]`;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

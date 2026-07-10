@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { loadHostConfig } from "@/host/config";
 import { ContextCompiler } from "@/lib/context/context-compiler";
 import { ConversationStore } from "@/lib/conversations/store";
+import { errorMessage } from "@/lib/errors";
 import { createLogger } from "@/lib/logging";
 import { loadDreamingConfig } from "@/lib/memory/dreaming-config";
 import { startMemoryDreaming } from "@/lib/memory/dreaming-service";
@@ -76,6 +77,17 @@ await broker.start();
 
 const surfaces: Surface[] = [];
 
+// Every bot exposes the same start()/stop() lifecycle; this is the one part of
+// the three registration blocks below that is genuinely identical, so it is
+// the only part factored out. Their constructor calls stay inline because
+// each surface wires up a different set of shared dependencies.
+function registerSurface(
+  name: string,
+  bot: { start(): Promise<void>; stop(): void },
+): void {
+  surfaces.push({ name, start: () => bot.start(), stop: () => bot.stop() });
+}
+
 if (config.surfaces.api) {
   const apiBot = new ApiBot({
     config: config.api,
@@ -90,11 +102,7 @@ if (config.surfaces.api) {
     devices,
     broker,
   });
-  surfaces.push({
-    name: "api",
-    start: () => apiBot.start(),
-    stop: () => apiBot.stop(),
-  });
+  registerSurface("api", apiBot);
 }
 
 if (config.discord) {
@@ -110,11 +118,7 @@ if (config.discord) {
     provider,
     desktopHands,
   });
-  surfaces.push({
-    name: "discord",
-    start: () => discordBot.start(),
-    stop: () => discordBot.stop(),
-  });
+  registerSurface("discord", discordBot);
 }
 
 if (config.github) {
@@ -137,11 +141,7 @@ if (config.github) {
     provider,
     desktopHands,
   });
-  surfaces.push({
-    name: "github",
-    start: () => githubBot.start(),
-    stop: () => githubBot.stop(),
-  });
+  registerSurface("github", githubBot);
 }
 
 process.on("unhandledRejection", (reason) => {
@@ -219,8 +219,4 @@ log.info("starting sandi host", {
 // and the others are not left half-initialized behind a rejected Promise.all.
 for (const surface of surfaces) {
   await surface.start();
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

@@ -1,6 +1,8 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
+import { isMissingFileError } from "../fs-errors";
+
 export const DELIVERY_SIDE_EFFECT_FILE_ENV = "SANDI_DELIVERY_SIDE_EFFECT_FILE";
 
 export type DeliverySideEffectKind = string;
@@ -31,15 +33,7 @@ export async function deliverySideEffectFileHasEntries(
     const text = await readFile(path, "utf8");
     return text.trim().length > 0;
   } catch (error) {
-    if (isNotFoundError(error)) return false;
+    if (isMissingFileError(error)) return false;
     throw error;
   }
-}
-
-function isNotFoundError(error: unknown): boolean {
-  return hasCode(error) && error.code === "ENOENT";
-}
-
-function hasCode(error: unknown): error is { code: unknown } {
-  return typeof error === "object" && error !== null && "code" in error;
 }

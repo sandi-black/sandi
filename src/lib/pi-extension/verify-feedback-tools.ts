@@ -1,9 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import { z } from "zod";
 
+import { assert, withTempDir } from "../verification/harness";
 import {
   appendResourceFeedback,
   readResourceFeedbackJsonl,
@@ -27,8 +24,7 @@ const FeedbackRecordSchema = z.object({
 });
 
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "sandi-feedback-tools-"));
-  try {
+  await withTempDir("sandi-feedback-tools-", async (root) => {
     process.env["SANDI_FEEDBACK_ROOT"] = root;
     process.env["SANDI_CONVERSATION_ID"] = "verify-conversation";
     process.env["SANDI_SKILLS_SURFACE"] = "verify-surface";
@@ -74,13 +70,7 @@ async function main(): Promise<void> {
       second.signal === "distracting",
       "second signal should be distracting",
     );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-}
-
-function assert(condition: boolean, message: string): asserts condition {
-  if (!condition) throw new Error(message);
+  });
 }
 
 await main();

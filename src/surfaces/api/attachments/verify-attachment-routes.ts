@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { ContextCompiler } from "@/lib/context/context-compiler";
@@ -11,6 +10,12 @@ import type {
   ProviderTurnRequest,
   ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
+import {
+  assert,
+  assertEqual,
+  isRecord,
+  withTempDir,
+} from "@/lib/verification/harness";
 import { ApiBot } from "@/surfaces/api/bot/api-bot";
 import type { ApiAppConfig } from "@/surfaces/api/config";
 import { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
@@ -29,49 +34,49 @@ const OTHER_IDENTITY_ID = "lovelace";
 const DEVICE_ID = "device-1";
 
 async function verifyAttachmentRoutes(): Promise<void> {
-  const dataDir = await mkdtemp(join(tmpdir(), "sandi-attachment-routes-"));
-  const provider = new RecordingProvider();
-  const config = testConfig(dataDir);
-  const devices = new DeviceRegistry();
-  const broker = new ToolBroker(devices);
-  const bot = new ApiBot({
-    config,
-    conversations: new ConversationStore(dataDir),
-    contextCompiler: new ContextCompiler(
-      config.paths.configDirs,
-      config.paths.dataDir,
-      API_SURFACE_CONTEXT,
-    ),
-    provider,
-    devices,
-    broker,
+  await withTempDir("sandi-attachment-routes-", async (dataDir) => {
+    const provider = new RecordingProvider();
+    const config = testConfig(dataDir);
+    const devices = new DeviceRegistry();
+    const broker = new ToolBroker(devices);
+    const bot = new ApiBot({
+      config,
+      conversations: new ConversationStore(dataDir),
+      contextCompiler: new ContextCompiler(
+        config.paths.configDirs,
+        config.paths.dataDir,
+        API_SURFACE_CONTEXT,
+      ),
+      provider,
+      devices,
+      broker,
+    });
+
+    try {
+      await writeFixtures(dataDir);
+      await broker.start();
+      await bot.start();
+      const port = bot.address()?.port;
+      if (!port) throw new Error("API bot did not expose a listening port");
+      const base = `http://127.0.0.1:${port}`;
+
+      await verifyUploadRequiresAuth(base);
+      const uploaded = await verifyUploadAndDownloadRoundTrip(base);
+      await verifyDownloadOfUnownedIsNotFound(base, uploaded.hash);
+      await verifyDownloadOfUnknownIsNotFound(base);
+      await verifyDownloadOfMissingBlobFailsClosed(base, dataDir);
+      await verifyUploadRejectsBadNameAndMime(base);
+      await verifyUploadRejectsOverCap(base);
+      await verifyTurnWithAttachmentsMaterializesFiles(base, provider);
+      await verifyTurnWithBadAttachmentRefIsRejected(base, provider);
+
+      console.log("attachment routes verification passed");
+    } finally {
+      bot.stop();
+      devices.closeAll();
+      broker.stop();
+    }
   });
-
-  try {
-    await writeFixtures(dataDir);
-    await broker.start();
-    await bot.start();
-    const port = bot.address()?.port;
-    if (!port) throw new Error("API bot did not expose a listening port");
-    const base = `http://127.0.0.1:${port}`;
-
-    await verifyUploadRequiresAuth(base);
-    const uploaded = await verifyUploadAndDownloadRoundTrip(base);
-    await verifyDownloadOfUnownedIsNotFound(base, uploaded.hash);
-    await verifyDownloadOfUnknownIsNotFound(base);
-    await verifyDownloadOfMissingBlobFailsClosed(base, dataDir);
-    await verifyUploadRejectsBadNameAndMime(base);
-    await verifyUploadRejectsOverCap(base);
-    await verifyTurnWithAttachmentsMaterializesFiles(base, provider);
-    await verifyTurnWithBadAttachmentRefIsRejected(base, provider);
-
-    console.log("attachment routes verification passed");
-  } finally {
-    bot.stop();
-    devices.closeAll();
-    broker.stop();
-    await rm(dataDir, { recursive: true, force: true });
-  }
 }
 
 async function verifyUploadRequiresAuth(base: string): Promise<void> {
@@ -557,24 +562,6 @@ function testConfig(dataDir: string): ApiAppConfig {
       pairingsPath: join(dataDir, "config", "api-pairings.json"),
     },
   };
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
-}
-
-function assert(condition: unknown, label: string): asserts condition {
-  if (condition) return;
-  console.error(`assertion failed: ${label}`);
-  process.exit(1);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 class RecordingProvider implements ModelProviderClient {

@@ -1,6 +1,8 @@
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 
+import type { z } from "zod/v4";
+import { errorMessage } from "@/lib/errors";
 import type { DesktopCredentials } from "@/surfaces/api/client/credentials";
 import { executeLocalTool } from "@/surfaces/api/client/executors";
 import { postJson } from "@/surfaces/api/client/http";
@@ -62,9 +64,7 @@ export async function runDesktopClient(
       // A clean end (server closed the stream): reconnect promptly.
       attempt = 0;
     } catch (error) {
-      options.onStatus?.(
-        `link dropped: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      options.onStatus?.(`link dropped: ${errorMessage(error)}`);
     }
     if (options.signal?.aborted) break;
     await sleep(backoff(attempt), options.signal);
@@ -178,9 +178,7 @@ function handleEvent(block: string, conn: Connection): void {
   // failures, so reaching here means an unexpected internal error, not a tool
   // result, and must not become an unhandled rejection.
   runToolCall(data, conn).catch((error: unknown) => {
-    conn.options.onStatus?.(
-      `tool dispatch error: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    conn.options.onStatus?.(`tool dispatch error: ${errorMessage(error)}`);
   });
 }
 
@@ -192,38 +190,52 @@ function surfaceDroppedEvent(conn: Connection, event: string): void {
   conn.options.onStatus?.(`dropped a malformed ${event} event`);
 }
 
-function handleResponseChunk(data: string, conn: Connection): void {
-  if (!conn.options.onResponseChunk) return;
+// Shared body of handleResponseChunk and handleResponseAttachment: both bail
+// when nobody is listening, then parse and validate the event's JSON payload
+// before handing it to the caller, dropping (with a surfaced status message)
+// anything that fails either step. The two differ only in which callback they
+// feed and which schema validates the payload.
+function handleParsedEvent<T>(
+  data: string,
+  event: string,
+  schema: z.ZodType<T>,
+  callback: ((value: T) => void) | undefined,
+  conn: Connection,
+): void {
+  if (!callback) return;
   let raw: unknown;
   try {
     raw = JSON.parse(data);
   } catch {
-    surfaceDroppedEvent(conn, RESPONSE_CHUNK_EVENT);
+    surfaceDroppedEvent(conn, event);
     return;
   }
-  const parsed = ResponseChunkSchema.safeParse(raw);
+  const parsed = schema.safeParse(raw);
   if (!parsed.success) {
-    surfaceDroppedEvent(conn, RESPONSE_CHUNK_EVENT);
+    surfaceDroppedEvent(conn, event);
     return;
   }
-  conn.options.onResponseChunk(parsed.data);
+  callback(parsed.data);
+}
+
+function handleResponseChunk(data: string, conn: Connection): void {
+  handleParsedEvent(
+    data,
+    RESPONSE_CHUNK_EVENT,
+    ResponseChunkSchema,
+    conn.options.onResponseChunk,
+    conn,
+  );
 }
 
 function handleResponseAttachment(data: string, conn: Connection): void {
-  if (!conn.options.onResponseAttachment) return;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(data);
-  } catch {
-    surfaceDroppedEvent(conn, RESPONSE_ATTACHMENT_EVENT);
-    return;
-  }
-  const parsed = ResponseAttachmentSchema.safeParse(raw);
-  if (!parsed.success) {
-    surfaceDroppedEvent(conn, RESPONSE_ATTACHMENT_EVENT);
-    return;
-  }
-  conn.options.onResponseAttachment(parsed.data);
+  handleParsedEvent(
+    data,
+    RESPONSE_ATTACHMENT_EVENT,
+    ResponseAttachmentSchema,
+    conn.options.onResponseAttachment,
+    conn,
+  );
 }
 
 function handleCancel(data: string, conn: Connection): void {
@@ -326,7 +338,7 @@ async function reportResult(
     // The broker's abort and backstop free a call whose result never lands, so a
     // failed POST degrades to a tool error on the server rather than a hang.
     conn.options.onStatus?.(
-      `failed to report a tool result: ${error instanceof Error ? error.message : String(error)}`,
+      `failed to report a tool result: ${errorMessage(error)}`,
     );
   }
 }

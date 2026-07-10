@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { errorMessage } from "@/lib/errors";
 import { type JsonResponse, postJson } from "@/surfaces/api/client/http";
 
 // The api surface names a conversation from a single message and answers with
@@ -40,7 +41,7 @@ export async function generateTitle(input: {
   } catch (error) {
     return {
       ok: false,
-      error: `could not reach ${input.url}: ${error instanceof Error ? error.message : String(error)}`,
+      error: `could not reach ${input.url}: ${errorMessage(error)}`,
     };
   }
   if (response.status < 200 || response.status >= 300) {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 
+import { errorMessage } from "@/lib/errors";
 import {
   InvalidApiSegmentError,
   requireApiSegment,
@@ -66,9 +67,7 @@ export async function runChatRepl(options: ChatReplOptions): Promise<void> {
       printAttachmentNote(attachment);
     },
   }).catch((error: unknown) => {
-    process.stderr.write(
-      `[sandi] link error: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
+    process.stderr.write(`[sandi] link error: ${errorMessage(error)}\n`);
   });
   await Promise.race([linked, delay(LINK_WAIT_MS)]);
 

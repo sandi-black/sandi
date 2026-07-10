@@ -5,7 +5,7 @@ import {
   contentHashForSourceFiles,
   type EmbeddingIndexSourceFile,
   embeddingIndexCacheRootForSourceRoot,
-  type IndexedSearchPassage,
+  filterIndexedPassagesForSearch,
   loadCurrentEmbeddingIndex,
   type RebuildEmbeddingIndexResult,
   readSourceFiles,
@@ -343,18 +343,6 @@ function skillNameFromSourcePath(sourcePath: string): string | null {
   if (parts.length === 4 && parts[0] === "core") return parts[2] ?? null;
   if (parts.length === 5 && parts[0] === "surfaces") return parts[3] ?? null;
   return null;
-}
-
-function filterIndexedPassagesForSearch(
-  passages: readonly IndexedSearchPassage[],
-  sourcePaths: ReadonlySet<string>,
-  mode: "passages" | "metadata" | undefined,
-): IndexedSearchPassage[] {
-  return passages.filter(
-    (passage) =>
-      sourcePaths.has(passage.sourcePath) &&
-      (mode !== "metadata" || passage.passageId.startsWith("metadata-")),
-  );
 }
 
 function sourcePathForFile(root: string, filePath: string): string {

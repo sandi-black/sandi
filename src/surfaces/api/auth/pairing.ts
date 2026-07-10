@@ -5,6 +5,7 @@ import {
   consumePairing,
   normalizePairingCode,
 } from "@/lib/pairing/pairing-store";
+import { isRecord } from "@/lib/type-guards";
 import {
   InvalidApiSegmentError,
   requireApiSegment,
@@ -132,8 +133,4 @@ function parsePairBody(value: unknown): ParsedPairBody {
     ...(deviceId !== undefined ? { deviceId } : {}),
     ...(label !== undefined ? { label } : {}),
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -1,17 +1,9 @@
 import { spawn } from "node:child_process";
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  stat,
-  utimes,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { withManagedWrite } from "@/lib/state/managed-write";
+import { assert, withTempDir } from "@/lib/verification/harness";
 
 const CHILD_MODE_ENV = "SANDI_MANAGED_WRITE_CHILD";
 const CHILD_KIND_ENV = "SANDI_MANAGED_WRITE_KIND";
@@ -84,8 +76,7 @@ async function runStealChild(): Promise<void> {
 }
 
 async function runMain(): Promise<void> {
-  const tempRoot = await mkdtemp(join(tmpdir(), "sandi-managed-write-"));
-  try {
+  await withTempDir("sandi-managed-write-", async (tempRoot) => {
     await runConcurrencyTest(tempRoot);
     await runDeadPidStaleTest(tempRoot);
     await runMalformedLockTest(tempRoot);
@@ -93,9 +84,7 @@ async function runMain(): Promise<void> {
     await runOwnerTokenReleaseTest(tempRoot);
     await runLiveLongHoldTest(tempRoot);
     console.log("Managed-write verification passed");
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
+  });
 }
 
 async function runConcurrencyTest(tempRoot: string): Promise<void> {
@@ -460,13 +449,6 @@ function isProcessAlive(pid: number): boolean {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
-}
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) {
-    console.error(`FAIL: ${message}`);
-    process.exit(1);
-  }
 }
 
 function requireEnv(name: string): string {

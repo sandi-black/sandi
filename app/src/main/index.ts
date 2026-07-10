@@ -108,13 +108,7 @@ async function main(): Promise<void> {
   };
   const pet = createPetWindow({
     settings,
-    onOpenChat: () => {
-      wander?.interrupt();
-      fidget?.interrupt();
-      pet.sendDisplayEvent({ type: "reply-alert", visible: false });
-      greetOnChatOpen();
-      chat.toggleNear(pet.window.getBounds());
-    },
+    onOpenChat: () => openChat(chat.toggleNear),
     onDragStart: () => {
       wander?.interrupt();
       fidget?.interrupt();
@@ -124,6 +118,18 @@ async function main(): Promise<void> {
     // off whenever the chat is open).
     onMove: () => chat.follow(pet.window.getBounds()),
   });
+
+  // Shared by the pet's own open gesture and the tray's: interrupt both
+  // ambient schedulers, clear the reply-alert marker, greet if this is the
+  // first open since launch, then hand off to whichever placement the caller
+  // wants (toggle for the pet, always-open for the tray).
+  const openChat = (show: (bounds: Electron.Rectangle) => void): void => {
+    wander?.interrupt();
+    fidget?.interrupt();
+    pet.sendDisplayEvent({ type: "reply-alert", visible: false });
+    greetOnChatOpen();
+    show(pet.window.getBounds());
+  };
 
   const sendToChat = (channel: string, payload: unknown): void => {
     if (!chat.window.isDestroyed()) {
@@ -166,6 +172,15 @@ async function main(): Promise<void> {
     refreshPetBackground();
   };
 
+  // Both ambient schedulers refuse to run unless the pet is fully idle: no
+  // turn active, visible, not being dragged, and the chat popover closed.
+  // Each then adds the one condition that keeps it from fighting the other.
+  const baseIdleGate = (): boolean =>
+    activeTurns.size === 0 &&
+    pet.window.isVisible() &&
+    !pet.isDragging() &&
+    !chat.window.isVisible();
+
   // Wander mode: idle strolls along the work area, driven from main because
   // main owns the window position. The gate composes every reason not to
   // walk; the scheduler itself rechecks it on each movement tick.
@@ -173,12 +188,7 @@ async function main(): Promise<void> {
     getBounds: () => pet.window.getBounds(),
     setPosition: (x, y) => pet.moveTo(x, y),
     workAreaFor: (bounds) => screen.getDisplayMatching(bounds).workArea,
-    canStroll: () =>
-      activeTurns.size === 0 &&
-      pet.window.isVisible() &&
-      !pet.isDragging() &&
-      !chat.window.isVisible() &&
-      !(fidget?.isFidgeting() ?? false),
+    canStroll: () => baseIdleGate() && !(fidget?.isFidgeting() ?? false),
     sendDisplayEvent: (event) => pet.sendDisplayEvent(event),
     savePosition: (position) => settings.update({ petPosition: position }),
   });
@@ -189,12 +199,7 @@ async function main(): Promise<void> {
   // mid-stroll, so a walk and a blink never fight over the same moment. Unlike
   // wander, fidgets stay in place, so they run regardless of the wander setting.
   const fidgetScheduler = createIdleFidgetScheduler({
-    canFidget: () =>
-      activeTurns.size === 0 &&
-      pet.window.isVisible() &&
-      !pet.isDragging() &&
-      !chat.window.isVisible() &&
-      !wanderScheduler.isStrolling(),
+    canFidget: () => baseIdleGate() && !wanderScheduler.isStrolling(),
     sendDisplayEvent: (event) => pet.sendDisplayEvent(event),
   });
   fidget = fidgetScheduler;
@@ -375,13 +380,7 @@ async function main(): Promise<void> {
   tray = createTray({
     settings,
     onToggleSandi: () => pet.toggleVisibility(),
-    onOpenChat: () => {
-      wanderScheduler.interrupt();
-      fidgetScheduler.interrupt();
-      pet.sendDisplayEvent({ type: "reply-alert", visible: false });
-      greetOnChatOpen();
-      chat.openNear(pet.window.getBounds());
-    },
+    onOpenChat: () => openChat(chat.openNear),
     onWanderChange: (enabled: boolean) => wanderScheduler.setEnabled(enabled),
     ...(updater
       ? {
@@ -428,10 +427,25 @@ async function main(): Promise<void> {
       message: "link loop failed; restart the app or re-pair",
     });
   });
-  app.on("before-quit", () => {
+  // The transcript index write is debounced (see transcript-store.ts), so a
+  // quit landing inside that window must not drop it: defer the quit exactly
+  // once to flush it, then let the second before-quit through untouched.
+  let indexFlushed = false;
+  app.on("before-quit", (event) => {
     wanderScheduler.dispose();
     fidgetScheduler.dispose();
     updater?.dispose();
     link.stop();
+    if (indexFlushed) return;
+    event.preventDefault();
+    store
+      .flushIndex()
+      .catch((error: unknown) => {
+        console.error("failed to flush the transcript index on quit", error);
+      })
+      .finally(() => {
+        indexFlushed = true;
+        app.quit();
+      });
   });
 }

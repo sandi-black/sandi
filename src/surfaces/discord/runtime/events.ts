@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
-
 import type { z } from "zod/v4";
+import { generateTimestampId } from "@/lib/ids";
+import { isRecord } from "@/lib/type-guards";
 import type {
   EventCreator,
   EventTarget,
@@ -20,6 +20,7 @@ import {
   ListScheduledEventsInputSchema,
 } from "@/surfaces/discord/runtime/event-inputs";
 import { explicitChannelId } from "@/surfaces/discord/runtime/targets";
+import { eventTargetMatches } from "@/surfaces/discord/shared/targets";
 
 export type CreateEventInput = z.infer<typeof CreateEventInputSchema>;
 
@@ -48,7 +49,7 @@ export async function createEvent(input: CreateEventInput): Promise<{
   const parsed = CreateEventInputSchema.parse(input);
   const target = resolveCreateTarget(parsed);
   const type = parsed.type ?? inferEventType(parsed.at, parsed.schedule);
-  const id = normalizeEventId(parsed.id ?? generatedEventId(type));
+  const id = normalizeEventId(parsed.id ?? generateTimestampId(type));
   const event = buildEvent({
     type,
     target,
@@ -137,16 +138,6 @@ function targetForScope(
   return currentTarget;
 }
 
-function eventTargetMatches(event: SandiEvent, target: EventTarget): boolean {
-  if (event.target.kind === "thread" && target.kind === "thread") {
-    return event.target.threadId === target.threadId;
-  }
-  if (event.target.kind === "channel" && target.kind === "channel") {
-    return event.target.channelId === target.channelId;
-  }
-  return false;
-}
-
 function buildEvent(input: {
   type: SandiEvent["type"];
   target: EventTarget;
@@ -186,10 +177,6 @@ function inferEventType(
   if (schedule) return "periodic";
   if (at) return "one-shot";
   return "immediate";
-}
-
-function generatedEventId(type: SandiEvent["type"]): string {
-  return `${type}-${randomUUID().slice(0, 8)}`;
 }
 
 function currentDiscordTarget(): EventTarget | undefined {
@@ -253,8 +240,4 @@ function stringField(
 ): string | undefined {
   const value = record[key];
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }

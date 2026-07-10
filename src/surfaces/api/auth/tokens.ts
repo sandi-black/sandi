@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 
 import { z } from "zod/v4";
+import { isMissingFileError } from "@/lib/fs-errors";
 import {
   atomicWriteInPlace,
   withManagedWrite,
@@ -172,13 +173,4 @@ export class ApiTokenStore {
       throw error;
     }
   }
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error.code === "ENOENT" || error.code === "ENOTDIR")
-  );
 }

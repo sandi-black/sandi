@@ -49,6 +49,12 @@ async function main(): Promise<void> {
             contentType: headerValue(request, "content-type"),
             name: headerValue(request, "x-sandi-name"),
           });
+          // One name resolves later than the rest, so the multi-image case
+          // below can prove refs keeps the images' declared order rather than
+          // their completion order.
+          if (headerValue(request, "x-sandi-name") === "slow.png") {
+            await new Promise((resolve) => setTimeout(resolve, 40));
+          }
           await handleAttachmentUpload(request, response, {
             store,
             identityId: "hopper",
@@ -175,13 +181,56 @@ async function main(): Promise<void> {
       "another identity cannot read it",
     );
 
+    // Two images uploaded in parallel (see turn-pipeline.ts): staged slow
+    // first, fast second, but the slow one's response is delayed on the wire
+    // so it lands second. refs must still come back in the images' declared
+    // order, proving Promise.all's ordering guarantee rather than whichever
+    // upload happens to finish first.
+    const slowBytes = Buffer.from("slow to upload, first in the list");
+    const slowPath = join(scratch, "slow.png");
+    await writeFile(slowPath, slowBytes);
+    const fastBytes = Buffer.from("fast to upload, second in the list");
+    const fastPath = join(scratch, "fast.png");
+    await writeFile(fastPath, fastBytes);
+    const stagedSlow = await staging.stagePath(slowPath);
+    const stagedFast = await staging.stagePath(fastPath);
+    assert.ok(stagedSlow && stagedFast, "both images staged");
+
+    const multiOutcome = await pipeline({
+      conversationId: "desktop-grace",
+      text: "Compare these two plots.",
+      turnId: "turn-2",
+      attachmentIds: [stagedSlow.id, stagedFast.id],
+      signal: new AbortController().signal,
+    });
+    assert.equal(multiOutcome.ok, true, "multi-image turn settles");
+    assert.equal(turns.length, 2, "the multi-image turn posted");
+    const multiTurn = turns[1];
+    assert.ok(multiTurn, "multi-image turn recorded");
+    const multiBody = multiTurn.body;
+    assert.ok(
+      multiBody && typeof multiBody === "object",
+      "multi-image turn body is an object",
+    );
+    const multiRecord: Partial<Record<string, unknown>> = { ...multiBody };
+    const slowHash = createHash("sha256").update(slowBytes).digest("hex");
+    const fastHash = createHash("sha256").update(fastBytes).digest("hex");
+    assert.deepEqual(
+      multiRecord["attachments"],
+      [
+        { hash: slowHash, name: "slow.png" },
+        { hash: fastHash, name: "fast.png" },
+      ],
+      "refs keep the images' declared order even though the slow upload resolves last",
+    );
+
     // Unpaired: a missing credentials file fails the send with a clear error,
     // touching neither route.
     process.env["SANDI_DESKTOP_CONFIG"] = join(scratch, "missing.json");
     const unpaired = await pipeline({
       conversationId: "desktop-grace",
       text: "hello?",
-      turnId: "turn-2",
+      turnId: "turn-3",
       attachmentIds: [],
       signal: new AbortController().signal,
     });
@@ -190,7 +239,7 @@ async function main(): Promise<void> {
       !unpaired.ok && unpaired.error.includes("not paired"),
       "the error names pairing",
     );
-    assert.equal(turns.length, 1, "no turn reached the server unpaired");
+    assert.equal(turns.length, 2, "no turn reached the server unpaired");
 
     await new Promise<void>((resolveClose, rejectClose) => {
       server.close((error) => (error ? rejectClose(error) : resolveClose()));

@@ -2,6 +2,7 @@ import { type FSWatcher, watch } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
+import { errorMessage } from "@/lib/errors";
 import type { Logger } from "@/lib/logging";
 import {
   memoryEmbeddingIndexSnapshot,
@@ -183,7 +184,7 @@ async function ensureFresh(
   } catch (error) {
     input.logger.error("embedding index maintenance failed", {
       kind: input.kind,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage(error),
     });
   } finally {
     state.rebuilding = false;
@@ -213,7 +214,7 @@ async function refreshWatchers(
       input.logger.warn("embedding index watch failed", {
         kind: input.kind,
         dir,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     }
   }

@@ -1,5 +1,6 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 
+import { assertEqual } from "../../../lib/verification/harness";
 import { type Broker, callTool, readBroker } from "./local-exec-tools";
 
 // Drives the proxy extension's network helpers against a stand-in broker so the
@@ -252,14 +253,6 @@ function restoreEnv(key: string, value: string | undefined): void {
   } else {
     process.env[key] = value;
   }
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
 }
 
 await verifyLocalExecTools();

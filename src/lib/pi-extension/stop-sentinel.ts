@@ -2,6 +2,8 @@ import { access, rm } from "node:fs/promises";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { isMissingFileError } from "../fs-errors";
+
 const STOP_FILE_ENV = "SANDI_PI_STOP_FILE";
 const POLL_INTERVAL_MS = 250;
 
@@ -49,15 +51,7 @@ async function fileExists(path: string): Promise<boolean> {
     await access(path);
     return true;
   } catch (error) {
-    if (isNotFoundError(error)) return false;
+    if (isMissingFileError(error)) return false;
     throw error;
   }
-}
-
-function isNotFoundError(error: unknown): boolean {
-  return hasCode(error) && error.code === "ENOENT";
-}
-
-function hasCode(error: unknown): error is { code: unknown } {
-  return typeof error === "object" && error !== null && "code" in error;
 }

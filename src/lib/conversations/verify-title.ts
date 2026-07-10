@@ -6,6 +6,7 @@ import {
   normalizeGeneratedTitle,
   titleRequestInput,
 } from "@/lib/conversations/title";
+import { isRecord } from "@/lib/verification/harness";
 
 // The instructions builder renders the shared rules and folds in the caller's
 // subject, ceiling, and placeholder.
@@ -90,7 +91,3 @@ assert(isRecord(namedAuthor));
 assert.equal(namedAuthor["displayName"], "Grace Hopper");
 
 console.log("conversation title verification passed");
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}

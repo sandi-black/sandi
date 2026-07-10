@@ -2,6 +2,7 @@ import { mkdir, readFile, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import type { z } from "zod/v4";
+import { isMissingFileError } from "@/lib/fs-errors";
 import { withManagedWrite } from "@/lib/state/managed-write";
 import {
   chmodPrivateFile,
@@ -75,13 +76,4 @@ export class JsonFileStore<T> {
     await rename(tempPath, this.#path);
     await chmodPrivateFile(this.#path);
   }
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "ENOENT"
-  );
 }

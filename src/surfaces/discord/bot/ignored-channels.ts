@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { errorMessage } from "@/lib/errors";
+import { isMissingFileError } from "@/lib/fs-errors";
 import { createLogger } from "@/lib/logging";
 import {
   atomicWriteInPlace,
@@ -32,12 +34,12 @@ export async function loadIgnoredConversationChannels(
     }
     return new Set(parsed.channels.map((channel) => channel.id));
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+    if (isMissingFileError(error)) {
       return new Set();
     }
     log.warn("failed to load ignored channels config", {
       filePath,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage(error),
     });
     return new Set();
   }

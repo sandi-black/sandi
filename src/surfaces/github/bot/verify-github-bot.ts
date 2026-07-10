@@ -1,5 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { ContextCompiler } from "@/lib/context/context-compiler";
@@ -16,6 +15,7 @@ import {
   type ProviderTurnRequest,
   type ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
+import { assertEqual, withTempDir } from "@/lib/verification/harness";
 import { GitHubBot, type GitHubBotApi } from "@/surfaces/github/bot/github-bot";
 import type { GitHubAppConfig } from "@/surfaces/github/config";
 import type {
@@ -186,8 +186,7 @@ async function withBotFixture(
     config: GitHubAppConfig;
   }) => Promise<void>,
 ): Promise<void> {
-  const dataDir = await mkdtemp(join(tmpdir(), "sandi-github-bot-"));
-  try {
+  await withTempDir("sandi-github-bot-", async (dataDir) => {
     const config = testConfig(dataDir);
     const api = new FakeGitHubApi();
     const state = new GitHubNotificationState(dataDir);
@@ -211,9 +210,7 @@ async function withBotFixture(
       },
     };
     await run({ bot: fixture, state, api, config });
-  } finally {
-    await rm(dataDir, { recursive: true, force: true });
-  }
+  });
 }
 
 type MutableBotFixture = {
@@ -472,11 +469,4 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => {
     setTimeout(resolveSleep, ms);
   });
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  throw new Error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
 }

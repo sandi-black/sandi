@@ -1,11 +1,7 @@
 import { readFile, rm } from "node:fs/promises";
 
 import { Type } from "@earendil-works/pi-ai";
-import {
-  type AgentToolResult,
-  defineTool,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { atomicWriteInPlace, withManagedWrite } from "../state/managed-write";
 import {
@@ -20,6 +16,7 @@ import {
   type MemoryHybridSearchResponse,
   searchMemoryHybrid,
 } from "./memory-hybrid-search";
+import { textResult } from "./tool-results";
 
 const RefParam = Type.String({
   description:
@@ -290,14 +287,4 @@ async function readOptional(filePath: string): Promise<string | null> {
 
 function cleanSummary(summary: string): string {
   return summary.replace(/\s+/g, " ").trim();
-}
-
-function textResult(
-  text: string,
-  details: Record<string, unknown>,
-): AgentToolResult<Record<string, unknown>> {
-  return {
-    content: [{ type: "text", text }],
-    details,
-  };
 }

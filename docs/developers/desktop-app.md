@@ -250,7 +250,10 @@ desktop. After a change that touches windows, input, or packaging, check:
 8. Attachments, inbound: ask her to generate an image and attach it; it
    renders inline and save-as writes it where pointed.
 9. Persistence: close the popover, reopen from the pet; the transcript is
-   intact. Relaunch the app; sessions and transcripts are intact.
+   intact. Relaunch the app; sessions and transcripts are intact. Send a
+   message and Quit from the tray right away, before it settles (the session
+   index write is debounced); relaunch and confirm that session still sorts
+   first with the right preview, not a stale one.
 10. Chat geometry: drag the popover by its header and resize it from an edge;
     close and reopen it (pet click and tray both) and it comes back at the
     same size and the same position relative to the pet. Drag the pet and the

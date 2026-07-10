@@ -11,6 +11,8 @@ import {
 } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
+import { errorMessage } from "../errors";
+import { isMissingFileError } from "../fs-errors";
 import { createLogger } from "../logging";
 import { chmodPrivateFile, writePrivateTextFile } from "./private-files";
 
@@ -432,10 +434,6 @@ function isExistingFileError(error: unknown): boolean {
   return isErrnoCode(error, "EEXIST");
 }
 
-function isMissingFileError(error: unknown): boolean {
-  return isErrnoCode(error, "ENOENT");
-}
-
 function isErrnoCode(error: unknown, code: string): boolean {
   return (
     typeof error === "object" &&
@@ -443,8 +441,4 @@ function isErrnoCode(error: unknown, code: string): boolean {
     "code" in error &&
     error.code === code
   );
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

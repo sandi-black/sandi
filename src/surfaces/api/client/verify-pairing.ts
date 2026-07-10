@@ -1,5 +1,6 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 
+import { assert, assertEqual } from "@/lib/verification/harness";
 import { pairDesktop } from "@/surfaces/api/client/pairing";
 
 // Drives the client pairing flow against a stand-in api surface: a successful
@@ -127,20 +128,6 @@ function listen(server: Server): Promise<string> {
       resolve(`http://127.0.0.1:${port}`);
     });
   });
-}
-
-function assert(condition: unknown, label: string): asserts condition {
-  if (condition) return;
-  console.error(`assertion failed: ${label}`);
-  process.exit(1);
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
 }
 
 await verifyPairing();

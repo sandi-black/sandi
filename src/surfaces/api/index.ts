@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 
 import { ContextCompiler } from "@/lib/context/context-compiler";
 import { ConversationStore } from "@/lib/conversations/store";
+import { errorMessage } from "@/lib/errors";
 import { createLogger } from "@/lib/logging";
 import { migrateDataDir } from "@/lib/migrations/data-dir";
 import { PiCliClient } from "@/lib/provider/pi-cli-client";
@@ -95,7 +96,3 @@ process.once("SIGTERM", () => {
 });
 
 await bot.start();
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}

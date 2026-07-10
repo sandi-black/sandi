@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { ContextCompiler } from "@/lib/context/context-compiler";
@@ -12,6 +11,7 @@ import type {
   ProviderTurnRequest,
   ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
+import { assertEqual, isRecord, withTempDir } from "@/lib/verification/harness";
 import { apiConversationStorageId } from "@/surfaces/api/api/conversations";
 import {
   ApiTokenStore,
@@ -35,53 +35,53 @@ const DEVICE_ID = "device-1";
 const CONVERSATION_ID = "session-1";
 
 async function verifyApiBot(): Promise<void> {
-  const dataDir = await mkdtemp(join(tmpdir(), "sandi-api-bot-"));
-  const provider = new RecordingProvider();
-  const config = testConfig(dataDir);
-  const devices = new DeviceRegistry();
-  const broker = new ToolBroker(devices);
-  const bot = new ApiBot({
-    config,
-    conversations: new ConversationStore(dataDir),
-    contextCompiler: new ContextCompiler(
-      config.paths.configDirs,
-      config.paths.dataDir,
-      API_SURFACE_CONTEXT,
-    ),
-    provider,
-    devices,
-    broker,
+  await withTempDir("sandi-api-bot-", async (dataDir) => {
+    const provider = new RecordingProvider();
+    const config = testConfig(dataDir);
+    const devices = new DeviceRegistry();
+    const broker = new ToolBroker(devices);
+    const bot = new ApiBot({
+      config,
+      conversations: new ConversationStore(dataDir),
+      contextCompiler: new ContextCompiler(
+        config.paths.configDirs,
+        config.paths.dataDir,
+        API_SURFACE_CONTEXT,
+      ),
+      provider,
+      devices,
+      broker,
+    });
+
+    try {
+      await writeFixtures(dataDir);
+      await broker.start();
+      await bot.start();
+      const port = bot.address()?.port;
+      if (!port) throw new Error("API bot did not expose a listening port");
+      const base = `http://127.0.0.1:${port}`;
+
+      await verifyHealth(base);
+      await verifyMissingAuthIsRejected(base, provider);
+      await verifyMalformedSchemeIsRejected(base, provider);
+      await verifyWrongBearerIsRejected(base, provider);
+      await verifyUnmappedIdentityIsRejected(base, provider);
+      await verifyMalformedTurnIdIsRejected(base, provider);
+      await verifyValidTurn(base, provider);
+      await verifyTitleTurn(base, provider);
+      await verifyTitleRejectsEmptyMessage(base, provider);
+      await verifyTitleRequiresAuth(base, provider);
+      await verifySecondTurnDoesNotDuplicateParticipant(base);
+      await verifyManifestPersisted(dataDir);
+      await verifyTokenRevocationAndEnrollment(dataDir);
+      await verifyDeviceRoutes(base);
+      await verifyPairing(base, config);
+    } finally {
+      bot.stop();
+      devices.closeAll();
+      broker.stop();
+    }
   });
-
-  try {
-    await writeFixtures(dataDir);
-    await broker.start();
-    await bot.start();
-    const port = bot.address()?.port;
-    if (!port) throw new Error("API bot did not expose a listening port");
-    const base = `http://127.0.0.1:${port}`;
-
-    await verifyHealth(base);
-    await verifyMissingAuthIsRejected(base, provider);
-    await verifyMalformedSchemeIsRejected(base, provider);
-    await verifyWrongBearerIsRejected(base, provider);
-    await verifyUnmappedIdentityIsRejected(base, provider);
-    await verifyMalformedTurnIdIsRejected(base, provider);
-    await verifyValidTurn(base, provider);
-    await verifyTitleTurn(base, provider);
-    await verifyTitleRejectsEmptyMessage(base, provider);
-    await verifyTitleRequiresAuth(base, provider);
-    await verifySecondTurnDoesNotDuplicateParticipant(base);
-    await verifyManifestPersisted(dataDir);
-    await verifyTokenRevocationAndEnrollment(dataDir);
-    await verifyDeviceRoutes(base);
-    await verifyPairing(base, config);
-  } finally {
-    bot.stop();
-    devices.closeAll();
-    broker.stop();
-    await rm(dataDir, { recursive: true, force: true });
-  }
 }
 
 async function verifyHealth(base: string): Promise<void> {
@@ -811,22 +811,10 @@ function testConfig(dataDir: string): ApiAppConfig {
   };
 }
 
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
-}
-
 function assertNonEmpty(value: unknown, label: string): void {
   if (typeof value === "string" && value.trim().length > 0) return;
   console.error(`${label}: expected a non-empty string`);
   process.exit(1);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 await verifyApiBot();

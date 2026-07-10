@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -9,10 +8,9 @@ import {
   readAccountTokenUsageRollups,
   readTokenUsageRollups,
 } from "@/lib/provider/token-usage";
+import { withTempDir } from "@/lib/verification/harness";
 
-const tempRoot = await mkdtemp(join(tmpdir(), "sandi-token-usage-"));
-
-try {
+await withTempDir("sandi-token-usage-", async (tempRoot) => {
   const usagePath = join(tempRoot, "tokens.jsonl");
   await writeFile(
     usagePath,
@@ -105,9 +103,7 @@ try {
   );
 
   console.log("token usage verification passed");
-} finally {
-  await rm(tempRoot, { recursive: true, force: true });
-}
+});
 
 function record(
   timestamp: string,

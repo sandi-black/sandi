@@ -7,6 +7,7 @@ import type {
   ConversationParticipant,
 } from "@/lib/conversations/types";
 import { participantMemoryRef } from "@/lib/identity/types";
+import { normalizeRefPrefix } from "@/lib/memory-refs";
 import type { MemoryContext as ToolMemoryContext } from "@/lib/pi-extension/memory-common";
 import {
   type MemoryHybridSearchResponse,
@@ -379,31 +380,6 @@ async function readIfExists(filepath: string): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-function normalizeRefPrefix(refPrefix: string): string {
-  const normalized = refPrefix.trim().replaceAll("\\", "/").replace(/^\/+/, "");
-  const parts = normalized.split("/");
-  if (
-    parts.length < 2 ||
-    parts.some((part) => part.length === 0 || part === "." || part === "..")
-  ) {
-    throw new Error(`Invalid memory scope ref prefix: ${refPrefix}`);
-  }
-  const root = parts[0];
-  if (
-    root === "system" ||
-    root === "self" ||
-    root === "household" ||
-    root === "topics" ||
-    root === "discord" ||
-    root === "github"
-  ) {
-    throw new Error(
-      `Conversation memory scope overlaps a core memory root: ${refPrefix}`,
-    );
-  }
-  return parts.join("/");
 }
 
 function resolveMemoryRef(root: string, refPrefix: string): string {

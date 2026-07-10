@@ -1,4 +1,5 @@
 import {
+  readPlatformContext,
   type SandiSurfaceContext,
   UNIFIED_RUNTIME_ENTRY,
 } from "@/lib/surface-context";
@@ -16,20 +17,5 @@ export const GITHUB_SURFACE_CONTEXT: SandiSurfaceContext = {
 };
 
 export function readGitHubPlatformContext(): string | undefined {
-  const raw = process.env["SANDI_PLATFORM_CONTEXT"]?.trim();
-  if (!raw) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "platform" in parsed &&
-      parsed.platform === "github"
-    ) {
-      return raw;
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
+  return readPlatformContext("github");
 }

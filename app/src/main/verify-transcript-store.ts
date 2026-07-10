@@ -3,6 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { SessionSummary } from "@shared/ipc-contract";
+
 import { createTranscriptStore } from "./transcript-store";
 
 // Round-trips the JSONL transcript and index behavior: append/read ordering,
@@ -81,6 +83,24 @@ async function main(): Promise<void> {
     );
     const repaired = await store.getTranscript(grace.conversationId);
     assert.equal(repaired.length, 2, "corrupt line skipped");
+
+    // appendEntry debounces the index write (see transcript-store.ts); the
+    // in-memory session list is current immediately, but the disk copy is not
+    // until flushIndex writes it through, the same escape hatch the app's
+    // quit path uses.
+    await store.flushIndex();
+    const diskIndexAfterFlush: { sessions: SessionSummary[] } = JSON.parse(
+      await readFile(join(dir, "index.json"), "utf8"),
+    );
+    assert.equal(
+      diskIndexAfterFlush.sessions.find(
+        (session) => session.conversationId === grace.conversationId,
+      )?.lastPreview,
+      "Hi Grace! What are we building today?",
+      "flushIndex writes a pending debounced update through immediately",
+    );
+    // Nothing left pending: a second flush is a harmless no-op.
+    await store.flushIndex();
 
     // A fresh store instance reads the same index back (atomic write landed).
     const reopened = await createTranscriptStore(dir);

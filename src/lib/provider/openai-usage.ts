@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { z } from "zod/v4";
+import { formatDuration } from "@/lib/duration";
+import { errorMessage } from "@/lib/errors";
 import type { PiAccountConfig } from "@/lib/provider/pi-account-routing";
 import { writePrivateTextFile } from "@/lib/state/private-files";
 
@@ -101,10 +103,7 @@ async function readOpenAIUsageLimitsForAccount(
     ];
     return { available: true, lines };
   } catch (error) {
-    return unavailable(
-      label,
-      error instanceof Error ? error.message : String(error),
-    );
+    return unavailable(label, errorMessage(error));
   }
 }
 
@@ -237,7 +236,9 @@ function formatWindows(
 function formatWindowName(window: RateLimitWindow): string {
   if (window.limit_window_seconds === 18_000) return "5h";
   if (window.limit_window_seconds === 604_800) return "week";
-  return formatDuration(window.limit_window_seconds);
+  return formatDuration(window.limit_window_seconds * 1_000, {
+    granularity: "minutes",
+  });
 }
 
 function formatWindowUsage(window: RateLimitWindow): string {
@@ -249,7 +250,7 @@ function formatWindowUsage(window: RateLimitWindow): string {
 
 function resetDescription(window: RateLimitWindow): string {
   if (window.reset_after_seconds !== undefined) {
-    return `, resets in ${formatDuration(window.reset_after_seconds)}`;
+    return `, resets in ${formatDuration(window.reset_after_seconds * 1_000, { granularity: "minutes" })}`;
   }
   if (window.reset_at !== undefined) {
     return `, resets at ${new Date(window.reset_at * 1000).toISOString()}`;
@@ -259,14 +260,4 @@ function resetDescription(window: RateLimitWindow): string {
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
-}
-
-function formatDuration(totalSeconds: number): string {
-  const seconds = Math.max(0, Math.round(totalSeconds));
-  const days = Math.floor(seconds / 86_400);
-  const hours = Math.floor((seconds % 86_400) / 3_600);
-  const minutes = Math.floor((seconds % 3_600) / 60);
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
 }

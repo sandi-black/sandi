@@ -25,6 +25,8 @@ import type {
   ConversationManifest,
   ConversationParticipant,
 } from "@/lib/conversations/types";
+import { formatDuration } from "@/lib/duration";
+import { errorMessage } from "@/lib/errors";
 import {
   findHumanIdentity,
   loadHumanIdentities,
@@ -47,6 +49,7 @@ import {
   type ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
 import { ThreadQueue } from "@/lib/turns/turn-queue";
+import { isRecord } from "@/lib/type-guards";
 import { issueDeviceCode } from "@/surfaces/discord/bot/device-auth";
 import {
   appendIgnoredConversationChannel,
@@ -100,6 +103,10 @@ import {
   EventWatcher,
 } from "@/surfaces/discord/events/watcher";
 import { DISCORD_SURFACE_CONTEXT } from "@/surfaces/discord/runtime/context";
+import {
+  eventTargetMatches,
+  formatTargetLabel,
+} from "@/surfaces/discord/shared/targets";
 
 const log = createLogger("bot");
 const FAILURE_NOTICE_COOLDOWN_MS = 60_000;
@@ -331,7 +338,7 @@ export class SandiBot {
       // unhandled rejection.
       void this.#handleInteraction(interaction).catch((error: unknown) => {
         log.error("failed to handle Discord interaction", {
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage(error),
         });
         void respondToFailedInteraction(interaction);
       });
@@ -551,7 +558,7 @@ export class SandiBot {
           this.#client.user?.username,
         ),
         sessionMode: "none",
-        accountRouting: accountRoutingForOneOffTurn(author),
+        accountRouting: accountRoutingFor(author),
         memoryContext: this.#memoryContext(undefined, [author]),
         thinking: PASSIVE_REPLY_GATE_THINKING,
         timeoutMs: PASSIVE_REPLY_GATE_TIMEOUT_MS,
@@ -611,7 +618,7 @@ export class SandiBot {
       });
     } catch (error) {
       log.warn("failed to capture reaction to sandi message", {
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     }
   }
@@ -817,7 +824,7 @@ export class SandiBot {
         log.error("failed to create Sandi message thread", {
           messageId: input.message.id,
           channelId: input.channel.id,
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage(error),
         });
         await sendThreadCreationFailureNotice(input.message, error);
         return;
@@ -883,7 +890,7 @@ export class SandiBot {
           message: input.prompt,
         }),
         sessionMode: "none",
-        accountRouting: accountRoutingForOneOffTurn(input.author),
+        accountRouting: accountRoutingFor(input.author),
         memoryContext: this.#memoryContext(undefined, [input.author]),
         thinking: MENTION_THREAD_TITLE_THINKING,
         timeoutMs: MENTION_THREAD_TITLE_TIMEOUT_MS,
@@ -1154,16 +1161,18 @@ export class SandiBot {
     }, TYPING_INTERVAL_MS);
 
     try {
-      const instructions = await this.#contextCompiler.compile({
-        conversation: input.conversation,
-        deliveryInstructions: DISCORD_DELIVERY_INSTRUCTIONS,
-        skillHintQuery: input.input,
-      });
-      const metadata = await this.#metadataWithReactionDigest({
-        conversation: input.conversation,
-        messageId: input.messageId,
-        metadata: input.metadata,
-      });
+      const [instructions, metadata] = await Promise.all([
+        this.#contextCompiler.compile({
+          conversation: input.conversation,
+          deliveryInstructions: DISCORD_DELIVERY_INSTRUCTIONS,
+          skillHintQuery: input.input,
+        }),
+        this.#metadataWithReactionDigest({
+          conversation: input.conversation,
+          messageId: input.messageId,
+          metadata: input.metadata,
+        }),
+      ]);
       log.info("starting provider turn", {
         conversationId: input.conversation.canonicalId,
         messageId: input.messageId,
@@ -1177,7 +1186,7 @@ export class SandiBot {
           input: formatUserTurn(input.author, input.input, metadata),
           sessionMode: "persistent" as const,
           platformContext: input.toolContext,
-          accountRouting: accountRoutingForPersistentTurn(input.author),
+          accountRouting: accountRoutingFor(input.author),
           surfaceContext: DISCORD_SURFACE_CONTEXT,
           memoryContext: this.#memoryContext(input.conversation),
           ...(lease ? { localToolBroker: lease.ticket } : {}),
@@ -1220,7 +1229,7 @@ export class SandiBot {
       log.error("conversation turn failed", {
         conversationId: input.conversation.canonicalId,
         messageId: input.messageId,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
       const failureReplyToMessageId =
         input.failureReplyToMessageId === false
@@ -1276,7 +1285,7 @@ export class SandiBot {
     } catch (error) {
       log.error("event turn failed to enqueue", {
         eventId: trigger.id,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     }
   }
@@ -1379,7 +1388,7 @@ export class SandiBot {
           input: formatUserTurn(author, input, metadata),
           sessionMode: "none" as const,
           platformContext: toolContextFromMessage(message, author),
-          accountRouting: accountRoutingForOneOffTurn(author),
+          accountRouting: accountRoutingFor(author),
           surfaceContext: DISCORD_SURFACE_CONTEXT,
           memoryContext: this.#memoryContext(undefined, [author]),
           ...(lease ? { localToolBroker: lease.ticket } : {}),
@@ -1405,7 +1414,7 @@ export class SandiBot {
       log.error("one-off mention failed", {
         messageId: message.id,
         channelId: message.channelId,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
       await this.#sendProviderFailureNotice({
         channel,
@@ -1457,7 +1466,7 @@ export class SandiBot {
     } catch (error) {
       log.warn("failed to compile context for status", {
         storageId,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
       return undefined;
     }
@@ -1492,7 +1501,7 @@ export class SandiBot {
       }
     } catch (error) {
       log.error("failed to send provider response", {
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     }
   }
@@ -1535,7 +1544,7 @@ export class SandiBot {
     } catch (error) {
       log.error("failed to send provider failure notice", {
         messageId: input.messageId,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     }
   }
@@ -1818,16 +1827,6 @@ function eventTargetFromInteraction(
   return { kind: "channel", channelId: interaction.channelId };
 }
 
-function eventTargetMatches(event: SandiEvent, target: EventTarget): boolean {
-  if (event.target.kind === "thread" && target.kind === "thread") {
-    return event.target.threadId === target.threadId;
-  }
-  if (event.target.kind === "channel" && target.kind === "channel") {
-    return event.target.channelId === target.channelId;
-  }
-  return false;
-}
-
 function formatScheduledEvents(input: {
   events: StoredEvent[];
   scope: "all" | "current";
@@ -1891,18 +1890,10 @@ function nextPeriodicRun(
 function formatNextRun(nextRun: Date | null): string {
   if (!nextRun || !Number.isFinite(nextRun.getTime())) return "";
   const deltaMs = nextRun.getTime() - Date.now();
-  if (deltaMs < 0) return `, overdue by ${formatDuration(-deltaMs)}`;
-  return `, next in ${formatDuration(deltaMs)}`;
-}
-
-function formatDuration(durationMs: number): string {
-  const totalMinutes = Math.max(0, Math.round(durationMs / 60_000));
-  const days = Math.floor(totalMinutes / (24 * 60));
-  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
-  const minutes = totalMinutes % 60;
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
+  const format = (ms: number) =>
+    formatDuration(ms, { granularity: "minutes", rounding: "round" });
+  if (deltaMs < 0) return `, overdue by ${format(-deltaMs)}`;
+  return `, next in ${format(deltaMs)}`;
 }
 
 function formatEventSummary(text: string): string {
@@ -1911,11 +1902,6 @@ function formatEventSummary(text: string): string {
     .map((line) => line.trim())
     .find((line) => line.length > 0);
   return limitText(firstLine ?? "[no instructions]", 160);
-}
-
-function formatTargetLabel(target: EventTarget | undefined): string {
-  if (!target) return "current conversation";
-  return target.kind === "thread" ? "this thread" : "this channel";
 }
 
 function formatEventTarget(target: EventTarget): string {
@@ -1944,10 +1930,6 @@ function providerFailureMessage(error: ProviderTurnError): string {
       ? "I hit a ChatGPT/Pi limit while trying to answer that."
       : "I hit a ChatGPT/Pi error while trying to answer that.";
   return `${prefix} The error was: ${inlineCode(error.message)}`;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function inlineCode(value: string): string {
@@ -2028,7 +2010,7 @@ async function sendTypingSafely(
     );
     log.warn("failed to send typing indicator", {
       channelId,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage(error),
     });
     return false;
   } finally {
@@ -2138,7 +2120,7 @@ async function addActivityFallbackReaction(input: {
     log.warn("failed to add activity fallback reaction", {
       channelId: input.channelId,
       messageId: input.messageId,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage(error),
     });
   }
 }
@@ -2223,15 +2205,10 @@ function eventAuthor(event: SandiEvent): ConversationParticipant {
   };
 }
 
-function accountRoutingForPersistentTurn(
-  author: ConversationParticipant,
-): PiAccountRoutingRequest {
-  const request: PiAccountRoutingRequest = {};
-  if (author.identityId) request.identityId = author.identityId;
-  return request;
-}
-
-function accountRoutingForOneOffTurn(
+// Persistent (thread-anchored) and one-off turns route to a Pi account the
+// same way today, but callers name the intent they mean at each call site
+// rather than sharing one ambiguous helper name.
+function accountRoutingFor(
   author: ConversationParticipant,
 ): PiAccountRoutingRequest {
   const request: PiAccountRoutingRequest = {};
@@ -2667,8 +2644,4 @@ function estimatePromptTokens(text: string): number {
   const wordsAndSymbols = text.match(/\p{L}+|\p{N}+|[^\s\p{L}\p{N}]/gu) ?? [];
   const byteAdjustment = Math.ceil(Buffer.byteLength(text, "utf8") / 12);
   return Math.max(1, Math.ceil(wordsAndSymbols.length * 0.75 + byteAdjustment));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }

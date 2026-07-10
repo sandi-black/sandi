@@ -1,15 +1,24 @@
 import type { Dirent } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
+
+import { isMissingFileError } from "../fs-errors";
 
 export type PolicySummary = {
   ref: string;
   title: string;
 };
 
-export async function listPolicies(root: string): Promise<PolicySummary[]> {
-  return listPoliciesFromRoots([root]);
-}
+// listPoliciesFromRoots recursively walks every policies root on every call
+// (soul/policy sections get recompiled each turn), but a policy file's title
+// only changes when its content does. Caching the extracted title by path +
+// mtimeMs + size avoids re-reading and re-parsing every policy file's full
+// content just to pull the first `# heading` out of files that have not
+// changed since the last compile.
+const TITLE_CACHE = new Map<
+  string,
+  { statKey: string; title: string | null }
+>();
 
 export async function listPoliciesFromRoots(
   roots: readonly string[],
@@ -17,6 +26,7 @@ export async function listPoliciesFromRoots(
   const absoluteRoots = uniqueResolvedRoots(roots);
   const refs: string[] = [];
   const seenRefs = new Set<string>();
+  const pathByRef = new Map<string, string>();
   for (const root of absoluteRoots) {
     const rootRefs: string[] = [];
     await collectPolicyRefs(root, root, rootRefs);
@@ -24,16 +34,44 @@ export async function listPoliciesFromRoots(
       if (seenRefs.has(ref)) continue;
       seenRefs.add(ref);
       refs.push(ref);
+      pathByRef.set(ref, resolvePolicyRef(root, ref));
     }
   }
   const policies = await Promise.all(
     refs.map(async (ref) => ({
       ref,
       title:
-        titleFromMarkdown(await readPolicyFromRoots(absoluteRoots, ref)) ?? ref,
+        (await cachedPolicyTitle(absoluteRoots, ref, pathByRef.get(ref))) ??
+        ref,
     })),
   );
   return policies.sort((a, b) => a.ref.localeCompare(b.ref));
+}
+
+async function cachedPolicyTitle(
+  roots: readonly string[],
+  ref: string,
+  path: string | undefined,
+): Promise<string | null> {
+  const statKey = path ? await fileStatKey(path) : null;
+  const cacheKey = path ?? ref;
+  if (statKey) {
+    const cached = TITLE_CACHE.get(cacheKey);
+    if (cached && cached.statKey === statKey) return cached.title;
+  }
+
+  const title = titleFromMarkdown(await readPolicyFromRoots(roots, ref));
+  if (statKey) TITLE_CACHE.set(cacheKey, { statKey, title });
+  return title;
+}
+
+async function fileStatKey(path: string): Promise<string | null> {
+  try {
+    const info = await stat(path);
+    return `${info.mtimeMs}:${info.size}`;
+  } catch {
+    return null;
+  }
 }
 
 export async function readPolicyFromRoots(
@@ -45,7 +83,7 @@ export async function readPolicyFromRoots(
     try {
       return await readPolicy(root, ref);
     } catch (error) {
-      if (!isMissingPathError(error)) throw error;
+      if (!isMissingFileError(error)) throw error;
       lastMissingError = error;
     }
   }
@@ -133,13 +171,4 @@ function uniqueResolvedRoots(roots: readonly string[]): string[] {
     result.push(resolved);
   }
   return result;
-}
-
-function isMissingPathError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error.code === "ENOENT" || error.code === "ENOTDIR")
-  );
 }

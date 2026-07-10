@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { z } from "zod/v4";
 import { readEnv } from "@/lib/config/env";
+import { isMissingFileError } from "@/lib/fs-errors";
 import {
   atomicWriteInPlace,
   withManagedWrite,
@@ -224,13 +225,4 @@ function hexEquals(a: string, b: string): boolean {
   const right = Buffer.from(b, "utf8");
   if (left.length !== right.length) return false;
   return timingSafeEqual(left, right);
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error.code === "ENOENT" || error.code === "ENOTDIR")
-  );
 }

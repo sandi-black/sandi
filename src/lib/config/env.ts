@@ -69,7 +69,10 @@ export function requireEnv(names: readonly string[]): string {
   );
 }
 
-function readNumberEnv(names: readonly string[], defaultValue: number): number {
+export function readNumberEnv(
+  names: readonly string[],
+  defaultValue: number,
+): number {
   const value = readEnv(names);
   if (!value) return defaultValue;
   const parsed = Number.parseInt(value, 10);
@@ -77,6 +80,32 @@ function readNumberEnv(names: readonly string[], defaultValue: number): number {
     throw new Error(`${names[0]} must be a positive integer`);
   }
   return parsed;
+}
+
+export function readBooleanEnv(
+  names: readonly string[],
+  defaultValue: boolean,
+): boolean {
+  const value = readEnv(names);
+  if (!value) return defaultValue;
+  const normalized = value.toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "no") {
+    return false;
+  }
+  throw new Error(`${names[0]} must be true or false`);
+}
+
+export function readCsvEnv(names: readonly string[]): string[] | undefined {
+  const value = readEnv(names);
+  if (!value) return undefined;
+  const items = value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  return items.length > 0 ? items : undefined;
 }
 
 function defaultRemindersRoot(dataDir: string): string {

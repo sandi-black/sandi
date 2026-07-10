@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { z } from "zod/v4";
+import { errorMessage } from "@/lib/errors";
 import {
   CANONICAL_BASE64,
   imageBytesMatchMime,
@@ -531,7 +532,7 @@ function runPowerShell(
         stdout: "",
         stderr: "",
         code: null,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     });
     child.on("close", (code) => {
@@ -647,8 +648,4 @@ function okImage(output: string, dataBase64: string): ToolCallOutcome {
 
 function refused(error: string): ToolCallOutcome {
   return { ok: false, output: "", error };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

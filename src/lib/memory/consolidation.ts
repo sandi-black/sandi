@@ -6,6 +6,7 @@ import type {
   ConversationParticipant,
 } from "@/lib/conversations/types";
 import { participantRef } from "@/lib/conversations/types";
+import { isMissingFileError } from "@/lib/fs-errors";
 import type { Logger } from "@/lib/logging";
 import { DREAMING_SURFACE_CONTEXT } from "@/lib/memory/dreaming-context";
 import {
@@ -243,15 +244,6 @@ function routingParticipant(
     (participant) => participant.identityId,
   );
   return withIdentity ?? starter ?? manifest.participants[0];
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "ENOENT"
-  );
 }
 
 function recapSummary(recap: string): string {

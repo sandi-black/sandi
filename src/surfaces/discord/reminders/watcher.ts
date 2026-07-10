@@ -3,6 +3,7 @@ import { existsSync, watch } from "node:fs";
 import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
+import { errorMessage } from "@/lib/errors";
 import { createLogger } from "@/lib/logging";
 import type { Reminder } from "@/surfaces/discord/reminders/schemas";
 import { readReminder } from "@/surfaces/discord/reminders/store";
@@ -92,7 +93,7 @@ export class ReminderWatcher {
     } catch (error) {
       log.error("invalid reminder file", {
         id,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
       return;
     }
@@ -104,7 +105,7 @@ export class ReminderWatcher {
     } catch (error) {
       log.error("failed to schedule reminder", {
         id,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     }
   }

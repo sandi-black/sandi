@@ -1,10 +1,7 @@
 import { Type } from "@earendil-works/pi-ai";
-import {
-  type AgentToolResult,
-  defineTool,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { textResult } from "./tool-results";
 import { z } from "zod/v4";
 
 const PLACES_TEXT_SEARCH_URL =
@@ -543,14 +540,4 @@ function removeUndefined(
   return Object.fromEntries(
     Object.entries(input).filter((entry) => entry[1] !== undefined),
   );
-}
-
-function textResult(
-  text: string,
-  details: Record<string, unknown>,
-): AgentToolResult<Record<string, unknown>> {
-  return {
-    content: [{ type: "text", text }],
-    details,
-  };
 }

@@ -3,14 +3,11 @@ import { appendFile, chmod, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { Type } from "@earendil-works/pi-ai";
-import {
-  type AgentToolResult,
-  defineTool,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { withManagedWrite } from "../state/managed-write";
 import { PRIVATE_FILE_MODE } from "../state/private-files";
+import { textResult } from "./tool-results";
 
 type FeedbackTargetType = "memory" | "skill";
 type FeedbackSignal = "useful" | "distracting";
@@ -192,14 +189,4 @@ function cleanContext(
 async function chmodPrivate(path: string): Promise<void> {
   if (process.platform === "win32") return;
   await chmod(path, PRIVATE_FILE_MODE);
-}
-
-function textResult(
-  text: string,
-  details: Record<string, unknown>,
-): AgentToolResult<Record<string, unknown>> {
-  return {
-    content: [{ type: "text", text }],
-    details,
-  };
 }

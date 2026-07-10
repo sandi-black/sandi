@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import { Type } from "@earendil-works/pi-ai";
 import {
   type AgentToolResult,
@@ -7,6 +5,7 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 
+import { generateTimestampId } from "../../../lib/ids";
 import { discordChannelIdFromRef } from "../discord/ids";
 import type { EventCreator, EventTarget, SandiEvent } from "../events/schemas";
 import {
@@ -17,6 +16,7 @@ import {
   writeEvent,
 } from "../events/store";
 import { readDiscordPlatformContext } from "../runtime/context";
+import { eventTargetMatches } from "../shared/targets";
 import { z } from "zod/v4";
 
 type DiscordContext = {
@@ -135,7 +135,9 @@ export default function eventToolsExtension(pi: ExtensionAPI): void {
           channelId: params.channelId,
         });
         const type = inferEventType(params.type, params.at, params.schedule);
-        const id = normalizeEventId(params.id ?? generatedEventId(type));
+        const id = normalizeEventId(
+          params.id ?? generateTimestampId(type.replace("-", "_")),
+        );
         const event = buildEvent({
           type,
           target,
@@ -326,16 +328,6 @@ function targetForScope(
   throw new Error(`Unknown event list scope: ${scope}`);
 }
 
-function eventTargetMatches(event: SandiEvent, target: EventTarget): boolean {
-  if (event.target.kind === "thread" && target.kind === "thread") {
-    return event.target.threadId === target.threadId;
-  }
-  if (event.target.kind === "channel" && target.kind === "channel") {
-    return event.target.channelId === target.channelId;
-  }
-  return false;
-}
-
 function inferEventType(
   requested: string | undefined,
   at: string | undefined,
@@ -386,14 +378,6 @@ function buildEvent(input: {
     timezone:
       input.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
-}
-
-function generatedEventId(type: SandiEvent["type"]): string {
-  const stamp = new Date()
-    .toISOString()
-    .replaceAll(/[^0-9]/g, "")
-    .slice(0, 14);
-  return `${type.replace("-", "_")}_${stamp}_${randomUUID().slice(0, 8)}`;
 }
 
 function formatEvent(id: string, event: SandiEvent): string {

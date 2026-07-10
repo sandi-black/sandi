@@ -11,6 +11,9 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
+import { isRecord } from "../type-guards";
+import { assetsRoot, dataRoot } from "./roots";
+import { textResult } from "./tool-results";
 import { z } from "zod/v4";
 
 const PROVIDER = "openai-codex";
@@ -485,14 +488,6 @@ function surfaceAttachmentsRoot(): string {
   );
 }
 
-function assetsRoot(): string {
-  return resolve(process.env["SANDI_ASSETS_ROOT"]?.trim() || "assets");
-}
-
-function dataRoot(): string {
-  return resolve(process.env["SANDI_DATA_DIR"]?.trim() || "data");
-}
-
 function isPathInside(path: string, root: string): boolean {
   const normalizedRoot = root.endsWith("/") ? root : `${root}/`;
   return path === root || path.startsWith(normalizedRoot);
@@ -569,18 +564,4 @@ function optionalDetails(
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function textResult(
-  text: string,
-  details: Record<string, unknown>,
-): AgentToolResult<Record<string, unknown>> {
-  return {
-    content: [{ type: "text", text }],
-    details,
-  };
 }

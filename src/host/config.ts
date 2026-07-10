@@ -1,4 +1,4 @@
-import { readEnv } from "@/lib/config/env";
+import { type CoreConfig, readBooleanEnv, readEnv } from "@/lib/config/env";
 import { type ApiAppConfig, loadApiAppConfig } from "@/surfaces/api/config";
 import {
   type DiscordAppConfig,
@@ -69,46 +69,34 @@ export function loadHostConfig(): HostConfig {
   };
 
   if (discordEnabled) {
-    config.discord = {
-      pi: api.pi,
-      paths: api.paths,
-      ...(api.environmentHint !== undefined
-        ? { environmentHint: api.environmentHint }
-        : {}),
-      discord: loadDiscordConfig(),
-    };
+    config.discord = composeAppConfig(api, { discord: loadDiscordConfig() });
   }
 
   if (githubEnabled) {
-    config.github = {
-      pi: api.pi,
-      paths: api.paths,
-      ...(api.environmentHint !== undefined
-        ? { environmentHint: api.environmentHint }
-        : {}),
-      github: loadGitHubConfig(),
-    };
+    config.github = composeAppConfig(api, { github: loadGitHubConfig() });
   }
 
   return config;
 }
 
-function hasDiscordToken(): boolean {
-  return readEnv(["DISCORD_BOT_TOKEN", "DISCORD_TOKEN"]) !== undefined;
+// Both surface configs are the shared core (pi, paths, environmentHint) plus
+// that surface's own config block; this merges the two consistently so an
+// unset environmentHint stays unset rather than becoming `undefined` under
+// exactOptionalPropertyTypes.
+function composeAppConfig<T extends object>(
+  core: CoreConfig,
+  surfaceSpecific: T,
+): CoreConfig & T {
+  return {
+    pi: core.pi,
+    paths: core.paths,
+    ...(core.environmentHint !== undefined
+      ? { environmentHint: core.environmentHint }
+      : {}),
+    ...surfaceSpecific,
+  };
 }
 
-function readBooleanEnv(
-  names: readonly string[],
-  defaultValue: boolean,
-): boolean {
-  const value = readEnv(names);
-  if (!value) return defaultValue;
-  const normalized = value.toLowerCase();
-  if (normalized === "true" || normalized === "1" || normalized === "yes") {
-    return true;
-  }
-  if (normalized === "false" || normalized === "0" || normalized === "no") {
-    return false;
-  }
-  throw new Error(`${names[0]} must be true or false`);
+function hasDiscordToken(): boolean {
+  return readEnv(["DISCORD_BOT_TOKEN", "DISCORD_TOKEN"]) !== undefined;
 }

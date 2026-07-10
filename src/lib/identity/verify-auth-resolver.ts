@@ -1,5 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -9,6 +8,7 @@ import {
   loadHumanIdentities,
 } from "@/lib/identity/resolver";
 import type { HumanIdentityConfig } from "@/lib/identity/types";
+import { assertEqual, withTempDir } from "@/lib/verification/harness";
 
 async function verifyAuthResolver(): Promise<void> {
   verifyStrictResolverRequiresImmutableId();
@@ -78,8 +78,7 @@ function verifyStrictResolverRequiresImmutableId(): void {
 }
 
 async function verifyIdentityStoreHonorsRemoval(): Promise<void> {
-  const dir = await mkdtemp(join(tmpdir(), "sandi-identity-store-"));
-  try {
+  await withTempDir("sandi-identity-store-", async (dir) => {
     const configDir = join(dir, "config");
     const path = join(configDir, "identities", "humans.json");
     await mkdir(join(configDir, "identities"), { recursive: true });
@@ -106,14 +105,11 @@ async function verifyIdentityStoreHonorsRemoval(): Promise<void> {
       "identity store drops a removed identity after reload",
     );
     console.log("ok identity store honors removal without restart");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  });
 }
 
 async function verifyDuplicateIdentitiesRejected(): Promise<void> {
-  const dir = await mkdtemp(join(tmpdir(), "sandi-identity-dup-"));
-  try {
+  await withTempDir("sandi-identity-dup-", async (dir) => {
     const configDir = join(dir, "config");
     const path = join(configDir, "identities", "humans.json");
     await mkdir(join(configDir, "identities"), { recursive: true });
@@ -162,9 +158,7 @@ async function verifyDuplicateIdentitiesRejected(): Promise<void> {
       "duplicate platform id is rejected at load",
     );
     console.log("ok loadHumanIdentities rejects ambiguous duplicate ids");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  });
 }
 
 async function loadThrows(configDirs: string[]): Promise<boolean> {
@@ -190,14 +184,6 @@ async function writeIdentities(path: string, ids: string[]): Promise<void> {
     })),
   };
   await writeFile(path, `${JSON.stringify(file, null, 2)}\n`, "utf8");
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
 }
 
 await verifyAuthResolver();

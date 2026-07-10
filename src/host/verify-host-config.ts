@@ -1,4 +1,5 @@
 import { loadHostConfig } from "@/host/config";
+import { assert, assertEqual } from "@/lib/verification/harness";
 
 // Surface gating env that the host keys off. Cleared before each scenario so a
 // developer's own .env (loaded by dotenv at import) cannot leak a token into a
@@ -166,20 +167,6 @@ function withEnv(overrides: Record<string, string>, run: () => void): void {
       }
     }
   }
-}
-
-function assert(condition: boolean, label: string): void {
-  if (condition) return;
-  console.error(`assertion failed: ${label}`);
-  process.exit(1);
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
 }
 
 verifyHostConfig();

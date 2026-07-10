@@ -1,3 +1,4 @@
+import { assert, assertEqual } from "@/lib/verification/harness";
 import { BrokerDesktopHands } from "@/surfaces/api/devices/desktop-hands";
 import { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
 import { ToolBroker } from "@/surfaces/api/devices/tool-broker";
@@ -192,20 +193,6 @@ async function verifyLeaseForIdentity(): Promise<void> {
     broker.stop();
     registry.closeAll();
   }
-}
-
-function assert(condition: boolean, label: string): void {
-  if (condition) return;
-  console.error(`assertion failed: ${label}`);
-  process.exit(1);
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  console.error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
-  process.exit(1);
 }
 
 await verifyDesktopHands();

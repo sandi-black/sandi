@@ -1,13 +1,5 @@
 import assert from "node:assert/strict";
-import {
-  mkdir,
-  mkdtemp,
-  readdir,
-  rm,
-  utimes,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readdir, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -27,6 +19,7 @@ import {
   loadCurrentEmbeddingIndex,
 } from "@/lib/retrieval/embedding-index";
 import type { EmbeddingEngine } from "@/lib/retrieval/embeddings";
+import { withTempDir } from "@/lib/verification/harness";
 
 async function verifySkillIndex(dataDir: string): Promise<void> {
   const skillsRoot = join(dataDir, "skills");
@@ -182,23 +175,23 @@ const queryOnlyEmbeddingEngine: EmbeddingEngine = {
   },
 };
 
-const tempRoot = await mkdtemp(join(tmpdir(), "sandi-embedding-index-"));
 const previousDataDir = process.env["SANDI_DATA_DIR"];
 
-try {
-  const dataDir = join(tempRoot, "data");
-  process.env["SANDI_DATA_DIR"] = dataDir;
-  await verifySkillIndex(dataDir);
-  await verifyMemoryIndex(dataDir);
-  console.log("embedding index verification passed");
-} finally {
-  if (previousDataDir === undefined) {
-    delete process.env["SANDI_DATA_DIR"];
-  } else {
-    process.env["SANDI_DATA_DIR"] = previousDataDir;
+await withTempDir("sandi-embedding-index-", async (tempRoot) => {
+  try {
+    const dataDir = join(tempRoot, "data");
+    process.env["SANDI_DATA_DIR"] = dataDir;
+    await verifySkillIndex(dataDir);
+    await verifyMemoryIndex(dataDir);
+    console.log("embedding index verification passed");
+  } finally {
+    if (previousDataDir === undefined) {
+      delete process.env["SANDI_DATA_DIR"];
+    } else {
+      process.env["SANDI_DATA_DIR"] = previousDataDir;
+    }
   }
-  await rm(tempRoot, { recursive: true, force: true });
-}
+});
 
 async function writeSkill(input: {
   root: string;

@@ -1,3 +1,4 @@
+import { errorMessage } from "../errors";
 import { searchBm25 } from "./bm25";
 import {
   cosineSimilarity,
@@ -236,7 +237,7 @@ async function scoreEmbeddings(
     return {
       status: {
         available: false,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: errorMessage(error),
       },
       scores: new Map(),
     };

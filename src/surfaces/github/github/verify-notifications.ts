@@ -1,3 +1,4 @@
+import { assert, assertEqual } from "@/lib/verification/harness";
 import type {
   GitHubNotification,
   GitHubRepository,
@@ -302,16 +303,4 @@ function githubUser(login: string, id: number): GitHubUser {
     html_url: `https://github.com/${login}`,
     type: "User",
   };
-}
-
-function assert(value: boolean, label: string): void {
-  if (value) return;
-  throw new Error(label);
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  if (actual === expected) return;
-  throw new Error(
-    `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-  );
 }

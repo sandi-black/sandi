@@ -14,32 +14,6 @@ import { z } from "zod/v4";
 // response. Every shape on the wire is parsed at its boundary so neither side
 // trusts the other's JSON.
 
-// The proxy tools registered for api turns. The names are deliberately distinct
-// from pi's seven built-ins (read, bash, edit, write, grep, find, ls), which the
-// api surface disables with --no-builtin-tools: a shared name would be caught by
-// pi's name-based tool exclusion and disabled along with the built-in.
-export const LocalToolNameSchema = z.enum([
-  "local_read",
-  "local_write",
-  "local_edit",
-  "local_ls",
-  "local_glob",
-  "local_grep",
-  "local_bash",
-  // Machine-state tools. Unlike the file and shell tools, which run on the one
-  // desktop leased for the turn, these read the shape of a desktop (its
-  // monitors, its open windows, a screenshot) and accept a `desktop` selector so
-  // Sandi can target any of the caller's connected desktops, not only the
-  // current one. `local_list_desktops` is the discovery call that names them.
-  "local_list_desktops",
-  "local_list_monitors",
-  "local_list_windows",
-  "local_screenshot",
-]);
-export type LocalToolName = z.infer<typeof LocalToolNameSchema>;
-export const LOCAL_TOOL_NAMES: readonly LocalToolName[] =
-  LocalToolNameSchema.options;
-
 // Per-tool parameter schemas. The desktop client validates an incoming call
 // against these before it touches the filesystem or spawns a shell, so a
 // malformed dispatch is rejected rather than acted on. The pi-side extension

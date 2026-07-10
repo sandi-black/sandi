@@ -1,6 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 
+import { normalizeRefPrefix } from "../memory-refs";
 import { z } from "zod/v4";
 
 export type MemoryContext = {
@@ -247,31 +248,6 @@ function normalizeRef(ref: string): string {
   const filename = parts.at(-1);
   if (!filename?.endsWith(".md")) {
     throw new Error("Memory refs must point to Markdown files.");
-  }
-  return parts.join("/");
-}
-
-function normalizeRefPrefix(refPrefix: string): string {
-  const normalized = refPrefix.trim().replaceAll("\\", "/").replace(/^\/+/, "");
-  const parts = normalized.split("/");
-  if (
-    parts.length < 2 ||
-    parts.some((part) => part.length === 0 || part === "." || part === "..")
-  ) {
-    throw new Error(`Invalid memory scope ref prefix: ${refPrefix}`);
-  }
-  const root = parts[0];
-  if (
-    root === "system" ||
-    root === "self" ||
-    root === "household" ||
-    root === "topics" ||
-    root === "discord" ||
-    root === "github"
-  ) {
-    throw new Error(
-      `Conversation memory scope overlaps a core memory root: ${refPrefix}`,
-    );
   }
   return parts.join("/");
 }

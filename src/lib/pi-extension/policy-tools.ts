@@ -1,14 +1,11 @@
 import { Type } from "@earendil-works/pi-ai";
-import {
-  type AgentToolResult,
-  defineTool,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import {
   listPoliciesFromRoots,
   readPolicyFromRoots,
 } from "../context/policies";
+import { textResult } from "./tool-results";
 
 const PolicyRefParam = Type.String({
   description:
@@ -80,14 +77,4 @@ function uniquePolicyRoots(roots: readonly string[]): string[] {
     result.push(root);
   }
   return result;
-}
-
-function textResult(
-  text: string,
-  details: Record<string, unknown>,
-): AgentToolResult<Record<string, unknown>> {
-  return {
-    content: [{ type: "text", text }],
-    details,
-  };
 }

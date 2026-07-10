@@ -1,12 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
+import { assert, withTempDir } from "@/lib/verification/harness";
 import { GitHubNotificationState } from "@/surfaces/github/github/state";
 
-const dataDir = await mkdtemp(join(tmpdir(), "sandi-github-state-"));
-
-try {
+await withTempDir("sandi-github-state-", async (dataDir) => {
   const state = new GitHubNotificationState(dataDir);
   await Promise.all([
     state.markProcessed(processedTrigger("first")),
@@ -59,9 +54,7 @@ try {
   );
 
   console.log("GitHub notification state verification passed");
-} finally {
-  await rm(dataDir, { recursive: true, force: true });
-}
+});
 
 function processedTrigger(key: string) {
   return {
@@ -71,9 +64,4 @@ function processedTrigger(key: string) {
     repository: "earendil-works/sandi",
     subject: `issue:${key}`,
   };
-}
-
-function assert(value: boolean, label: string): void {
-  if (value) return;
-  throw new Error(label);
 }

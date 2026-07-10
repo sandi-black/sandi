@@ -13,9 +13,11 @@ import {
   type User,
 } from "discord.js";
 
+import { errorMessage } from "@/lib/errors";
 import { createLogger } from "@/lib/logging";
+import { isRecord } from "@/lib/type-guards";
 import type { EventTarget } from "@/surfaces/discord/events/schemas";
-import { nextReminderRecurrenceRun } from "@/surfaces/discord/reminders/recurrence";
+import { completedReminder } from "@/surfaces/discord/reminders/recurrence";
 import type {
   Reminder,
   ReminderMessageRef,
@@ -31,6 +33,10 @@ import {
   type ReminderTrigger,
   ReminderWatcher,
 } from "@/surfaces/discord/reminders/watcher";
+import {
+  formatTargetLabel,
+  targetMatches,
+} from "@/surfaces/discord/shared/targets";
 
 const log = createLogger("reminders");
 const MAX_REMINDER_MESSAGES_TRACKED = 20;
@@ -137,7 +143,7 @@ export class ReminderManager {
       }
     } catch (error) {
       log.warn("failed to handle reminder interaction", {
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
       await respondToInteractionFailure(interaction);
       return true;
@@ -184,7 +190,7 @@ export class ReminderManager {
     } catch (error) {
       log.warn("reminder disappeared before firing", {
         id: trigger.id,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
       return;
     }
@@ -214,7 +220,7 @@ export class ReminderManager {
     } catch (error) {
       log.error("failed to send reminder", {
         id: trigger.id,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
       return;
     }
@@ -303,7 +309,7 @@ export class ReminderManager {
     } catch (error) {
       log.warn("failed to run reminder done side effects", {
         id,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     }
   }
@@ -412,7 +418,7 @@ export class ReminderManager {
           log.warn("failed to update reminder message", {
             id,
             messageId: ref.messageId,
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessage(error),
           });
         }
       }),
@@ -610,31 +616,9 @@ async function deleteEphemeralReply(
     await interaction.deleteReply();
   } catch (error) {
     log.warn("failed to delete ephemeral reminder response", {
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage(error),
     });
   }
-}
-
-function completedReminder(reminder: Reminder, doneBy: ReminderUser): Reminder {
-  const completedAt = new Date();
-  const nextRun = nextReminderRecurrenceRun(reminder, completedAt);
-  if (nextRun) {
-    return {
-      ...reminder,
-      status: "active",
-      nextFireAt: nextRun.toISOString(),
-      fireCount: 0,
-      messageRefs: [],
-      doneAt: completedAt.toISOString(),
-      doneBy,
-    };
-  }
-  return {
-    ...reminder,
-    status: "done",
-    doneAt: completedAt.toISOString(),
-    doneBy,
-  };
 }
 
 function doneInteractionMessage(reminder: Reminder, removed: boolean): string {
@@ -682,16 +666,6 @@ function userFromDiscordUser(user: User, member?: unknown): ReminderUser {
   return reminderUser;
 }
 
-function targetMatches(reminder: Reminder, target: EventTarget): boolean {
-  if (reminder.target.kind === "thread" && target.kind === "thread") {
-    return reminder.target.threadId === target.threadId;
-  }
-  if (reminder.target.kind === "channel" && target.kind === "channel") {
-    return reminder.target.channelId === target.channelId;
-  }
-  return false;
-}
-
 function formatReminderLine(
   item: StoredReminder,
   scope: "all" | "current",
@@ -717,11 +691,6 @@ function formatReminderSummary(text: string): string {
     .map((line) => line.trim())
     .find((line) => line.length > 0);
   return limitText(firstLine ?? "[no reminder text]", 160);
-}
-
-function formatTargetLabel(target: EventTarget | undefined): string {
-  if (!target) return "current conversation";
-  return target.kind === "thread" ? "this thread" : "this channel";
 }
 
 function formatReminderTarget(target: Reminder["target"]): string {
@@ -804,10 +773,6 @@ function isReminderChannel(
   if (typeof channel["send"] !== "function") return false;
   if (!isRecord(channel["messages"])) return false;
   return typeof channel["messages"]["fetch"] === "function";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function inlineCode(value: string): string {

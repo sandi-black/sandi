@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { isRecord, withTempDir } from "@/lib/verification/harness";
 import {
   appendIgnoredConversationChannel,
   IGNORED_CHANNELS_PATH,
@@ -10,9 +10,7 @@ import {
   removeIgnoredConversationChannel,
 } from "@/surfaces/discord/bot/ignored-channels";
 
-const dataDir = await mkdtemp(join(tmpdir(), "sandi-ignored-channels-"));
-
-try {
+await withTempDir("sandi-ignored-channels-", async (dataDir) => {
   // A missing file means nothing is ignored.
   const empty = await loadIgnoredConversationChannels(dataDir);
   assert.equal(empty.size, 0);
@@ -65,10 +63,4 @@ try {
   assert.equal(nonNumeric.size, 0);
 
   console.log("Discord ignored channels verification passed");
-} finally {
-  await rm(dataDir, { recursive: true, force: true });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+});

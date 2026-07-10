@@ -1,12 +1,10 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { assert, withTempDir } from "@/lib/verification/harness";
 import { GhCli, GhCliError } from "@/surfaces/github/github/gh-cli";
 
-const workDir = await mkdtemp(join(tmpdir(), "sandi-gh-cli-"));
-
-try {
+await withTempDir("sandi-gh-cli-", async (workDir) => {
   // A fake gh that hangs well past the timeout, so the test exercises GhCli's
   // own deadline. The command must be one the platform can actually launch: an
   // extensionless shell script on POSIX, and a .cmd on Windows (where GhCli runs
@@ -50,11 +48,4 @@ try {
     `gh timeout should settle promptly; elapsed ${elapsedMs}ms`,
   );
   console.log("GitHub gh cli verification passed");
-} finally {
-  await rm(workDir, { recursive: true, force: true });
-}
-
-function assert(value: boolean, label: string): void {
-  if (value) return;
-  throw new Error(label);
-}
+});

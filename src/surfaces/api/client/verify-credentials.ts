@@ -1,8 +1,9 @@
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { projectDirs } from "@/lib/config/platform-dirs";
+import { assert, withTempDir } from "@/lib/verification/harness";
 import {
   DEFAULT_SERVER_URL,
   desktopConfigPath,
@@ -25,8 +26,7 @@ const ROTATED_TOKEN =
   "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
 async function verifyCredentials(): Promise<void> {
-  const dir = await mkdtemp(join(tmpdir(), "sandi-credentials-"));
-  try {
+  await withTempDir("sandi-credentials-", async (dir) => {
     const path = join(dir, "nested", "desktop.json");
     const credentials = {
       url: "http://127.0.0.1:8787",
@@ -129,9 +129,7 @@ async function verifyCredentials(): Promise<void> {
     verifyLoginParse();
     verifyServerUrlResolution();
     await verifyLegacyMigration(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  });
   console.log("credentials verification passed");
 }
 
@@ -244,12 +242,6 @@ async function verifyLegacyMigration(dir: string): Promise<void> {
     else process.env["SANDI_DESKTOP_CONFIG"] = previous;
   }
   console.log("ok a legacy ~/.sandi config migrates once to the OS config dir");
-}
-
-function assert(condition: unknown, label: string): asserts condition {
-  if (condition) return;
-  console.error(`assertion failed: ${label}`);
-  process.exit(1);
 }
 
 await verifyCredentials();

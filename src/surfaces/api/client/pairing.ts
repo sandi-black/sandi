@@ -1,6 +1,7 @@
 import { hostname } from "node:os";
 
 import { z } from "zod/v4";
+import { errorMessage } from "@/lib/errors";
 import type { DesktopCredentials } from "@/surfaces/api/client/credentials";
 import { type JsonResponse, postJson } from "@/surfaces/api/client/http";
 
@@ -41,7 +42,7 @@ export async function pairDesktop(input: {
   } catch (error) {
     return {
       ok: false,
-      error: `could not reach ${input.url}: ${error instanceof Error ? error.message : String(error)}`,
+      error: `could not reach ${input.url}: ${errorMessage(error)}`,
     };
   }
   if (response.status !== 200) {

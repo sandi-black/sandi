@@ -1,5 +1,6 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 
+import { assertEqual } from "../../../lib/verification/harness";
 import {
   classifyAssistantEvent,
   createChunkRelay,
@@ -292,14 +293,6 @@ function restoreEnv(key: string, value: string | undefined): void {
   } else {
     process.env[key] = value;
   }
-}
-
-function assertEqual(actual: unknown, expected: unknown, label: string): void {
-  const a = JSON.stringify(actual);
-  const b = JSON.stringify(expected);
-  if (a === b) return;
-  console.error(`${label}: expected ${b}, got ${a}`);
-  process.exit(1);
 }
 
 await verifyResponseStream();

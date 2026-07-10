@@ -72,6 +72,17 @@ const IndexSchema = z.object({
 
 const PREVIEW_CHARS = 120;
 
+// appendEntry fires on every user message and every settled turn; the
+// sidebar's list and preview come from the in-memory `sessions` array
+// (updated synchronously below), not from index.json, so a debounced write
+// never shows up as stale UI. index.json only matters again on the next
+// startup, and only for sort order and preview text: the conversation
+// content itself lives in the per-conversation JSONL files, appended
+// immediately and never debounced. A short trailing debounce, flushed on
+// quit, turns the common case of several rapid appends into one write
+// instead of one per entry.
+const INDEX_SAVE_DEBOUNCE_MS = 400;
+
 // The title a conversation carries until it is named: created with it, and
 // auto-titling treats it as "still untitled" so it fires exactly once and never
 // overwrites a real title.
@@ -85,6 +96,10 @@ export type TranscriptStore = {
   appendEntry(conversationId: string, entry: TranscriptEntry): Promise<void>;
   renameSession(conversationId: string, title: string): Promise<void>;
   deleteSession(conversationId: string): Promise<void>;
+  // Writes a pending debounced index update immediately, if one is pending.
+  // Call this from the app's quit path so a coalesced write is never lost to
+  // a clean shutdown.
+  flushIndex(): Promise<void>;
 };
 
 export async function createTranscriptStore(
@@ -94,12 +109,47 @@ export async function createTranscriptStore(
   const indexPath = join(baseDir, "index.json");
   let sessions = await loadIndex(indexPath);
 
-  const persistIndex = async (): Promise<void> => {
-    // Newest activity first, which is exactly the sidebar's order.
+  // Newest activity first, which is exactly the sidebar's order. Kept
+  // synchronous on every mutation below (not folded into the debounced disk
+  // write) so listSessions() is never stale mid-debounce; writeIndex only
+  // ever serializes an array that is already in the right order.
+  const resort = (): void => {
     sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  };
+
+  const writeIndex = async (): Promise<void> => {
     const temp = `${indexPath}.tmp`;
     await writeFile(temp, `${JSON.stringify({ sessions }, null, 2)}\n`, "utf8");
     await rename(temp, indexPath);
+  };
+
+  let indexSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  const flushIndex = async (): Promise<void> => {
+    if (!indexSaveTimer) return;
+    clearTimeout(indexSaveTimer);
+    indexSaveTimer = undefined;
+    await writeIndex();
+  };
+  const scheduleIndexSave = (): void => {
+    if (indexSaveTimer) clearTimeout(indexSaveTimer);
+    indexSaveTimer = setTimeout(() => {
+      indexSaveTimer = undefined;
+      writeIndex().catch((error: unknown) => {
+        console.error("failed to persist the transcript index", error);
+      });
+    }, INDEX_SAVE_DEBOUNCE_MS);
+  };
+  // createSession/renameSession/deleteSession are infrequent, directly
+  // user-triggered edits to the index (not the per-message hot path), so they
+  // keep writing through immediately; that also supersedes any debounced
+  // write an append just scheduled, since the sessions array it would have
+  // written is now stale anyway.
+  const persistIndexNow = async (): Promise<void> => {
+    if (indexSaveTimer) {
+      clearTimeout(indexSaveTimer);
+      indexSaveTimer = undefined;
+    }
+    await writeIndex();
   };
 
   const transcriptPath = (conversationId: string): string =>
@@ -129,7 +179,8 @@ export async function createTranscriptStore(
         lastPreview: "",
       };
       sessions.push(session);
-      await persistIndex();
+      resort();
+      await persistIndexNow();
       return { ...session };
     },
 
@@ -186,7 +237,8 @@ export async function createTranscriptStore(
         if (entry.type !== "error") {
           session.lastPreview = entry.text.slice(0, PREVIEW_CHARS);
         }
-        await persistIndex();
+        resort();
+        scheduleIndexSave();
       }
     },
 
@@ -197,16 +249,19 @@ export async function createTranscriptStore(
       if (!session) return;
       session.title = title;
       session.updatedAt = new Date().toISOString();
-      await persistIndex();
+      resort();
+      await persistIndexNow();
     },
 
     async deleteSession(conversationId) {
       sessions = sessions.filter(
         (candidate) => candidate.conversationId !== conversationId,
       );
-      await persistIndex();
+      await persistIndexNow();
       await rm(transcriptPath(conversationId), { force: true });
     },
+
+    flushIndex,
   };
 }
 

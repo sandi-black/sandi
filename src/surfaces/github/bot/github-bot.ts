@@ -5,6 +5,7 @@ import type {
   ConversationManifest,
   ConversationParticipant,
 } from "@/lib/conversations/types";
+import { errorMessage } from "@/lib/errors";
 import {
   findHumanIdentity,
   loadHumanIdentities,
@@ -42,6 +43,7 @@ import {
   type GitHubNotificationApi,
   type GitHubNotificationTrigger,
   githubPlatformContext,
+  isBeforeOrAt,
 } from "@/surfaces/github/github/notifications";
 import { GitHubNotificationState } from "@/surfaces/github/github/state";
 import { GITHUB_SURFACE_CONTEXT } from "@/surfaces/github/runtime/context";
@@ -170,56 +172,79 @@ export class GitHubBot {
         count: notifications.length,
         enabledReasons: [...enabledReasons],
       });
-      for (const notification of notifications) {
-        await this.#processNotification({
-          notification,
-          bot,
-          botLogin,
-          enabledReasons,
-        });
+      // Collect each notification's triggers concurrently (each involves a
+      // GitHub API round trip), but dispatch to the queue below in the
+      // original notification order, so ordering-sensitive behavior (e.g. two
+      // triggers landing on the same conversation) is unaffected by which API
+      // call happens to finish first.
+      const collected = await Promise.allSettled(
+        notifications.map((notification) =>
+          this.#collectTriggersForNotification({
+            notification,
+            botLogin,
+            enabledReasons,
+          }),
+        ),
+      );
+      for (const [index, result] of collected.entries()) {
+        const notification = notifications[index];
+        if (!notification) continue;
+        if (result.status === "rejected") {
+          this.#logNotificationRoutingFailure(notification, result.reason);
+          continue;
+        }
+        // Dispatch stays wrapped per-notification, matching the collect
+        // step's isolation: a failure enqueueing one notification's triggers
+        // must not stop the rest from dispatching.
+        try {
+          for (const trigger of result.value) {
+            await this.#enqueueTrigger({ trigger, bot });
+          }
+        } catch (error) {
+          this.#logNotificationRoutingFailure(notification, error);
+        }
       }
     } catch (error) {
       log.error("GitHub notification poll failed", {
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     } finally {
       this.#polling = false;
     }
   }
 
-  async #processNotification(input: {
+  async #collectTriggersForNotification(input: {
     notification: GitHubNotification;
-    bot: GitHubUser;
     botLogin: string;
     enabledReasons: ReadonlySet<string>;
-  }): Promise<void> {
+  }): Promise<GitHubNotificationTrigger[]> {
     if (
       isBeforeOrAt(
         input.notification.updated_at,
         this.#ignoreNotificationsBefore,
       )
     ) {
-      return;
+      return [];
     }
-    try {
-      const triggers = await collectNotificationTriggers({
-        api: this.#api,
-        notification: input.notification,
-        botLogin: input.botLogin,
-        enabledReasons: input.enabledReasons,
-      });
-      for (const trigger of triggers) {
-        await this.#enqueueTrigger({ trigger, bot: input.bot });
-      }
-    } catch (error) {
-      log.warn("failed to route GitHub notification", {
-        notificationId: input.notification.id,
-        reason: input.notification.reason,
-        subjectType: input.notification.subject.type,
-        subjectUrl: input.notification.subject.url,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    return collectNotificationTriggers({
+      api: this.#api,
+      notification: input.notification,
+      botLogin: input.botLogin,
+      enabledReasons: input.enabledReasons,
+    });
+  }
+
+  #logNotificationRoutingFailure(
+    notification: GitHubNotification,
+    error: unknown,
+  ): void {
+    log.warn("failed to route GitHub notification", {
+      notificationId: notification.id,
+      reason: notification.reason,
+      subjectType: notification.subject.type,
+      subjectUrl: notification.subject.url,
+      error: errorMessage(error),
+    });
   }
 
   async #enqueueTrigger(input: {
@@ -277,7 +302,7 @@ export class GitHubBot {
         key: input.trigger.key,
         repository: input.trigger.repository.full_name,
         thread: `${input.trigger.thread.kind}:${input.trigger.thread.number}`,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       });
     } finally {
       if (!enqueued) {
@@ -409,7 +434,7 @@ export class GitHubBot {
           triggerKey: input.trigger.key,
           deliveredChunks,
           totalChunks: chunks.length,
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage(error),
         });
         return;
       }
@@ -504,12 +529,4 @@ function findCommentSplitPoint(value: string): number {
   const space = value.lastIndexOf(" ");
   if (space > 1_000) return space;
   return value.length;
-}
-
-function isBeforeOrAt(timestamp: string, cutoff: string | undefined): boolean {
-  if (!cutoff) return false;
-  const valueMs = Date.parse(timestamp);
-  const cutoffMs = Date.parse(cutoff);
-  if (!Number.isFinite(valueMs) || !Number.isFinite(cutoffMs)) return false;
-  return valueMs <= cutoffMs;
 }

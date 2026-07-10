@@ -11,10 +11,7 @@ import type {
   PlatformId,
 } from "@/lib/conversations/types";
 import { participantLabel } from "@/lib/conversations/types";
-import {
-  findHumanIdentity,
-  loadHumanIdentities,
-} from "@/lib/identity/resolver";
+import { findHumanIdentity, HumanIdentityStore } from "@/lib/identity/resolver";
 import type { SandiSurfaceContext } from "@/lib/surface-context";
 
 const ENVIRONMENT_HINT_MAX_CHARS = 4_000;
@@ -24,6 +21,7 @@ export class ContextCompiler {
   readonly #dataDir: string;
   readonly #surface: SandiSurfaceContext | null;
   readonly #environmentHint: string | null;
+  readonly #identityStore: HumanIdentityStore;
 
   constructor(
     configDirs: string | readonly string[],
@@ -36,6 +34,7 @@ export class ContextCompiler {
     this.#dataDir = dataDir;
     this.#surface = surface ?? null;
     this.#environmentHint = environmentHint?.trim() || null;
+    this.#identityStore = new HumanIdentityStore(this.#configDirs);
   }
 
   async compile(input: {
@@ -44,18 +43,15 @@ export class ContextCompiler {
     skillHintQuery?: string;
   }): Promise<string> {
     const conversation = input.conversation;
-    const sections: string[] = [];
-    sections.push(await this.#readOptional("soul.md", "# Sandi Soul\n"));
-    sections.push(await this.#compilePolicySection());
-    sections.push(input.deliveryInstructions);
-    sections.push(SOURCE_GROUNDING_SECTION);
-    sections.push(this.#compileRuntimeEnvironmentSection());
-    sections.push(renderConversationSection(conversation));
-    sections.push(
-      await this.#compileIdentitySection(conversation.participants),
-    );
-    sections.push(
-      await this.#compileMemorySection(
+    // The five async section builds below read disjoint sources (soul file,
+    // policy roots, identity store, memory index, skills index), so nothing
+    // stops them from running concurrently. Section order in the final prompt
+    // is fixed by where each result lands in `sections`, not by call order.
+    const [soul, policy, identity, memory, skills] = await Promise.all([
+      this.#readOptional("soul.md", "# Sandi Soul\n"),
+      this.#compilePolicySection(),
+      this.#compileIdentitySection(conversation.participants),
+      this.#compileMemorySection(
         buildMemoryContext({
           dataDir: this.#dataDir,
           conversation,
@@ -63,8 +59,20 @@ export class ContextCompiler {
         }),
         input.skillHintQuery,
       ),
-    );
-    sections.push(await this.#compileSkillsSection(input.skillHintQuery));
+      this.#compileSkillsSection(input.skillHintQuery),
+    ]);
+
+    const sections: string[] = [
+      soul,
+      policy,
+      input.deliveryInstructions,
+      SOURCE_GROUNDING_SECTION,
+      this.#compileRuntimeEnvironmentSection(),
+      renderConversationSection(conversation),
+      identity,
+      memory,
+      skills,
+    ];
 
     const userSections = await Promise.all(
       conversation.participants.map((participant) =>
@@ -83,25 +91,34 @@ export class ContextCompiler {
     deliveryInstructions: string;
     skillHintQuery?: string;
   }): Promise<string> {
-    const sections: string[] = [];
-    sections.push(await this.#readOptional("soul.md", "# Sandi Soul\n"));
-    sections.push(await this.#compilePolicySection());
-    sections.push(input.deliveryInstructions);
-    sections.push(SOURCE_GROUNDING_SECTION);
-    sections.push(this.#compileRuntimeEnvironmentSection());
-    sections.push([`# ${input.title}`, "", input.metadata].join("\n"));
-    sections.push(await this.#compileIdentitySection([input.author]));
-    sections.push(
-      await this.#compileMemorySection(
-        buildMemoryContext({
-          dataDir: this.#dataDir,
-          participants: [input.author],
-        }),
-        input.skillHintQuery,
-      ),
-    );
-    sections.push(await this.#compileSkillsSection(input.skillHintQuery));
-    sections.push(await this.#readUserConfig(input.author));
+    const [soul, policy, identity, memory, skills, userConfig] =
+      await Promise.all([
+        this.#readOptional("soul.md", "# Sandi Soul\n"),
+        this.#compilePolicySection(),
+        this.#compileIdentitySection([input.author]),
+        this.#compileMemorySection(
+          buildMemoryContext({
+            dataDir: this.#dataDir,
+            participants: [input.author],
+          }),
+          input.skillHintQuery,
+        ),
+        this.#compileSkillsSection(input.skillHintQuery),
+        this.#readUserConfig(input.author),
+      ]);
+
+    const sections: string[] = [
+      soul,
+      policy,
+      input.deliveryInstructions,
+      SOURCE_GROUNDING_SECTION,
+      this.#compileRuntimeEnvironmentSection(),
+      [`# ${input.title}`, "", input.metadata].join("\n"),
+      identity,
+      memory,
+      skills,
+      userConfig,
+    ];
     return sections.join("\n\n---\n\n");
   }
 
@@ -247,7 +264,7 @@ export class ContextCompiler {
   async #compileIdentitySection(
     participants: ConversationParticipant[],
   ): Promise<string> {
-    const identities = await loadHumanIdentities(this.#configDirs);
+    const identities = await this.#identityStore.load();
     const lines = ["# Identity", ""];
     if (identities.humans.length === 0) {
       lines.push("No cross-platform identity mappings are configured.");

@@ -192,21 +192,28 @@ function isSurfaceLiteralAllowedFile(path: string): boolean {
   return (
     path.startsWith("src/lib/migrations/") ||
     path.startsWith("src/lib/identity/") ||
-    path === "src/lib/verification/verify-surface-boundary.ts"
+    path === "src/lib/verification/verify-surface-boundary.ts" ||
+    // The single canonical home for the reserved core memory root names
+    // (system/self/household/topics/discord/github). Every module that
+    // validates a memory scope ref prefix imports normalizeRefPrefix from
+    // here rather than hand-duplicating the list, so this is the one place
+    // core code is allowed to name a surface for that purpose.
+    path === "src/lib/memory-refs.ts" ||
+    // The single surface registry (SurfaceId, SURFACE_IDS): the one place
+    // core code is allowed to name every surface, so other modules can derive
+    // from it instead of re-declaring the list.
+    path === "src/lib/surface-context.ts"
   );
 }
 
 function isAllowedSurfaceLiteralLine(path: string, line: string): boolean {
   if (
     path === "src/lib/conversations/store.ts" ||
-    path === "src/lib/context/memory.ts" ||
     path === "src/lib/pi-extension/memory-common.ts"
   ) {
     return (
       line.includes('z.enum(["discord", "github"])') ||
-      line.includes('platform: "discord" | "github"') ||
-      line.includes('root === "discord"') ||
-      line.includes('root === "github"')
+      line.includes('platform: "discord" | "github"')
     );
   }
   if (path === "src/lib/provider/pi-cli-client.ts") {

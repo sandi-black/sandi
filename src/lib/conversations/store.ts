@@ -8,7 +8,10 @@ import type {
   ConversationParticipant,
 } from "@/lib/conversations/types";
 import { participantRef } from "@/lib/conversations/types";
+import { errorMessage } from "@/lib/errors";
+import { isMissingFileError } from "@/lib/fs-errors";
 import { createLogger } from "@/lib/logging";
+import { normalizeRefPrefix } from "@/lib/memory-refs";
 import { JsonFileStore } from "@/lib/state/file-store";
 
 const log = createLogger("conversation-store");
@@ -111,7 +114,7 @@ export class ConversationStore {
         // skipped conversation is visible rather than silently absent.
         log.warn("skipping unreadable conversation manifest", {
           storageId: entry.name,
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage(error),
         });
       }
     }
@@ -182,37 +185,12 @@ function normalizeMemoryScope(input: {
 }): ConversationMemoryScope {
   const scope: ConversationMemoryScope = {
     label: input.label,
-    refPrefix: normalizeSurfaceMemoryScopeRefPrefix(input.refPrefix),
+    refPrefix: normalizeRefPrefix(input.refPrefix, {
+      invalidLabel: "conversation memory scope ref prefix",
+    }),
   };
   if (input.area !== undefined) scope.area = input.area;
   return scope;
-}
-
-function normalizeSurfaceMemoryScopeRefPrefix(refPrefix: string): string {
-  const normalized = refPrefix.trim().replaceAll("\\", "/").replace(/^\/+/, "");
-  const parts = normalized.split("/");
-  if (
-    parts.length < 2 ||
-    parts.some((part) => part.length === 0 || part === "." || part === "..")
-  ) {
-    throw new Error(
-      `Invalid conversation memory scope ref prefix: ${refPrefix}`,
-    );
-  }
-  const root = parts[0];
-  if (
-    root === "system" ||
-    root === "self" ||
-    root === "household" ||
-    root === "topics" ||
-    root === "discord" ||
-    root === "github"
-  ) {
-    throw new Error(
-      `Conversation memory scope overlaps a core memory root: ${refPrefix}`,
-    );
-  }
-  return parts.join("/");
 }
 
 function mergeParticipant(
@@ -249,13 +227,4 @@ function normalizeParticipant(input: {
     participant.identityId = input.identityId;
   }
   return participant;
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "ENOENT"
-  );
 }

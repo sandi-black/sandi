@@ -1,13 +1,11 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { assert, withTempDir } from "@/lib/verification/harness";
 import { readEvent, resolveEventPath } from "@/surfaces/discord/events/store";
 import { createEvent } from "@/surfaces/discord/runtime/events";
 
-const tempRoot = await mkdtemp(join(tmpdir(), "sandi-event-creator-"));
-
-try {
+await withTempDir("sandi-event-creator-", async (tempRoot) => {
   const eventsRoot = join(tempRoot, "events");
   process.env["SANDI_EVENTS_ROOT"] = eventsRoot;
   process.env["SANDI_PLATFORM_CONTEXT"] = JSON.stringify({
@@ -77,13 +75,7 @@ try {
   );
 
   console.log("event creator routing verification passed");
-} finally {
-  await rm(tempRoot, { recursive: true, force: true });
-}
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message);
-}
+});
 
 async function assertRejects(
   action: () => Promise<unknown>,

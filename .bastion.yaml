@@ -16,6 +16,14 @@
 # `npm run check` runs src/lib/verification/verify-surface-boundary.ts, which
 # already enforces the surface/lib boundary and Pi-extension relative imports. So
 # the reviewers below cover only semantic concerns those checks cannot see.
+#
+# Budget note: this registry once carried six reviewers (single-responsibility,
+# boundary-parsing, secret-and-config-hygiene, and a verification-coverage
+# advisor alongside the two below). The full set exhausted a weekly Codex
+# budget on a single session, so it was trimmed to the two reviewers whose PR
+# history showed the best signal per token (the removal PR has the evaluation).
+# The removed reviewers live in git history and can be restored when budget
+# allows.
 
 # Registry-wide defaults, inherited by every reviewer that does not set the field
 # itself (an explicit field on a reviewer wins). Every reviewer below pins
@@ -28,19 +36,6 @@ defaults:
   effort: high
 
 reviewers:
-  - name: single-responsibility
-    trigger: [src/**/*.ts]
-    mode: gate
-    backend: codex
-    prompt: |
-      Review the changeset to determine whether any one file concentrates too
-      many unrelated responsibilities. If a file has clearly taken on multiple
-      distinct concerns that should be separate modules, block the PR and name the
-      file(s) and the concerns; otherwise approve it. A single large but cohesive
-      module (everything in it serving one concern) is not a violation. This
-      codebase favors small domain modules with descriptive kebab-case names, so
-      judge against that grain.
-
   - name: error-handling
     trigger: [src/**/*.ts]
     mode: gate
@@ -63,64 +58,6 @@ reviewers:
       Errors that are caught and genuinely handled (logged and recovered, retried,
       or rethrown with context) are fine. A `verify-*.ts` script that exits
       non-zero on failure is correct, not a violation.
-
-  - name: boundary-parsing
-    trigger: [src/**/*.ts]
-    mode: gate
-    backend: codex
-    prompt: |
-      This repo follows parse-don't-validate and bans type assertions: data
-      crossing a boundary (environment variables, config and overlay files, Discord
-      and GitHub API payloads, Pi gateway and agent responses, subprocess output)
-      should be parsed once into a precise type, a zod schema or a discriminated
-      union that makes invalid states unrepresentable, rather than carried around
-      loosely typed and re-checked at each use.
-
-      This is a gate. Block the PR if the change introduces a new boundary that
-      accepts external data without parsing it into a precise type, then carries
-      that raw value into the program where a wrong shape would surface as a bug far
-      from the boundary; otherwise approve it. Name the boundary and the type that
-      should parse it. Reaching into a loosely typed value with optional chaining or
-      ad hoc checks where a parsed type would remove a class of bugs, and re-
-      validating data a boundary already parsed upstream, are also blocking. A value
-      that stays internal to already-typed code, or a boundary that is already
-      parsed with zod or an equivalent precise type, is not a violation.
-
-  - name: secret-and-config-hygiene
-    trigger: [src/**/*.ts, ".env.example", "config/**"]
-    mode: gate
-    backend: codex
-    prompt: |
-      Sandi reads its secrets and configuration from the environment, centralized
-      in src/lib/config/env.ts, with every supported variable documented in
-      .env.example. You are running in the repository, so read env.ts and
-      .env.example directly.
-
-      This is a gate. Block the PR if either of the following is definitely true
-      for the change; otherwise approve it. When you cannot confirm a problem,
-      approve.
-
-      - A credential, token, API key, webhook secret, or other secret value is
-        hardcoded into source instead of read from the environment, or an existing
-        secret is logged, printed, or written into committed data.
-      - The change reads a new required environment variable (a new `process.env`
-        key the code depends on) but does not add it to .env.example, so a fresh
-        checkout cannot be configured to run.
-
-      A new optional variable with a safe documented default, or a test or verify
-      script reading an existing variable, is not a violation.
-
-  - name: verification-coverage
-    trigger: [src/**/*.ts]
-    mode: advisor
-    backend: codex
-    prompt: |
-      This repo verifies behavior with `verify-*.ts` scripts wired into
-      `npm run check` (and `*.test.ts` where present) rather than a single test
-      framework. As an advisor, check whether new or changed behavior in this
-      changeset is covered by a verification script or test. Report uncovered
-      behavior as optional findings naming the file and the behavior that lacks
-      coverage, so the author can decide; do not block.
 
   - name: prose-anti-slop
     # "*.md" covers the root markdown (README, AGENTS, CONTRIBUTING, SECURITY,

@@ -6,6 +6,13 @@ name: bastion
 # A blocked review exits non-zero and fails the job. Branch protection on `main`
 # should require the aggregate `bastion` check so a blocking gate stops the merge.
 #
+# When the PR author has signed a local review (`bastion attest`, pushed to
+# refs/notes/bastion) and the registry sets `attestations: true`, CI verifies
+# that note against the head commit and replays the reviewers from the sealed
+# bundle instead of re-running Codex, so a green local run costs no subscription
+# tokens to confirm here. A missing or stale note falls back to an ordinary fresh
+# review; it never fails open to a silent pass.
+#
 # The reviewer engine is a released bastion binary, not one built from the PR's
 # own sources, so a change can never edit the engine that judges it. Reviewer
 # policy (.bastion.yaml) is still read from the checkout so prompt and trigger
@@ -55,8 +62,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          # The PR head commit, not the default merge commit. An attestation note
+          # binds to the head tree the author signed, and a merge commit's tree
+          # never matches it, so replay would always be refused. This also mirrors
+          # the changeset the author's local `bastion review` diffed.
+          ref: ${{ github.event.pull_request.head.sha }}
           # Full history so the base branch resolves for the changeset diff.
           fetch-depth: 0
+
+      - name: Fetch the attestation notes ref
+        # actions/checkout does not fetch git notes, and an author's attestation
+        # lives under refs/notes/bastion. Fetch it so `bastion review` can find and
+        # verify a note on HEAD. Tolerate its absence: most PRs carry no
+        # attestation, which is the ordinary case, not an error.
+        run: git fetch origin "+refs/notes/bastion:refs/notes/bastion" || true
 
       - name: Install the bastion release
         env:
@@ -154,11 +173,25 @@ jobs:
           BASTION_DATA_DIR: ${{ github.workspace }}/.bastion
           # Resolve the `codex` binary npm just put on PATH.
           BASTION_CODEX_BIN: codex
+          # Read access for the PR context that `--repo`/`--pr` gather, and to
+          # check the author's GitHub-registered signing keys when verifying an
+          # attestation note.
+          GITHUB_TOKEN: ${{ github.token }}
         # Default GitHub bash runs with `-eo pipefail`, so a blocked review's
         # non-zero exit fails the job (and the required check). The human-readable
         # stream goes to the log; the canonical JSONL is persisted under
         # BASTION_DATA_DIR and uploaded below.
-        run: bastion review --base "origin/${{ github.base_ref }}"
+        #
+        # `--repo`/`--pr` give the reviewers the PR's description and discussion as
+        # context and, with `attestations: true` in .bastion.yaml, arm attestation
+        # replay: a verified note on HEAD replays the reviewers from the sealed
+        # bundle and spends no Codex tokens. A missing or invalid note falls back
+        # to an ordinary fresh review.
+        run: >-
+          bastion review
+          --base "origin/${{ github.base_ref }}"
+          --repo "${{ github.repository }}"
+          --pr "${{ github.event.pull_request.number }}"
 
       - name: Mint a dedicated app token for reporting
         id: app-token

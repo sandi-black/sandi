@@ -132,9 +132,14 @@ export async function createTranscriptStore(
   // observes its own write's failure via the returned promise) so one failed
   // write does not wedge every later one.
   let indexWriteChain: Promise<void> = Promise.resolve();
+  // The most recently enqueued write, rejection intact. flushIndex must await
+  // this rather than indexWriteChain: the chain swallows rejections to stay
+  // alive, so awaiting it would report a failed final write as a clean flush.
+  let latestIndexWrite: Promise<void> = Promise.resolve();
   const enqueueIndexWrite = (): Promise<void> => {
     const write = indexWriteChain.then(writeIndex, writeIndex);
     indexWriteChain = write.catch(() => undefined);
+    latestIndexWrite = write;
     return write;
   };
   const flushIndex = async (): Promise<void> => {
@@ -145,8 +150,9 @@ export async function createTranscriptStore(
       return;
     }
     // No pending timer, but the timer may have fired with its write still in
-    // flight; wait the chain out so a quit path never exits mid-write.
-    await indexWriteChain;
+    // flight; wait that write out (and surface its failure) so a quit path
+    // never exits mid-write or reports a failed flush as clean.
+    await latestIndexWrite;
   };
   const scheduleIndexSave = (): void => {
     if (indexSaveTimer) clearTimeout(indexSaveTimer);

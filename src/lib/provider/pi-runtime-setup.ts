@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 
 import type { PiConfig } from "@/lib/config/env";
-import { isMissingFileError } from "@/lib/fs-errors";
+import { isMissingPathError } from "@/lib/fs-errors";
 import { createLogger } from "@/lib/logging";
 import { spawnCommandIgnoringStdin } from "@/lib/provider/spawn-command";
 
@@ -249,7 +249,7 @@ async function readTextIfExists(path: string): Promise<string | undefined> {
   try {
     return await readFile(path, "utf8");
   } catch (error) {
-    if (isMissingFileError(error)) return undefined;
+    if (isMissingPathError(error)) return undefined;
     throw error;
   }
 }

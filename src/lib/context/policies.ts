@@ -2,7 +2,7 @@ import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 
-import { isMissingFileError } from "../fs-errors";
+import { isMissingPathError } from "../fs-errors";
 
 export type PolicySummary = {
   ref: string;
@@ -45,7 +45,24 @@ export async function listPoliciesFromRoots(
         ref,
     })),
   );
+  pruneTitleCache(absoluteRoots, new Set(pathByRef.values()));
   return policies.sort((a, b) => a.ref.localeCompare(b.ref));
+}
+
+// Deleted or renamed policy files would otherwise pin their cache entries for
+// the process lifetime. Pruning is scoped to the roots this call walked so a
+// process hosting compilers with different policy roots does not have one
+// compiler's compile evict another's still-valid entries.
+function pruneTitleCache(
+  walkedRoots: readonly string[],
+  livePaths: ReadonlySet<string>,
+): void {
+  for (const key of TITLE_CACHE.keys()) {
+    if (livePaths.has(key)) continue;
+    if (walkedRoots.some((root) => key.startsWith(root + sep))) {
+      TITLE_CACHE.delete(key);
+    }
+  }
 }
 
 async function cachedPolicyTitle(
@@ -83,7 +100,7 @@ export async function readPolicyFromRoots(
     try {
       return await readPolicy(root, ref);
     } catch (error) {
-      if (!isMissingFileError(error)) throw error;
+      if (!isMissingPathError(error)) throw error;
       lastMissingError = error;
     }
   }

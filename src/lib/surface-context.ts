@@ -78,7 +78,7 @@ export function readPlatformContext<T>(
     }
     const envelope = PlatformEnvelopeSchema.safeParse(parsed);
     if (envelope.success && envelope.data.platform === platform) {
-      return parseAgainstSchema(parsed, schema);
+      return parseAgainstSchema(platform, parsed, schema);
     }
     // The unified context is set but names a different platform (or has no
     // platform field at all): fall through to the legacy var below, matching
@@ -94,13 +94,25 @@ export function readPlatformContext<T>(
   } catch {
     return undefined;
   }
-  return parseAgainstSchema(legacyParsed, schema);
+  return parseAgainstSchema(platform, legacyParsed, schema);
 }
 
 function parseAgainstSchema<T>(
+  platform: SurfaceId,
   value: unknown,
   schema: z.ZodType<T>,
 ): T | undefined {
   const result = schema.safeParse(value);
-  return result.success ? result.data : undefined;
+  if (!result.success) {
+    // A context that names this platform but fails its schema is a producer
+    // or schema drift bug, not an absent context; without this log the two
+    // are indistinguishable to callers, which only see undefined.
+    console.error(
+      `Ignoring invalid ${platform} platform context: ${result.error.issues
+        .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+        .join("; ")}`,
+    );
+    return undefined;
+  }
+  return result.data;
 }

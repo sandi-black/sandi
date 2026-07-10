@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { z } from "zod/v4";
 import { readEnv } from "@/lib/config/env";
-import { isMissingFileError } from "@/lib/fs-errors";
+import { isMissingPathError } from "@/lib/fs-errors";
 import {
   atomicWriteInPlace,
   withManagedWrite,
@@ -101,7 +101,7 @@ export async function loadApiPairings(path: string): Promise<ApiPairingsFile> {
   try {
     raw = await readFile(path, "utf8");
   } catch (error) {
-    if (isMissingFileError(error)) return EMPTY_PAIRINGS;
+    if (isMissingPathError(error)) return EMPTY_PAIRINGS;
     throw error;
   }
   // A malformed pairings file must fail closed rather than silently dropping

@@ -11,7 +11,7 @@ import { dirname, join, resolve } from "node:path";
 
 import type { PiConfig } from "@/lib/config/env";
 import type { MemoryContext } from "@/lib/context/memory";
-import { isMissingFileError } from "@/lib/fs-errors";
+import { isMissingPathError } from "@/lib/fs-errors";
 import { participantMemoryRef } from "@/lib/identity/types";
 import { createLogger } from "@/lib/logging";
 import {
@@ -611,7 +611,7 @@ async function repairMissingSessionCwd(
   try {
     text = await readFile(persistentSessionPath, "utf8");
   } catch (error) {
-    if (isMissingFileError(error)) return;
+    if (isMissingPathError(error)) return;
     throw error;
   }
 
@@ -647,7 +647,7 @@ async function pathExists(path: string): Promise<boolean> {
     await access(path);
     return true;
   } catch (error) {
-    if (isMissingFileError(error)) return false;
+    if (isMissingPathError(error)) return false;
     throw error;
   }
 }

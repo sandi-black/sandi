@@ -1,3 +1,4 @@
+import { mapSettledWithLimit } from "@/lib/async-pool";
 import type { ContextCompiler } from "@/lib/context/context-compiler";
 import { buildMemoryContext } from "@/lib/context/memory";
 import type { ConversationStore } from "@/lib/conversations/store";
@@ -50,6 +51,10 @@ import { GITHUB_SURFACE_CONTEXT } from "@/surfaces/github/runtime/context";
 
 const log = createLogger("github-bot");
 const MAX_GITHUB_COMMENT_CHARS = 60_000;
+// Each trigger collection spawns one or two `gh` subprocesses; a full poll of
+// 100 notifications mapped without a cap would burst-spawn enough concurrent
+// processes to trip GitHub's secondary rate limiting.
+const MAX_CONCURRENT_TRIGGER_COLLECTIONS = 6;
 
 export type GitHubBotInput = {
   config: GitHubAppConfig;
@@ -176,15 +181,19 @@ export class GitHubBot {
       // GitHub API round trip), but dispatch to the queue below in the
       // original notification order, so ordering-sensitive behavior (e.g. two
       // triggers landing on the same conversation) is unaffected by which API
-      // call happens to finish first.
-      const collected = await Promise.allSettled(
-        notifications.map((notification) =>
+      // call happens to finish first. Concurrency is capped: every API call
+      // here is a `gh` subprocess, and an uncapped map over a full poll (up
+      // to 100 notifications) would burst-spawn enough concurrent processes
+      // to trip GitHub's abuse rate limiting.
+      const collected = await mapSettledWithLimit(
+        notifications,
+        MAX_CONCURRENT_TRIGGER_COLLECTIONS,
+        (notification) =>
           this.#collectTriggersForNotification({
             notification,
             botLogin,
             enabledReasons,
           }),
-        ),
       );
       for (const [index, result] of collected.entries()) {
         const notification = notifications[index];

@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { z } from "zod/v4";
-import { isMissingFileError } from "@/lib/fs-errors";
+import { isMissingPathError } from "@/lib/fs-errors";
 import {
   type HumanIdentityConfig,
   type HumanIdentityRecord,
@@ -47,7 +47,7 @@ export async function loadHumanIdentities(
       assertUniqueIdentities(parsed);
       return parsed;
     } catch (error) {
-      if (!isMissingFileError(error)) throw error;
+      if (!isMissingPathError(error)) throw error;
     }
   }
   return { version: 1, humans: [] };
@@ -178,7 +178,7 @@ export class HumanIdentityStore {
         const info = await stat(path);
         parts.push(`${info.mtimeMs}:${info.size}`);
       } catch (error) {
-        if (isMissingFileError(error)) {
+        if (isMissingPathError(error)) {
           parts.push("missing");
           continue;
         }

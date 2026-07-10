@@ -11,7 +11,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
-import { isMissingFileError } from "@/lib/fs-errors";
+import { isMissingPathError } from "@/lib/fs-errors";
 import { isRecord } from "@/lib/type-guards";
 
 export const CURRENT_DATA_DIR_VERSION = 2;
@@ -112,7 +112,7 @@ export async function readDataDirVersion(dataDir: string): Promise<number> {
     }
     return parsed;
   } catch (error) {
-    if (isMissingFileError(error)) return 0;
+    if (isMissingPathError(error)) return 0;
     throw error;
   }
 }

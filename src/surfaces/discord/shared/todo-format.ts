@@ -107,8 +107,11 @@ export function updateGuildList(
 }
 
 export function cleanItemText(value: string): string | undefined {
+  // Trim before stripping quotes: the strip patterns are anchored, so
+  // whitespace outside a quoted phrase would otherwise shield the quotes.
   const cleaned = value
     .replace(/\s+/gu, " ")
+    .trim()
     .replace(/^["“”'‘’]+/u, "")
     .replace(/["“”'‘’]+$/u, "")
     .replace(/[.!?]+$/u, "")

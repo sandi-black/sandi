@@ -429,7 +429,10 @@ async function main(): Promise<void> {
   });
   // The transcript index write is debounced (see transcript-store.ts), so a
   // quit landing inside that window must not drop it: defer the quit exactly
-  // once to flush it, then let the second before-quit through untouched.
+  // once to flush it, then let the second before-quit through untouched. The
+  // flush races a timeout so a wedged disk write (network drive, AV lock)
+  // degrades to the old fire-and-forget behavior instead of an unquittable
+  // app.
   let indexFlushed = false;
   app.on("before-quit", (event) => {
     wanderScheduler.dispose();
@@ -438,8 +441,13 @@ async function main(): Promise<void> {
     link.stop();
     if (indexFlushed) return;
     event.preventDefault();
-    store
-      .flushIndex()
+    const flushTimeout = new Promise<void>((resolveTimeout) => {
+      setTimeout(() => {
+        console.error("transcript index flush timed out on quit");
+        resolveTimeout();
+      }, 5_000).unref();
+    });
+    Promise.race([store.flushIndex(), flushTimeout])
       .catch((error: unknown) => {
         console.error("failed to flush the transcript index on quit", error);
       })

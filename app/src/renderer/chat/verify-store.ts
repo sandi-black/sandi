@@ -1,4 +1,5 @@
 import type { QueueState, TranscriptEntry } from "@shared/ipc-contract";
+import "./verify-composer-submission";
 
 import { useChatStore } from "./store";
 

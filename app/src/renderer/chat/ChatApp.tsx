@@ -182,35 +182,42 @@ export function ChatApp(): JSX.Element {
     };
   }, [activateNewSession, selectSession, refreshSessions]);
 
-  const submit = useCallback((text: string, attachmentIds: string[]): void => {
-    const conversationId = useChatStore.getState().activeConversationId;
-    if (!conversationId || selectionTarget.current !== conversationId) return;
-    // Optimistic append; main writes the same entry to disk.
-    guard(
-      window.sandiChat
-        .submitTurn({ conversationId, text, attachmentIds })
-        .then(({ turnId }) => {
-          const state = useChatStore.getState();
-          if (
-            state.activeConversationId !== conversationId ||
-            selectionTarget.current !== conversationId
-          ) {
-            return;
-          }
-          state.appendTranscript({
-            type: "user",
-            turnId,
-            ts: new Date().toISOString(),
-            text,
-          });
-        }),
-      "could not send the message",
-    );
-  }, []);
+  const submit = useCallback(
+    async (text: string, attachmentIds: string[]): Promise<void> => {
+      const conversationId = useChatStore.getState().activeConversationId;
+      if (!conversationId || selectionTarget.current !== conversationId) {
+        throw new Error("the conversation changed before submission");
+      }
+      // Main acknowledges only after the user entry is durable and queued.
+      const { turnId } = await window.sandiChat.submitTurn({
+        conversationId,
+        text,
+        attachmentIds,
+      });
+      const state = useChatStore.getState();
+      if (
+        state.activeConversationId !== conversationId ||
+        selectionTarget.current !== conversationId
+      ) {
+        return;
+      }
+      state.appendTranscript({
+        type: "user",
+        turnId,
+        ts: new Date().toISOString(),
+        text,
+      });
+    },
+    [],
+  );
 
   // Stable so the transcript rows' memo is not defeated by a fresh retry
   // handler on every streaming render.
-  const retry = useCallback((text: string): void => submit(text, []), [submit]);
+  const retry = useCallback(
+    (text: string): void =>
+      guard(submit(text, []), "could not resend the message"),
+    [submit],
+  );
 
   const activeTitle =
     sessions.find((session) => session.conversationId === activeConversationId)
@@ -220,10 +227,15 @@ export function ChatApp(): JSX.Element {
   const handleDrop = useCallback((event: React.DragEvent): void => {
     event.preventDefault();
     setDragOver(false);
+    const state = useChatStore.getState();
+    const conversationId = state.activeConversationId;
+    if (!conversationId || state.pendingSubmissions[conversationId]) return;
     for (const file of event.dataTransfer.files) {
       guard(
         window.sandiChat.stageDroppedFile(file).then((staged) => {
-          if (staged) useChatStore.getState().addStaged(staged);
+          if (staged) {
+            useChatStore.getState().addStaged(conversationId, staged);
+          }
         }),
         `could not attach ${file.name}`,
       );
@@ -370,6 +382,7 @@ export function ChatApp(): JSX.Element {
                     );
                   return;
                 }
+                useChatStore.getState().discardComposer(conversationId);
                 await refreshSessions();
               } catch (error) {
                 if (

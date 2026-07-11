@@ -8,6 +8,13 @@ import type {
 } from "@shared/ipc-contract";
 import { create } from "zustand";
 
+import {
+  type ComposerDraft,
+  EMPTY_COMPOSER_DRAFT,
+  type PendingComposerSubmission,
+  pendingSubmission,
+} from "./composer-submission";
+
 // Renderer state for the chat window. Main is the source of truth; this store
 // mirrors it for rendering plus purely local UI state (drawer open, composer
 // draft, live streaming buffers). Main forwards only accepted, ordered deltas
@@ -27,7 +34,8 @@ type ChatState = {
   liveAttachments: ReplyAttachment[];
   queue: QueueState | undefined;
   link: LinkStatus;
-  staged: StagedAttachment[];
+  composers: Record<string, ComposerDraft>;
+  pendingSubmissions: Record<string, PendingComposerSubmission>;
   drawerOpen: boolean;
   // The most recent failed bridge call, surfaced as a dismissible strip; every
   // fire-and-forget IPC promise routes its rejection here (see guard.ts).
@@ -55,14 +63,19 @@ type ChatState = {
   endLiveTurn(turnId: string, conversationId: string): void;
   setQueue(queue: QueueState): void;
   setLink(link: LinkStatus): void;
-  setStaged(staged: StagedAttachment[]): void;
-  addStaged(attachment: StagedAttachment): void;
-  removeStaged(id: string): void;
+  setDraft(conversationId: string, text: string): void;
+  addStaged(conversationId: string, attachment: StagedAttachment): void;
+  removeStaged(conversationId: string, id: string): void;
+  beginComposerSubmission(
+    conversationId: string,
+  ): PendingComposerSubmission | undefined;
+  settleComposerSubmission(conversationId: string, ok: boolean): void;
+  discardComposer(conversationId: string): void;
   setDrawerOpen(open: boolean): void;
   setUiError(message: string | undefined): void;
 };
 
-export const useChatStore = create<ChatState>((set) => ({
+export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
   activeConversationId: undefined,
   transcript: [],
@@ -70,7 +83,8 @@ export const useChatStore = create<ChatState>((set) => ({
   liveAttachments: [],
   queue: undefined,
   link: { state: "connecting" },
-  staged: [],
+  composers: {},
+  pendingSubmissions: {},
   drawerOpen: false,
   uiError: undefined,
 
@@ -145,13 +159,97 @@ export const useChatStore = create<ChatState>((set) => ({
       state.activeConversationId === queue.conversationId ? { queue } : state,
     ),
   setLink: (link) => set({ link }),
-  setStaged: (staged) => set({ staged }),
-  addStaged: (attachment) =>
-    set((state) => ({ staged: [...state.staged, attachment] })),
-  removeStaged: (id) =>
-    set((state) => ({
-      staged: state.staged.filter((candidate) => candidate.id !== id),
-    })),
+  setDraft: (conversationId, text) =>
+    set((state) =>
+      state.pendingSubmissions[conversationId]
+        ? state
+        : {
+            composers: {
+              ...state.composers,
+              [conversationId]: {
+                ...(state.composers[conversationId] ?? EMPTY_COMPOSER_DRAFT),
+                text,
+              },
+            },
+          },
+    ),
+  addStaged: (conversationId, attachment) =>
+    set((state) => {
+      if (state.pendingSubmissions[conversationId]) return state;
+      const draft = state.composers[conversationId] ?? EMPTY_COMPOSER_DRAFT;
+      return {
+        composers: {
+          ...state.composers,
+          [conversationId]: {
+            ...draft,
+            staged: [...draft.staged, attachment],
+          },
+        },
+      };
+    }),
+  removeStaged: (conversationId, id) =>
+    set((state) => {
+      if (state.pendingSubmissions[conversationId]) return state;
+      const draft = state.composers[conversationId] ?? EMPTY_COMPOSER_DRAFT;
+      return {
+        composers: {
+          ...state.composers,
+          [conversationId]: {
+            ...draft,
+            staged: draft.staged.filter((candidate) => candidate.id !== id),
+          },
+        },
+      };
+    }),
+  beginComposerSubmission: (conversationId) => {
+    const state = get();
+    if (state.pendingSubmissions[conversationId]) return undefined;
+    const submission = pendingSubmission(
+      conversationId,
+      state.composers[conversationId] ?? EMPTY_COMPOSER_DRAFT,
+    );
+    if (!submission) return undefined;
+    set({
+      composers: {
+        ...state.composers,
+        [conversationId]: { text: "", staged: [] },
+      },
+      pendingSubmissions: {
+        ...state.pendingSubmissions,
+        [conversationId]: submission,
+      },
+    });
+    return submission;
+  },
+  settleComposerSubmission: (conversationId, ok) =>
+    set((state) => {
+      const submission = state.pendingSubmissions[conversationId];
+      if (!submission) return state;
+      const pendingSubmissions = { ...state.pendingSubmissions };
+      delete pendingSubmissions[conversationId];
+      return {
+        pendingSubmissions,
+        ...(ok
+          ? {}
+          : {
+              composers: {
+                ...state.composers,
+                [conversationId]: {
+                  text: submission.text,
+                  staged: submission.staged,
+                },
+              },
+            }),
+      };
+    }),
+  discardComposer: (conversationId) =>
+    set((state) => {
+      const composers = { ...state.composers };
+      const pendingSubmissions = { ...state.pendingSubmissions };
+      delete composers[conversationId];
+      delete pendingSubmissions[conversationId];
+      return { composers, pendingSubmissions };
+    }),
   setDrawerOpen: (drawerOpen) => set({ drawerOpen }),
   setUiError: (uiError) => set({ uiError }),
 }));

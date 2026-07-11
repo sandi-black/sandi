@@ -1,5 +1,9 @@
-import { type JSX, useEffect, useRef, useState } from "react";
+import { type JSX, useEffect, useRef } from "react";
 
+import {
+  EMPTY_COMPOSER_DRAFT,
+  submitPendingComposer,
+} from "./composer-submission";
 import { guard } from "./guard";
 import { useChatStore } from "./store";
 
@@ -10,17 +14,30 @@ export function Composer({
   onSubmit,
   onStop,
 }: {
-  onSubmit(text: string, attachmentIds: string[]): void;
+  onSubmit(text: string, attachmentIds: string[]): Promise<void>;
   onStop(turnId: string): void;
 }): JSX.Element {
-  const staged = useChatStore((state) => state.staged);
+  const conversationId = useChatStore((state) => state.activeConversationId);
+  const draft = useChatStore((state) =>
+    conversationId
+      ? (state.composers[conversationId] ?? EMPTY_COMPOSER_DRAFT)
+      : EMPTY_COMPOSER_DRAFT,
+  );
+  const submitting = useChatStore((state) =>
+    conversationId ? Boolean(state.pendingSubmissions[conversationId]) : false,
+  );
   const removeStaged = useChatStore((state) => state.removeStaged);
   const addStaged = useChatStore((state) => state.addStaged);
-  const setStaged = useChatStore((state) => state.setStaged);
+  const setDraft = useChatStore((state) => state.setDraft);
+  const beginSubmission = useChatStore(
+    (state) => state.beginComposerSubmission,
+  );
+  const settleSubmission = useChatStore(
+    (state) => state.settleComposerSubmission,
+  );
   const queue = useChatStore((state) => state.queue);
   const link = useChatStore((state) => state.link);
 
-  const [draft, setDraft] = useState("");
   const textarea = useRef<HTMLTextAreaElement>(null);
 
   // Autosize: grow with content up to the CSS max-height. Runs after every
@@ -34,28 +51,33 @@ export function Composer({
   });
 
   const inflight = queue?.inflightTurnId;
-  const canSend = draft.trim().length > 0 || staged.length > 0;
+  const canSend = draft.text.trim().length > 0 || draft.staged.length > 0;
 
   const submit = (): void => {
-    const text = draft.trim();
-    if (text.length === 0 && staged.length === 0) return;
-    onSubmit(
-      text.length > 0 ? text : "(see attachments)",
-      staged.map((attachment) => attachment.id),
+    if (!conversationId) return;
+    const submission = beginSubmission(conversationId);
+    if (!submission) return;
+    guard(
+      submitPendingComposer({
+        submission,
+        submit: onSubmit,
+        settle: (ok) => settleSubmission(conversationId, ok),
+      }),
+      "could not send the message",
     );
-    setDraft("");
-    setStaged([]);
     textarea.current?.focus();
   };
 
   const pick = async (): Promise<void> => {
+    if (!conversationId) return;
     const picked = await window.sandiChat.pickAttachments();
-    for (const attachment of picked) addStaged(attachment);
+    for (const attachment of picked) addStaged(conversationId, attachment);
   };
 
   const paste = async (
     event: React.ClipboardEvent<HTMLTextAreaElement>,
   ): Promise<void> => {
+    if (!conversationId) return;
     for (const item of event.clipboardData.items) {
       if (item.kind === "file" && item.type.startsWith("image/")) {
         event.preventDefault();
@@ -64,16 +86,16 @@ export function Composer({
         const dataUrl = await fileToDataUrl(file);
         if (!dataUrl) continue;
         const stagedImage = await window.sandiChat.stagePastedImage(dataUrl);
-        if (stagedImage) addStaged(stagedImage);
+        if (stagedImage) addStaged(conversationId, stagedImage);
       }
     }
   };
 
   return (
     <div className="composer">
-      {staged.length > 0 && (
+      {draft.staged.length > 0 && (
         <div className="composer-staged">
-          {staged.map((attachment) => (
+          {draft.staged.map((attachment) => (
             <span className="attachment-chip" key={attachment.id}>
               <span className="chip-name" title={attachment.path}>
                 {attachment.kind === "image" ? "🖼 " : ""}
@@ -83,12 +105,14 @@ export function Composer({
                 type="button"
                 title="Remove"
                 onClick={() => {
-                  removeStaged(attachment.id);
+                  if (!conversationId) return;
+                  removeStaged(conversationId, attachment.id);
                   guard(
                     window.sandiChat.unstageAttachment(attachment.id),
                     "could not remove the attachment",
                   );
                 }}
+                disabled={submitting}
               >
                 ✕
               </button>
@@ -100,18 +124,21 @@ export function Composer({
         <textarea
           ref={textarea}
           rows={1}
-          value={draft}
+          value={draft.text}
+          disabled={submitting}
           placeholder={
             link.state === "linked"
               ? "Message Sandi..."
               : "Message Sandi (streaming needs the link)..."
           }
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            if (conversationId) setDraft(conversationId, event.target.value);
+          }}
           onPaste={(event) =>
             guard(paste(event), "could not attach the pasted image")
           }
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
+            if (event.key === "Enter" && !event.shiftKey && !submitting) {
               event.preventDefault();
               submit();
             }
@@ -121,6 +148,7 @@ export function Composer({
           type="button"
           className="icon-button"
           title="Attach files"
+          disabled={submitting || !conversationId}
           onClick={() => guard(pick(), "could not attach files")}
         >
           ✚
@@ -139,7 +167,7 @@ export function Composer({
             type="button"
             className="send-button"
             title="Send"
-            disabled={!canSend}
+            disabled={!canSend || submitting}
             onClick={submit}
           >
             ➤

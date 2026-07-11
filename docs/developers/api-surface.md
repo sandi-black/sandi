@@ -155,7 +155,9 @@ string, "label"?: string }`. On success: `200 { "surface": "api", "identityId",
 Error responses are deliberately terse and leak no internal paths: `401`
 (missing or invalid bearer), `403` (`identity_unmapped`), `400` (empty or
 malformed body, or an invalid id segment), `413` (body over the size cap), and
-`502`/`503` for provider failures (`503` for rate or quota limits).
+`502`/`503` for provider failures (`503` for rate or quota limits). Capacity
+rejections also return `503 { "error": "capacity_rejected", "reason": string }`
+so callers can retry overload separately from an internal provider failure.
 
 ### Device link (Phase 2)
 
@@ -335,6 +337,9 @@ needed.
   another human's desktop) is a refused outcome, not a misroute. Within that
   identity, an unselected call defaults to the originating desktop, and a
   cross-surface turn that finds several connected asks Sandi to name one.
+- Desktop shell calls accept a timeout of at most `600000` milliseconds (10
+  minutes). The Pi tool schema and broker protocol reject larger values before
+  the desktop can spawn a process, and the desktop executor applies the same cap.
 - An offline device fails closed. With no link registered, the turn leases no
   broker, the proxy extension registers no tools, and the turn runs without file
   or shell access rather than touching the server. A call whose device drops

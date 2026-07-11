@@ -21,6 +21,7 @@ import type {
 import { errorMessage } from "@/lib/errors";
 import { HumanIdentityStore } from "@/lib/identity/resolver";
 import { createLogger } from "@/lib/logging";
+import { ProviderCapacityError } from "@/lib/provider/capacity-controller";
 import {
   type ModelProviderClient,
   ProviderTurnError,
@@ -484,6 +485,17 @@ export class ApiBot {
         });
         sendJson(response, status, {
           error: "provider_error",
+          reason: error.reason,
+        });
+        return;
+      }
+      if (error instanceof ProviderCapacityError) {
+        log.warn("API provider capacity rejected", {
+          conversationId: canonicalId,
+          reason: error.reason,
+        });
+        sendJson(response, 503, {
+          error: "capacity_rejected",
           reason: error.reason,
         });
         return;

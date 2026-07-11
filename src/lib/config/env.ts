@@ -5,6 +5,7 @@ import "dotenv/config";
 
 import { z } from "zod";
 
+import type { ProviderCapacityConfig } from "@/lib/provider/capacity-controller";
 import type { PiAccountRoutingConfig } from "@/lib/provider/pi-account-routing";
 import {
   defaultPiFeedbackExtensionPath,
@@ -49,6 +50,7 @@ export type PathConfig = {
 
 export type CoreConfig = {
   pi: PiConfig;
+  providerCapacity?: ProviderCapacityConfig;
   paths: PathConfig;
   environmentHint?: string;
 };
@@ -171,6 +173,18 @@ export function loadCoreConfig(): CoreConfig {
   });
 
   const config: CoreConfig = {
+    providerCapacity: {
+      maxConcurrent: readNumberEnv(["SANDI_PROVIDER_MAX_CONCURRENT"], 3),
+      maxQueued: readNumberEnv(["SANDI_PROVIDER_MAX_QUEUED"], 64),
+      maxQueuedPerIdentity: readNumberEnv(
+        ["SANDI_PROVIDER_MAX_QUEUED_PER_IDENTITY"],
+        8,
+      ),
+      shutdownGraceMs: readNumberEnv(
+        ["SANDI_PROVIDER_SHUTDOWN_GRACE_MS"],
+        5_000,
+      ),
+    },
     pi: {
       command: readEnv(["SANDI_PI_COMMAND"]) ?? "pi",
       packageManifestPath: resolve(

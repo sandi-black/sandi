@@ -6,6 +6,8 @@ import {
 } from "@/surfaces/api/devices/desktop-file-transfer";
 import { MAX_LOCAL_GREP_PATTERN_CHARS } from "@/surfaces/api/devices/search-limits";
 
+export const MAX_LOCAL_BASH_TIMEOUT_MS = 600_000;
+
 // The hands-local wire protocol. An api-surface turn runs server-side, but its
 // file and shell tools execute on the human's own desktop. Three hops carry one
 // tool call:
@@ -68,7 +70,12 @@ export const LocalBashParamsSchema = z.object({
   desktop: z.string().min(1).optional(),
   command: z.string().min(1),
   cwd: z.string().min(1).optional(),
-  timeoutMs: z.number().int().positive().optional(),
+  timeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .max(MAX_LOCAL_BASH_TIMEOUT_MS)
+    .optional(),
 });
 
 // The state tools. They take the same `desktop` selector as every other tool;

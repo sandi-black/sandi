@@ -8,6 +8,7 @@ import "@/surfaces/api/verify-attachment-config";
 import { ContextCompiler } from "@/lib/context/context-compiler";
 import { ConversationStore } from "@/lib/conversations/store";
 import { createPairing } from "@/lib/pairing/pairing-store";
+import { ProviderCapacityError } from "@/lib/provider/capacity-controller";
 import type {
   ModelProviderClient,
   ProviderProbe,
@@ -84,6 +85,7 @@ async function verifyApiBot(): Promise<void> {
       await verifyTitleTurn(base, provider);
       await verifyTitleRejectsEmptyMessage(base, provider);
       await verifyTitleRequiresAuth(base, provider);
+      await verifyCapacityRejection(base, provider);
       await verifySecondTurnDoesNotDuplicateParticipant(base);
       await verifyManifestPersisted(dataDir);
       await verifyTokenRevocationAndEnrollment(dataDir);
@@ -95,6 +97,34 @@ async function verifyApiBot(): Promise<void> {
       broker.stop();
     }
   });
+}
+
+async function verifyCapacityRejection(
+  base: string,
+  provider: RecordingProvider,
+): Promise<void> {
+  provider.nextError = new ProviderCapacityError("overloaded");
+  const response = await fetch(turnsUrl(base), {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${RAW_TOKEN}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ input: "please queue this" }),
+  });
+  assertEqual(response.status, 503, "capacity rejection status");
+  const body = await response.json();
+  assertEqual(
+    isRecord(body) && body["error"],
+    "capacity_rejected",
+    "capacity rejection is distinct from provider failure",
+  );
+  assertEqual(
+    isRecord(body) && body["reason"],
+    "overloaded",
+    "capacity rejection exposes its admission reason",
+  );
+  console.log("ok provider overload returns an explicit capacity rejection");
 }
 
 async function verifyQueuedWorkCanBeCanceled(): Promise<void> {
@@ -1028,6 +1058,7 @@ class RecordingProvider implements ModelProviderClient {
   readonly responseText = "Sandi reply from the fake provider.";
   lastRequest: ProviderTurnRequest | undefined;
   callCount = 0;
+  nextError: Error | undefined;
 
   async probe(): Promise<ProviderProbe> {
     return {
@@ -1042,6 +1073,11 @@ class RecordingProvider implements ModelProviderClient {
   ): Promise<ProviderTurnResponse> {
     this.callCount += 1;
     this.lastRequest = request;
+    if (this.nextError) {
+      const error = this.nextError;
+      this.nextError = undefined;
+      throw error;
+    }
     return {
       text: this.responseText,
       deliverySideEffects: false,

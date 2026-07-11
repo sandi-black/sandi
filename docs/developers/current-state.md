@@ -201,6 +201,26 @@ the Discord user id and mapped identity that caused the turn, the source
 (`discord_message_author` or `scheduled_event_creator`). It does not include
 tokens or Pi account directory paths.
 
+The composed host admits every surface through one provider capacity controller.
+Standalone surface entrypoints use the same controller policy. The defaults run
+at most 3 provider turns concurrently, retain at most 64 waiting turns globally,
+and retain at most 8 waiting turns for one identity. Configure them with
+`SANDI_PROVIDER_MAX_CONCURRENT`, `SANDI_PROVIDER_MAX_QUEUED`, and
+`SANDI_PROVIDER_MAX_QUEUED_PER_IDENTITY`; use
+`SANDI_PROVIDER_SHUTDOWN_GRACE_MS` to change the default 5-second shutdown grace.
+Interactive work has first priority. After four consecutive interactive starts,
+the oldest passive, background, or title job gets a slot so low-priority work
+cannot starve. A compatible queued passive Discord gate is dropped, and title
+generation is discarded when interactive work is waiting or the queue is at
+least half full. New work beyond either queue limit is rejected explicitly.
+Shutdown stops admission, rejects waiting work, and aborts active work after the
+grace period.
+
+The deterministic 100-turn burst verification admits 67 turns (3 active plus
+the 64-slot queue), rejects 33, and observes a maximum of 3 active provider
+turns. This evidence fixes the selected defaults to a bounded backlog with enough
+headroom for a short multi-surface burst.
+
 Default main turns use:
 
 ```sh

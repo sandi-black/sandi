@@ -1,4 +1,5 @@
 import { chmod, readFile, writeFile } from "node:fs/promises";
+import "@/lib/provider/verify-provider-capacity";
 import { join } from "node:path";
 
 import type { PiConfig } from "@/lib/config/env";

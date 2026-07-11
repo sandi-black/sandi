@@ -35,6 +35,7 @@ import type {
   LocalWriteParams,
   ToolCallOutcome,
 } from "@/surfaces/api/devices/protocol";
+import { MAX_LOCAL_BASH_TIMEOUT_MS } from "@/surfaces/api/devices/protocol";
 
 // The desktop side of hands-local: the real file and shell operations a paired
 // desktop runs on the human's behalf. The call arrives already parsed as a
@@ -51,7 +52,6 @@ const MAX_MATCH_RESULTS = 1_000;
 const MAX_WALK_ENTRIES = 50_000;
 const MAX_TEXT_FILE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
-const MAX_BASH_TIMEOUT_MS = 1_200_000;
 // Grace between SIGTERM and the escalated SIGKILL for a command that ignores the
 // term. Short: the command is already past its deadline or cancelled.
 const KILL_GRACE_MS = 2_000;
@@ -376,7 +376,7 @@ function bashLocal(
       ? resolvePath(context, params.cwd)
       : context.rootDir;
   const timeoutMs = Math.min(
-    MAX_BASH_TIMEOUT_MS,
+    MAX_LOCAL_BASH_TIMEOUT_MS,
     params.timeoutMs ?? DEFAULT_BASH_TIMEOUT_MS,
   );
 

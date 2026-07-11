@@ -147,7 +147,11 @@ const TOOL_SPECS = [
         Type.String({ description: "Working directory for the command." }),
       ),
       timeoutMs: Type.Optional(
-        Type.Number({ description: "Timeout in milliseconds." }),
+        Type.Number({
+          description: "Timeout in milliseconds (maximum 600000).",
+          minimum: 1,
+          maximum: 600_000,
+        }),
       ),
     }),
   },

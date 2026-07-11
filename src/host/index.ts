@@ -8,6 +8,7 @@ import { createLogger } from "@/lib/logging";
 import { loadDreamingConfig } from "@/lib/memory/dreaming-config";
 import { startMemoryDreaming } from "@/lib/memory/dreaming-service";
 import { migrateDataDir } from "@/lib/migrations/data-dir";
+import { CapacityControlledProvider } from "@/lib/provider/capacity-controller";
 import { PiCliClient } from "@/lib/provider/pi-cli-client";
 import { ensurePiRuntimeSetup } from "@/lib/provider/pi-runtime-setup";
 import { startEmbeddingIndexMaintenance } from "@/lib/retrieval/embedding-index-maintenance";
@@ -44,7 +45,10 @@ await ensurePiRuntimeSetup(pi);
 // they reach Sandi. The device registry and tool broker are shared too: a
 // desktop holds one link, and a turn from any surface can reach it.
 const conversations = new ConversationStore(paths.dataDir);
-const provider = new PiCliClient(pi);
+const provider = new CapacityControlledProvider(
+  new PiCliClient(pi),
+  config.api.providerCapacity,
+);
 const devices = new DeviceRegistry();
 const broker = new ToolBroker(devices);
 // Lets a turn from any surface reach the desktop belonging to its human, by
@@ -158,6 +162,7 @@ function shutdown(signal: string): void {
   if (shutdownStarted) return;
   shutdownStarted = true;
   log.info("shutdown signal received", { signal });
+  void provider.shutdown();
 
   for (const surface of surfaces) {
     try {

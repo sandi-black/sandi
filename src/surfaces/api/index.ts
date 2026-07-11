@@ -5,6 +5,7 @@ import { ConversationStore } from "@/lib/conversations/store";
 import { errorMessage } from "@/lib/errors";
 import { createLogger } from "@/lib/logging";
 import { migrateDataDir } from "@/lib/migrations/data-dir";
+import { CapacityControlledProvider } from "@/lib/provider/capacity-controller";
 import { PiCliClient } from "@/lib/provider/pi-cli-client";
 import { ensurePiRuntimeSetup } from "@/lib/provider/pi-runtime-setup";
 import { startEmbeddingIndexMaintenance } from "@/lib/retrieval/embedding-index-maintenance";
@@ -36,6 +37,10 @@ const devices = new DeviceRegistry();
 const broker = new ToolBroker(devices);
 await broker.start();
 
+const provider = new CapacityControlledProvider(
+  new PiCliClient(config.pi),
+  config.providerCapacity,
+);
 const bot = new ApiBot({
   config,
   conversations: new ConversationStore(config.paths.dataDir),
@@ -45,7 +50,7 @@ const bot = new ApiBot({
     API_SURFACE_CONTEXT,
     config.environmentHint,
   ),
-  provider: new PiCliClient(config.pi),
+  provider,
   devices,
   broker,
 });
@@ -64,6 +69,7 @@ function shutdown(signal: string): void {
   if (shutdownStarted) return;
   shutdownStarted = true;
   log.info("shutdown signal received", { signal });
+  void provider.shutdown();
 
   try {
     bot.stop();

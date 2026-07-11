@@ -8,6 +8,10 @@ import {
 } from "@/surfaces/api/client/executors";
 import { verifyBoundedRegex } from "@/surfaces/api/client/verify-bounded-regex";
 import { verifyDesktopFileTransfer } from "@/surfaces/api/client/verify-desktop-file-transfer";
+import {
+  LocalBashParamsSchema,
+  MAX_LOCAL_BASH_TIMEOUT_MS,
+} from "@/surfaces/api/devices/protocol";
 
 // executeLocalTool takes a validated BrokerCall (the wire boundary parses tool
 // and params together), so these cases build typed calls directly. Malformed
@@ -15,6 +19,7 @@ import { verifyDesktopFileTransfer } from "@/surfaces/api/client/verify-desktop-
 
 async function verifyExecutors(): Promise<void> {
   verifyBoundedRegex();
+  verifyBashTimeoutBoundary();
   await withTempDir("sandi-executors-", async (dir) => {
     const context: ExecutorContext = { rootDir: dir };
     await verifyWriteAndRead(context);
@@ -35,6 +40,24 @@ async function verifyExecutors(): Promise<void> {
     await verifyStateToolRouting(context);
   });
   console.log("executors verification passed");
+}
+
+function verifyBashTimeoutBoundary(): void {
+  assert(
+    LocalBashParamsSchema.safeParse({
+      command: "echo bounded",
+      timeoutMs: MAX_LOCAL_BASH_TIMEOUT_MS,
+    }).success,
+    "the ten-minute shell timeout is accepted at the wire boundary",
+  );
+  assert(
+    !LocalBashParamsSchema.safeParse({
+      command: "echo never-spawned",
+      timeoutMs: MAX_LOCAL_BASH_TIMEOUT_MS + 1,
+    }).success,
+    "a shell timeout over ten minutes is rejected before execution",
+  );
+  console.log("ok local_bash enforces the ten-minute timeout boundary");
 }
 
 async function verifyEditRejectsInvalidUtf8(

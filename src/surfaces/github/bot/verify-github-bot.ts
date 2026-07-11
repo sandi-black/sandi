@@ -1,8 +1,10 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import "@/surfaces/github/bot/verify-delivery-outbox";
 import { join } from "node:path";
 
 import { ContextCompiler } from "@/lib/context/context-compiler";
 import { ConversationStore } from "@/lib/conversations/store";
+import { DurableOutbox, deliveryOutboxPath } from "@/lib/delivery/outbox";
 import type {
   DesktopHands,
   DesktopHandsLease,
@@ -16,6 +18,7 @@ import {
   type ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
 import { assertEqual, withTempDir } from "@/lib/verification/harness";
+import { GITHUB_COMMENT_DELIVERY } from "@/surfaces/github/bot/delivery-outbox";
 import {
   GitHubBot,
   type GitHubBotApi,
@@ -66,6 +69,32 @@ async function verifyPartialAutoDeliveryIsCheckpointed(): Promise<void> {
       state.hasProcessed("github:mention:issue-comment:9001"),
     );
     assertEqual(api.createdIssueComments.length, 1, "delivered chunks");
+  });
+}
+
+async function verifyDurableResponseSkipsProviderAfterCrash(): Promise<void> {
+  await withBotFixture(async ({ bot, state, api, config }) => {
+    api.notification = mentionNotification();
+    api.issueComment = issueComment("hey @sandi-witch please check this");
+    const outbox = new DurableOutbox(deliveryOutboxPath(config.paths.dataDir));
+    await outbox.enqueue({
+      idempotencyKey: "github:response:github:mention:issue-comment:9001",
+      kind: GITHUB_COMMENT_DELIVERY,
+      payload: {
+        owner: "earendil-works",
+        repo: "sandi",
+        number: 12,
+        chunks: ["response survived the crash"],
+      },
+    });
+    const requests: ProviderTurnRequest[] = [];
+    bot.provider = providerCapturing(requests, "must not run");
+
+    await bot.instance.pollOnce();
+    await waitFor("durable response checkpoint", () =>
+      state.hasProcessed("github:mention:issue-comment:9001"),
+    );
+    assertEqual(requests.length, 0, "provider reruns after durable response");
   });
 }
 
@@ -599,6 +628,16 @@ class FakeGitHubApi implements GitHubBotApi {
     return [];
   }
 
+  async listIssueComments(): Promise<IssueComment[]> {
+    return this.createdIssueComments.map((body) =>
+      issueComment(body, githubUser("sandi-witch", 282067348)),
+    );
+  }
+
+  async listReviewComments(): Promise<ReviewComment[]> {
+    return [];
+  }
+
   async createIssueComment(input: {
     owner: string;
     repo: string;
@@ -794,6 +833,7 @@ function githubUser(login: string, id: number): GitHubUser {
 
 await verifyProviderSideEffectFailureIsCheckpointed();
 await verifyPartialAutoDeliveryIsCheckpointed();
+await verifyDurableResponseSkipsProviderAfterCrash();
 await verifyMappedActorLeasesDesktopHands();
 await verifyUnmappedActorRunsWithoutDesktopHands();
 await verifyUsernameCannotImpersonateMappedActor();

@@ -6,6 +6,7 @@ import type {
   ConversationManifest,
   ConversationParticipant,
 } from "@/lib/conversations/types";
+import { DurableOutbox, deliveryOutboxPath } from "@/lib/delivery/outbox";
 import { errorMessage } from "@/lib/errors";
 import {
   findHumanIdentityByPlatformId,
@@ -25,6 +26,10 @@ import {
   type ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
 import { ThreadQueue } from "@/lib/turns/turn-queue";
+import {
+  enqueueGitHubComments,
+  registerGitHubCommentDelivery,
+} from "@/surfaces/github/bot/delivery-outbox";
 import type { GitHubAppConfig } from "@/surfaces/github/config";
 import type {
   GitHubNotification,
@@ -86,6 +91,7 @@ export type GitHubBotInput = {
   desktopHands?: DesktopHands;
   state?: GitHubNotificationState;
   claimLease?: GitHubClaimLeaseRuntime;
+  outbox?: DurableOutbox;
 };
 
 export type GitHubBotApi = GitHubNotificationApi & {
@@ -95,6 +101,16 @@ export type GitHubBotApi = GitHubNotificationApi & {
     limit: number;
     all?: boolean;
   }): Promise<GitHubNotification[]>;
+  listIssueComments(input: {
+    owner: string;
+    repo: string;
+    number: number;
+  }): Promise<IssueComment[]>;
+  listReviewComments(input: {
+    owner: string;
+    repo: string;
+    number: number;
+  }): Promise<ReviewComment[]>;
   createIssueComment(input: {
     owner: string;
     repo: string;
@@ -117,6 +133,7 @@ export class GitHubBot {
   readonly #contextCompiler: ContextCompiler;
   readonly #provider: ModelProviderClient;
   readonly #desktopHands: DesktopHands | undefined;
+  readonly #outbox: DurableOutbox;
   readonly #state: GitHubNotificationState;
   readonly #queue = new ThreadQueue();
   readonly #pendingTriggerKeys = new Set<string>();
@@ -136,6 +153,10 @@ export class GitHubBot {
     this.#contextCompiler = input.contextCompiler;
     this.#provider = input.provider;
     this.#desktopHands = input.desktopHands;
+    this.#outbox =
+      input.outbox ??
+      new DurableOutbox(deliveryOutboxPath(input.config.paths.dataDir));
+    registerGitHubCommentDelivery(this.#outbox, this.#api);
     this.#identities = new HumanIdentityStore(input.config.paths.configDirs, 0);
     this.#state =
       input.state ?? new GitHubNotificationState(input.config.paths.dataDir);
@@ -173,6 +194,7 @@ export class GitHubBot {
       processExistingNotifications:
         this.#config.github.processExistingNotifications,
     });
+    this.#outbox.start();
     if (!this.#config.github.processExistingNotifications) {
       this.#ignoreNotificationsBefore = new Date().toISOString();
       log.info("ignoring existing GitHub notifications on startup", {
@@ -190,6 +212,7 @@ export class GitHubBot {
     this.#stopped = true;
     if (this.#pollTimer) clearInterval(this.#pollTimer);
     this.#pollTimer = undefined;
+    this.#outbox.stop();
   }
 
   async pollOnce(): Promise<void> {
@@ -394,6 +417,14 @@ export class GitHubBot {
     signal: AbortSignal;
   }): Promise<void> {
     input.signal.throwIfAborted();
+    const responseDeliveryKey = `github:response:${input.trigger.key}`;
+    if (await this.#outbox.get(responseDeliveryKey)) {
+      log.info("GitHub response is already durable", {
+        conversationId: input.conversation.canonicalId,
+        triggerKey: input.trigger.key,
+      });
+      return;
+    }
     log.info("starting GitHub conversation turn", {
       conversationId: input.conversation.canonicalId,
       triggerKey: input.trigger.key,
@@ -483,40 +514,20 @@ export class GitHubBot {
     const content = input.response.text.trim();
     if (!content) return;
 
-    const chunks = chunkGitHubComment(content);
-    let deliveredChunks = 0;
-    for (const [index, chunk] of chunks.entries()) {
-      try {
-        input.signal.throwIfAborted();
-        if (index === 0 && input.trigger.source.kind === "review_comment") {
-          await this.#api.replyToReviewComment({
-            owner: input.trigger.thread.owner,
-            repo: input.trigger.thread.repo,
-            number: input.trigger.thread.number,
-            commentId: input.trigger.source.id,
-            body: chunk,
-          });
-          deliveredChunks += 1;
-          continue;
-        }
-        await this.#api.createIssueComment({
-          owner: input.trigger.thread.owner,
-          repo: input.trigger.thread.repo,
-          number: input.trigger.thread.number,
-          body: chunk,
-        });
-        deliveredChunks += 1;
-      } catch (error) {
-        if (deliveredChunks === 0) throw error;
-        log.error("GitHub response partially delivered; suppressing retry", {
-          triggerKey: input.trigger.key,
-          deliveredChunks,
-          totalChunks: chunks.length,
-          error: errorMessage(error),
-        });
-        return;
-      }
-    }
+    input.signal.throwIfAborted();
+    await enqueueGitHubComments({
+      outbox: this.#outbox,
+      idempotencyKey: `github:response:${input.trigger.key}`,
+      payload: {
+        owner: input.trigger.thread.owner,
+        repo: input.trigger.thread.repo,
+        number: input.trigger.thread.number,
+        chunks: chunkGitHubComment(content),
+        ...(input.trigger.source.kind === "review_comment"
+          ? { firstReviewCommentId: input.trigger.source.id }
+          : {}),
+      },
+    });
   }
 
   async #loadConversation(

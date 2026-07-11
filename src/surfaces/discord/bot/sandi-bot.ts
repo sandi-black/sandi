@@ -25,6 +25,12 @@ import type {
   ConversationManifest,
   ConversationParticipant,
 } from "@/lib/conversations/types";
+import {
+  AmbiguousDeliveryError,
+  DurableOutbox,
+  deliveryOutboxPath,
+  PermanentDeliveryError,
+} from "@/lib/delivery/outbox";
 import { formatDuration } from "@/lib/duration";
 import { errorMessage } from "@/lib/errors";
 import {
@@ -49,8 +55,16 @@ import {
 } from "@/lib/provider/pi-cli-client";
 import { ThreadQueue } from "@/lib/turns/turn-queue";
 import { isRecord } from "@/lib/type-guards";
+import {
+  enqueueDiscordMessage,
+  registerDiscordMessageDelivery,
+} from "@/surfaces/discord/bot/delivery-outbox";
 import { deliverDesktopFileToDiscord } from "@/surfaces/discord/bot/desktop-file-delivery";
 import { issueDeviceCode } from "@/surfaces/discord/bot/device-auth";
+import {
+  enqueueDiscordEvent,
+  registerDiscordEventDelivery,
+} from "@/surfaces/discord/bot/event-delivery";
 import {
   appendIgnoredConversationChannel,
   loadIgnoredConversationChannels,
@@ -161,6 +175,7 @@ export type SandiBotDependencies = {
   // linked can run file and shell tools on that desktop. Absent in a standalone
   // Discord process, where no desktop links exist to reach.
   desktopHands?: DesktopHands;
+  outbox?: DurableOutbox;
 };
 
 type DiscordToolContext = {
@@ -179,6 +194,7 @@ type DiscordToolContext = {
 };
 
 type FailureNoticeChannel = {
+  id: string;
   send(options: MessageCreateOptions): Promise<unknown>;
 };
 
@@ -204,6 +220,7 @@ type RunTurnInput = {
   suppressFinalResponse?: boolean;
   reactOnTypingFailure?: boolean;
   failureReplyToMessageId?: string | false;
+  rethrowFailures?: boolean;
 };
 
 export class SandiBot {
@@ -213,6 +230,7 @@ export class SandiBot {
   readonly #contextCompiler: ContextCompiler;
   readonly #provider: ModelProviderClient;
   readonly #desktopHands: DesktopHands | undefined;
+  readonly #outbox: DurableOutbox;
   readonly #events: EventWatcher;
   readonly #reminders: ReminderManager;
   readonly #reactions: ReactionDigestStore;
@@ -232,17 +250,6 @@ export class SandiBot {
     this.#provider = deps.provider;
     this.#desktopHands = deps.desktopHands;
     this.#identities = new HumanIdentityStore(this.#config.paths.configDirs, 0);
-    this.#events = new EventWatcher(
-      this.#config.paths.eventsRoot,
-      (trigger) => {
-        void this.#enqueueEventTurn(trigger).catch((error: unknown) => {
-          log.error("failed to enqueue Discord event turn", {
-            eventId: trigger.id,
-            error: errorMessage(error),
-          });
-        });
-      },
-    );
     this.#client = new Client({
       intents: [
         GatewayIntentBits.Guilds,
@@ -257,6 +264,24 @@ export class SandiBot {
         Partials.User,
       ],
     });
+    this.#outbox =
+      deps.outbox ??
+      new DurableOutbox(deliveryOutboxPath(this.#config.paths.dataDir));
+    registerDiscordMessageDelivery(this.#outbox, async (channelId, options) => {
+      const channel = await this.#client.channels.fetch(channelId);
+      if (!channel?.isSendable()) {
+        throw new PermanentDeliveryError(
+          `Discord channel is unavailable or not sendable: ${channelId}`,
+        );
+      }
+      return channel.send(options);
+    });
+    registerDiscordEventDelivery(this.#outbox, (trigger, signal) =>
+      this.#executeEventTurn(trigger, signal),
+    );
+    this.#events = new EventWatcher(this.#config.paths.eventsRoot, (trigger) =>
+      this.#enqueueEventTurn(trigger),
+    );
     this.#todoList = new TodoListManager({
       client: this.#client,
       dataDir: this.#config.paths.dataDir,
@@ -265,6 +290,7 @@ export class SandiBot {
     this.#reminders = new ReminderManager({
       client: this.#client,
       remindersRoot: this.#config.paths.remindersRoot,
+      outbox: this.#outbox,
       onReminderDone: async ({ id, reminder }) => {
         if (reminder.recurrence) return;
         await this.#todoList.removeCompletedOneTimeReminder(id);
@@ -375,6 +401,7 @@ export class SandiBot {
       await ready.catch(() => {});
       this.#events.stop();
       this.#reminders.stop();
+      this.#outbox.stop();
       this.#client.removeAllListeners();
       this.#client.destroy();
       throw error;
@@ -396,6 +423,7 @@ export class SandiBot {
     });
     await postStartupStatus(this.#client, this.#config.discord);
     signal.throwIfAborted();
+    this.#outbox.start();
     await this.#events.start();
     signal.throwIfAborted();
     await this.#reminders.start();
@@ -407,6 +435,7 @@ export class SandiBot {
     this.#lifecycle?.abort();
     this.#events.stop();
     this.#reminders.stop();
+    this.#outbox.stop();
     this.#client.removeAllListeners();
     this.#client.destroy();
   }
@@ -1291,8 +1320,15 @@ export class SandiBot {
       };
       await this.#sendProviderResponse(
         input.replyToMessageId
-          ? { ...responseInput, replyToMessageId: input.replyToMessageId }
-          : responseInput,
+          ? {
+              ...responseInput,
+              idempotencyKey: `discord:response:${input.messageId}`,
+              replyToMessageId: input.replyToMessageId,
+            }
+          : {
+              ...responseInput,
+              idempotencyKey: `discord:response:${input.messageId}`,
+            },
       );
     } catch (error) {
       log.error("conversation turn failed", {
@@ -1315,15 +1351,34 @@ export class SandiBot {
           ? { ...failureNoticeInput, replyToMessageId: failureReplyToMessageId }
           : failureNoticeInput,
       );
+      if (input.rethrowFailures) throw error;
     } finally {
       clearInterval(typingTimer);
     }
   }
 
   async #enqueueEventTurn(trigger: EventTrigger): Promise<void> {
+    await enqueueDiscordEvent(this.#outbox, trigger);
+  }
+
+  async #executeEventTurn(
+    trigger: EventTrigger,
+    outboxSignal: AbortSignal,
+  ): Promise<void> {
     try {
+      outboxSignal.throwIfAborted();
+      const messageId = `event:${trigger.id}:${trigger.occurrence}`;
+      if (await this.#outbox.get(`discord:response:${messageId}`)) {
+        log.info("event response is already durable", {
+          eventId: trigger.id,
+          occurrence: trigger.occurrence,
+        });
+        return;
+      }
       const channel = await this.#fetchEventTarget(trigger);
-      if (!channel) return;
+      if (!channel) {
+        throw new PermanentDeliveryError("event target is unavailable");
+      }
 
       const eventParticipant = eventAuthor(trigger.event);
       const conversation = await this.#loadEventConversation(
@@ -1331,31 +1386,45 @@ export class SandiBot {
         channel,
         eventParticipant,
       );
-      this.#queue.enqueue(
-        conversation.canonicalId,
-        trigger.id,
-        async (signal) => {
-          await this.#runTurn({
-            channel,
-            conversation,
-            author: eventParticipant,
-            messageId: `event:${trigger.id}`,
-            input: formatEventTurn(trigger),
-            metadata: eventMetadata(trigger, channel),
-            toolContext: toolContextFromChannel(
-              channel,
-              trigger.id,
-              eventParticipant,
-            ),
-            signal,
-          });
-        },
-      );
+      await new Promise<void>((resolve, reject) => {
+        this.#queue.enqueue(
+          conversation.canonicalId,
+          trigger.id,
+          async (queueSignal) => {
+            try {
+              const signal = AbortSignal.any([queueSignal, outboxSignal]);
+              signal.throwIfAborted();
+              await this.#runTurn({
+                channel,
+                conversation,
+                author: eventParticipant,
+                messageId,
+                input: formatEventTurn(trigger),
+                metadata: eventMetadata(trigger, channel),
+                toolContext: toolContextFromChannel(
+                  channel,
+                  trigger.id,
+                  eventParticipant,
+                ),
+                signal,
+                rethrowFailures: true,
+              });
+              resolve();
+            } catch (error) {
+              reject(error);
+            }
+          },
+        );
+      });
     } catch (error) {
-      log.error("event turn failed to enqueue", {
+      log.error("durable event turn failed", {
         eventId: trigger.id,
         error: errorMessage(error),
       });
+      if (error instanceof ProviderTurnError && error.deliverySideEffects) {
+        throw new AmbiguousDeliveryError(error.message, { cause: error });
+      }
+      throw error;
     }
   }
 
@@ -1482,6 +1551,7 @@ export class SandiBot {
       await this.#sendProviderResponse({
         channel,
         response,
+        idempotencyKey: `discord:response:${message.id}`,
         replyToMessageId: message.id,
       });
     } catch (error) {
@@ -1549,6 +1619,7 @@ export class SandiBot {
   async #sendProviderResponse(input: {
     channel: FailureNoticeChannel;
     response: ProviderTurnResponse;
+    idempotencyKey: string;
     replyToMessageId?: string;
   }): Promise<void> {
     // Tool/runtime Discord sends are already visible to the user. Treat their
@@ -1558,26 +1629,17 @@ export class SandiBot {
     const content = input.response.text.trim();
     if (!content) return;
 
-    try {
-      const chunks = chunkDiscordMessage(content);
-      for (const [index, chunk] of chunks.entries()) {
-        const options: MessageCreateOptions = {
-          content: chunk,
-          allowedMentions: { parse: [], repliedUser: false },
-        };
-        if (index === 0 && input.replyToMessageId) {
-          options.reply = {
-            messageReference: input.replyToMessageId,
-            failIfNotExists: false,
-          };
-        }
-        await input.channel.send(options);
-      }
-    } catch (error) {
-      log.error("failed to send provider response", {
-        error: errorMessage(error),
-      });
-    }
+    await enqueueDiscordMessage({
+      outbox: this.#outbox,
+      idempotencyKey: input.idempotencyKey,
+      payload: {
+        channelId: input.channel.id,
+        chunks: chunkDiscordMessage(content),
+        ...(input.replyToMessageId
+          ? { replyToMessageId: input.replyToMessageId }
+          : {}),
+      },
+    });
   }
 
   async #sendProviderFailureNotice(input: {

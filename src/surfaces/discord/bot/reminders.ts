@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -13,9 +15,20 @@ import {
   type User,
 } from "discord.js";
 
+import {
+  AmbiguousDeliveryError,
+  type DeliveryRecord,
+  type DurableOutbox,
+  PermanentDeliveryError,
+} from "@/lib/delivery/outbox";
 import { errorMessage } from "@/lib/errors";
 import { createLogger } from "@/lib/logging";
 import { isRecord } from "@/lib/type-guards";
+import {
+  enqueueDiscordReminder,
+  type ReminderDeliveryPayload,
+  registerDiscordReminderDelivery,
+} from "@/surfaces/discord/bot/reminder-delivery";
 import type { EventTarget } from "@/surfaces/discord/events/schemas";
 import { completedReminder } from "@/surfaces/discord/reminders/recurrence";
 import type {
@@ -65,20 +78,25 @@ export class ReminderManager {
   readonly #client: Client;
   readonly #remindersRoot: string;
   readonly #watcher: ReminderWatcher;
+  readonly #outbox: DurableOutbox;
   readonly #onReminderDone: ReminderDoneHandler | undefined;
-  readonly #firing = new Map<string, Promise<void>>();
 
   constructor(input: {
     client: Client;
     remindersRoot: string;
+    outbox: DurableOutbox;
     onReminderDone?: ReminderDoneHandler;
   }) {
     this.#client = input.client;
     this.#remindersRoot = input.remindersRoot;
+    this.#outbox = input.outbox;
     this.#onReminderDone = input.onReminderDone;
-    this.#watcher = new ReminderWatcher(input.remindersRoot, (trigger) => {
-      this.#triggerReminder(trigger);
-    });
+    registerDiscordReminderDelivery(this.#outbox, (payload, record, signal) =>
+      this.#fireReminder(payload, record, signal),
+    );
+    this.#watcher = new ReminderWatcher(input.remindersRoot, (trigger) =>
+      this.#enqueueReminder(trigger),
+    );
   }
 
   async start(): Promise<void> {
@@ -89,21 +107,11 @@ export class ReminderManager {
     this.#watcher.stop();
   }
 
-  #triggerReminder(trigger: ReminderTrigger): void {
-    if (this.#firing.has(trigger.id)) return;
-    const firing = this.#fireReminder(trigger)
-      .catch((error: unknown) => {
-        log.error("failed to fire reminder", {
-          id: trigger.id,
-          error: errorMessage(error),
-        });
-      })
-      .finally(() => {
-        if (this.#firing.get(trigger.id) === firing) {
-          this.#firing.delete(trigger.id);
-        }
-      });
-    this.#firing.set(trigger.id, firing);
+  async #enqueueReminder(trigger: ReminderTrigger): Promise<void> {
+    await enqueueDiscordReminder(this.#outbox, {
+      id: trigger.id,
+      scheduledFireAt: trigger.reminder.nextFireAt,
+    });
   }
 
   async handleInteraction(interaction: Interaction): Promise<boolean> {
@@ -201,24 +209,30 @@ export class ReminderManager {
     return limitText(lines.join("\n"), MAX_INTERACTION_RESPONSE_CHARS);
   }
 
-  async #fireReminder(trigger: ReminderTrigger): Promise<void> {
+  async #fireReminder(
+    delivery: ReminderDeliveryPayload,
+    record: DeliveryRecord,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
     let reminder: Reminder;
     try {
-      reminder = await readReminder(this.#remindersRoot, trigger.id);
+      reminder = await readReminder(this.#remindersRoot, delivery.id);
     } catch (error) {
       log.warn("reminder disappeared before firing", {
-        id: trigger.id,
+        id: delivery.id,
         error: errorMessage(error),
       });
       return;
     }
     if (reminder.status !== "active") return;
+    if (reminder.nextFireAt !== delivery.scheduledFireAt) return;
 
     const now = new Date();
     const recentFireAts = recentReminderFireAts(reminder, now);
     const nextAllowedFireAt = nextAllowedReminderFireAt(recentFireAts);
     if (nextAllowedFireAt && nextAllowedFireAt.getTime() > now.getTime()) {
-      await writeReminder(this.#remindersRoot, trigger.id, {
+      await writeReminder(this.#remindersRoot, delivery.id, {
         ...reminder,
         nextFireAt: nextAllowedFireAt.toISOString(),
         recentFireAts,
@@ -229,29 +243,35 @@ export class ReminderManager {
       return;
     }
 
-    const channel = await this.#fetchReminderTarget(trigger.id, reminder);
-    if (!channel) return;
+    const channel = await this.#fetchReminderTarget(delivery.id, reminder);
+    if (!channel) {
+      throw new PermanentDeliveryError("reminder target is unavailable");
+    }
 
     let message: Message;
     try {
-      message = await channel.send(buildReminderMessage(trigger.id, reminder));
+      const options = buildReminderMessage(delivery.id, reminder);
+      options.nonce = reminderNonce(record.idempotencyKey);
+      options.enforceNonce = true;
+      message = await channel.send(options);
     } catch (error) {
-      log.error("failed to send reminder", {
-        id: trigger.id,
-        error: errorMessage(error),
-      });
-      return;
+      throw new AmbiguousDeliveryError(errorMessage(error), { cause: error });
     }
+    signal.throwIfAborted();
 
     let current: Reminder;
     try {
-      current = await readReminder(this.#remindersRoot, trigger.id);
+      current = await readReminder(this.#remindersRoot, delivery.id);
     } catch {
-      await disableMessage(message, trigger.id);
+      await disableMessage(message, delivery.id);
       return;
     }
     if (current.status !== "active") {
-      await disableMessage(message, trigger.id);
+      await disableMessage(message, delivery.id);
+      return;
+    }
+    if (current.nextFireAt !== delivery.scheduledFireAt) {
+      await disableMessage(message, delivery.id);
       return;
     }
 
@@ -259,7 +279,7 @@ export class ReminderManager {
       current.followupIntervalMinutes,
     );
     const nextFireAt = addMinutes(now, followupIntervalMinutes).toISOString();
-    await writeReminder(this.#remindersRoot, trigger.id, {
+    await writeReminder(this.#remindersRoot, delivery.id, {
       ...current,
       nextFireAt,
       lastFiredAt: now.toISOString(),
@@ -525,6 +545,10 @@ function reminderAction(
     default:
       return undefined;
   }
+}
+
+function reminderNonce(idempotencyKey: string): string {
+  return createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 24);
 }
 
 function isCleanHandledChannelName(name: string): boolean {

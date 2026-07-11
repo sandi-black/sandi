@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import { verifyDesktopFileDelivery } from "@/surfaces/discord/bot/verify-desktop-file-delivery";
+import "@/surfaces/discord/bot/verify-delivery-outbox";
 import { DISCORD_DELIVERY_INSTRUCTIONS } from "@/surfaces/discord/discord/delivery-instructions";
 
 assert.match(DISCORD_DELIVERY_INSTRUCTIONS, /# Discord Delivery/);

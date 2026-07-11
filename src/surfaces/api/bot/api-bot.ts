@@ -833,12 +833,12 @@ export class ApiBot {
   }
 
   // The API caller authenticates to an existing human identity and reuses that
-  // human's primary platform participant (Discord first, else GitHub). An API
-  // turn therefore inherits that human's profile, instructions, personal memory
-  // arena, and account routing: one shared brain across surfaces. The surface is
-  // "api" (recorded in surfaceContext and the manifest), which stays distinct
-  // from the participant platform. A human with no Discord or GitHub mapping
-  // resolves to undefined so the turn never runs unmapped.
+  // human's configured primary platform participant, with a Discord-first
+  // fallback for legacy records. An API turn therefore inherits that human's
+  // profile, instructions, personal memory arena, and account routing. The
+  // "api" surface remains distinct from the reused participant platform. A
+  // human with no Discord or GitHub mapping resolves to undefined so the turn
+  // never runs unmapped.
   async #participantForIdentityId(
     identityId: string,
   ): Promise<ConversationParticipant | undefined> {

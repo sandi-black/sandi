@@ -30,6 +30,9 @@
           "type": "string",
           "minLength": 1
         },
+        "primaryPlatform": {
+          "enum": ["discord", "github"]
+        },
         "platforms": {
           "type": "object",
           "additionalProperties": false,
@@ -43,7 +46,43 @@
             }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "primaryPlatform": {
+                "const": "discord"
+              }
+            },
+            "required": ["primaryPlatform"]
+          },
+          "then": {
+            "properties": {
+              "platforms": {
+                "required": ["discord"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "primaryPlatform": {
+                "const": "github"
+              }
+            },
+            "required": ["primaryPlatform"]
+          },
+          "then": {
+            "properties": {
+              "platforms": {
+                "required": ["github"]
+              }
+            }
+          }
+        }
+      ]
     },
     "discordAccount": {
       "type": "object",

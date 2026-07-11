@@ -13,6 +13,11 @@ Use durable platform account IDs for important mappings. Usernames and logins
 are allowed as bootstrap fallbacks, but they can change and should not be the
 only key for a known human once the numeric platform ID is available.
 
+Set `primaryPlatform` to `discord` or `github` when a human has both accounts.
+API turns reuse that account for participant identity, memory, and account
+routing. The selected account must exist in the same record. Records without
+`primaryPlatform` retain the legacy Discord-first fallback.
+
 Example mapping IDs in this repository are placeholders. Replace them with
 durable platform account IDs in a private config overlay before enabling
 identity-based routing.

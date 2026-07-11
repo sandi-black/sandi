@@ -36,6 +36,7 @@ export type HumanIdentityConfig = {
 export type HumanIdentityRecord = {
   id: string;
   displayName: string;
+  primaryPlatform?: IdentityPlatform | undefined;
   platforms: {
     discord?:
       | {

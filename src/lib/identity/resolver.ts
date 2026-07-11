@@ -11,24 +11,44 @@ import {
   PLATFORM_IDENTITY_DESCRIPTORS,
 } from "@/lib/identity/types";
 
-const HumanIdentitySchema = z.object({
-  id: z.string().min(1),
-  displayName: z.string().min(1),
-  platforms: z.object({
-    discord: z
-      .object({
-        id: z.string().min(1).optional(),
-        username: z.string().min(1),
-      })
-      .optional(),
-    github: z
-      .object({
-        id: z.string().min(1).optional(),
-        login: z.string().min(1),
-      })
-      .optional(),
-  }),
-});
+const IdentityPlatformSchema = z.custom<IdentityPlatform>(
+  (value) =>
+    typeof value === "string" &&
+    IDENTITY_PLATFORMS.some((platform) => platform === value),
+  "primaryPlatform must name a supported identity platform",
+);
+
+const HumanIdentitySchema = z
+  .object({
+    id: z.string().min(1),
+    displayName: z.string().min(1),
+    primaryPlatform: IdentityPlatformSchema.optional(),
+    platforms: z.object({
+      discord: z
+        .object({
+          id: z.string().min(1).optional(),
+          username: z.string().min(1),
+        })
+        .optional(),
+      github: z
+        .object({
+          id: z.string().min(1).optional(),
+          login: z.string().min(1),
+        })
+        .optional(),
+    }),
+  })
+  .refine(
+    (human) =>
+      human.primaryPlatform === undefined ||
+      PLATFORM_IDENTITY_DESCRIPTORS[human.primaryPlatform].readAccount(
+        human.platforms,
+      ) !== undefined,
+    {
+      path: ["primaryPlatform"],
+      message: "primaryPlatform must have a matching account in platforms",
+    },
+  );
 
 const HumanIdentityConfigSchema = z.object({
   version: z.literal(1),

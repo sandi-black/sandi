@@ -107,10 +107,11 @@ maps to a platform account is `403`, and exceeding the rate limit is `429`.
 ### Identity reuse
 
 A token carries an `identityId`, not a fresh account. At turn time Sandi
-resolves that identity to the human's primary platform participant (Discord
-first, else GitHub) from `humans.json`, and runs the turn as that participant.
-The API turn therefore inherits that human's profile, instructions, personal
-memory arena, and per-human account routing: one shared brain across surfaces.
+resolves that identity to the account selected by `primaryPlatform` in
+`humans.json`, and runs the turn as that participant. Records without the field
+retain the Discord-first, then GitHub fallback. The API turn therefore inherits
+that human's profile, instructions, personal memory arena, and per-human account
+routing: one shared brain across surfaces.
 
 The surface and the platform stay distinct, exactly as the surface contract
 intends. The manifest records `surface: "api"`, while the participant `platform`

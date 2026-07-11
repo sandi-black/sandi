@@ -188,6 +188,7 @@ async function searchCachedMemoryIndex(
     embeddingEngine,
     queryExpansion: memoryQueryExpansion(input.query),
     supportingScoreWeight: input.supportingScoreWeight,
+    bm25Index: cached.bm25Index,
   });
   return {
     embedding: response.embedding,

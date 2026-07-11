@@ -172,6 +172,7 @@ async function searchCachedSkillIndex(
     embeddingEngine,
     queryExpansion: skillQueryExpansion(input.query),
     supportingScoreWeight: input.supportingScoreWeight,
+    bm25Index: cached.bm25Index,
   });
   return {
     embedding: response.embedding,

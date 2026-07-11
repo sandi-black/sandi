@@ -1,5 +1,5 @@
 import { errorMessage } from "../errors";
-import { searchBm25 } from "./bm25";
+import { type Bm25Index, searchBm25, searchBm25Index } from "./bm25";
 import {
   cosineSimilarity,
   createEmbeddingEngineFromEnv,
@@ -22,6 +22,7 @@ export type HybridSearchOptions = {
   embeddingEngine?: EmbeddingEngine | null | undefined;
   queryExpansion?: string | undefined;
   documentEmbeddings?: ReadonlyMap<string, readonly number[]> | undefined;
+  bm25Index?: Bm25Index | undefined;
 };
 
 export type HybridSearchResult = {
@@ -60,9 +61,15 @@ export async function hybridSearch(
   const retrievalQuery = options.queryExpansion?.trim()
     ? [trimmedQuery, options.queryExpansion.trim()].join("\n")
     : trimmedQuery;
-  const bm25Results = searchBm25(documents, retrievalQuery, {
-    maxSnippets: options.maxSnippets,
-  });
+  const bm25Options = { maxSnippets: options.maxSnippets };
+  const bm25Results = options.bm25Index
+    ? searchBm25Index(
+        options.bm25Index,
+        retrievalQuery,
+        bm25Options,
+        documents.map((document) => document.id),
+      )
+    : searchBm25(documents, retrievalQuery, bm25Options);
   const bm25ById = new Map(bm25Results.map((result) => [result.id, result]));
   const maxBm25Score = Math.max(
     0,

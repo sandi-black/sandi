@@ -71,7 +71,7 @@ export async function parentHybridSearch(
   for (const passage of passages) {
     const content = passage.content.trim();
     if (content.length === 0) continue;
-    const id = documentId(passage);
+    const id = searchPassageDocumentId(passage);
     passageByDocumentId.set(id, passage);
     if (passage.embedding) documentEmbeddings.set(id, passage.embedding);
     documents.push({ id, content });
@@ -87,6 +87,7 @@ export async function parentHybridSearch(
     queryExpansion: options.queryExpansion,
     documentEmbeddings:
       documentEmbeddings.size > 0 ? documentEmbeddings : undefined,
+    bm25Index: options.bm25Index,
   });
 
   return {
@@ -320,7 +321,8 @@ function stripFrontmatter(content: string): string {
   return content.slice(endIndex + 3);
 }
 
-function documentId(passage: SearchPassage): string {
+/** Keeps embedding, lexical, and parent aggregation lookups on one stable ID. */
+export function searchPassageDocumentId(passage: SearchPassage): string {
   return `${passage.parentId}${DOCUMENT_ID_SEPARATOR}${passage.passageId}`;
 }
 

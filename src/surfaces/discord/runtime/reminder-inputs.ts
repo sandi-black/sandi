@@ -14,7 +14,7 @@ const ReminderTextInputSchema = z
   .trim()
   .min(1, "reminder text must not be empty");
 
-const ReminderTimestampInputSchema = z
+export const ReminderTimestampInputSchema = z
   .string()
   .trim()
   .pipe(z.iso.datetime({ offset: true }))

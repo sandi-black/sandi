@@ -28,11 +28,21 @@ import {
   readDiscordPlatformContext,
 } from "@/surfaces/discord/runtime/context";
 import { resolveGuildId } from "@/surfaces/discord/runtime/guild";
-import { explicitChannelId } from "@/surfaces/discord/runtime/targets";
+import {
+  type AddTodoItemInput,
+  AddTodoItemInputSchema,
+  type CompleteTodoItemInput,
+  CompleteTodoItemInputSchema,
+  type ListTodoItemsInput,
+  ListTodoItemsInputSchema,
+  type RemoveTodoItemInput,
+  RemoveTodoItemInputSchema,
+  type UpdateTodoItemInput,
+  UpdateTodoItemInputSchema,
+} from "@/surfaces/discord/runtime/todo-inputs";
 import type { DiscordContext } from "@/surfaces/discord/shared/rest";
 import {
   type ChannelTodoState,
-  cleanItemText,
   emptyGuildState,
   formatTodoList,
   GuildTodoStateSchema,
@@ -71,43 +81,12 @@ export type TodoItemSummary = {
   reminderId?: string;
 };
 
-export type AddTodoItemInput = {
-  text: string;
-  channel?: string;
-  authorName?: string;
-  sourceUrl?: string;
-  reason?: string;
-  reminderAt?: string;
-  recurrence?: ReminderRecurrence;
-  recurrenceSummary?: string;
-  audienceUserIds?: string[];
-  createdBy?: ReminderUser;
-};
-
-export type UpdateTodoItemInput = {
-  itemId?: string;
-  matchText?: string;
-  channel?: string;
-  text?: string;
-  reason?: string | null;
-  reminderAt?: string | null;
-  recurrence?: ReminderRecurrence | null;
-  recurrenceSummary?: string | null;
-  audienceUserIds?: string[];
-  updatedBy?: ReminderUser;
-};
-
-export type CompleteTodoItemInput = {
-  itemId?: string;
-  matchText?: string;
-  channel?: string;
-  doneBy?: ReminderUser;
-};
-
-export type RemoveTodoItemInput = {
-  itemId?: string;
-  matchText?: string;
-  channel?: string;
+export type {
+  AddTodoItemInput,
+  CompleteTodoItemInput,
+  ListTodoItemsInput,
+  RemoveTodoItemInput,
+  UpdateTodoItemInput,
 };
 
 export type TodoListResult = {
@@ -119,9 +98,10 @@ export type TodoListResult = {
 const EMPTY_STATE: TodoListState = { guilds: {} };
 
 export async function listItems(
-  input: { channel?: string } = {},
+  input: ListTodoItemsInput = {},
 ): Promise<TodoListResult> {
-  const { guildId, channelId } = currentTodoTarget(input.channel);
+  const parsed = ListTodoItemsInputSchema.parse(input);
+  const { guildId, channelId } = currentTodoTarget(parsed.channel);
   const state = await store().read(EMPTY_STATE);
   const current = state.guilds[guildId] ?? emptyGuildState();
   const list =
@@ -132,18 +112,16 @@ export async function listItems(
 export async function addItem(
   input: AddTodoItemInput,
 ): Promise<TodoListResult> {
-  const text = cleanItemText(input.text);
-  if (!text) throw new Error("Todo text is empty.");
-  const { guildId, channelId } = currentTodoTarget(input.channel);
-  const sourceUrl = input.sourceUrl;
+  const parsed = AddTodoItemInputSchema.parse(input);
+  const { guildId, channelId } = currentTodoTarget(parsed.channel);
   const reminderPlan = await createReminderPlan({
     channelId,
-    text,
-    reminderAt: input.reminderAt,
-    recurrence: input.recurrence,
-    recurrenceSummary: input.recurrenceSummary,
-    audienceUserIds: input.audienceUserIds,
-    createdBy: input.createdBy ?? currentDiscordReminderUser(),
+    text: parsed.text,
+    reminderAt: parsed.reminderAt,
+    recurrence: parsed.recurrence,
+    recurrenceSummary: parsed.recurrenceSummary,
+    audienceUserIds: parsed.audienceUserIds,
+    createdBy: parsed.createdBy ?? currentDiscordReminderUser(),
   });
 
   return updateStoredList(guildId, channelId, async (list) => {
@@ -152,10 +130,10 @@ export async function addItem(
     }
     const itemInput = {
       id: randomUUID(),
-      text,
-      authorName: input.authorName ?? "Sandi",
-      sourceUrl,
-      reason: input.reason,
+      text: parsed.text,
+      authorName: parsed.authorName ?? "Sandi",
+      sourceUrl: parsed.sourceUrl,
+      reason: parsed.reason,
       createdAt: new Date().toISOString(),
     };
     const item = buildTodoItem(
@@ -168,28 +146,28 @@ export async function addItem(
 export async function updateItem(
   input: UpdateTodoItemInput,
 ): Promise<TodoListResult> {
-  const { guildId, channelId } = currentTodoTarget(input.channel);
+  const parsed = UpdateTodoItemInputSchema.parse(input);
+  const { guildId, channelId } = currentTodoTarget(parsed.channel);
   return updateStoredList(guildId, channelId, async (list) => {
-    const item = findOneItem(list.items, input);
-    const text =
-      input.text === undefined ? item.text : cleanItemText(input.text);
-    if (!text) throw new Error("Updated todo text is empty.");
+    const item = findOneItem(list.items, parsed);
+    const text = parsed.text ?? item.text;
     const reminderPlan = await updateReminderPlan({
       channelId,
       item,
       text,
-      reminderAt: input.reminderAt,
-      recurrence: input.recurrence,
-      recurrenceSummary: input.recurrenceSummary,
-      audienceUserIds: input.audienceUserIds,
-      updatedBy: input.updatedBy,
+      reminderAt: parsed.reminderAt,
+      recurrence: parsed.recurrence,
+      recurrenceSummary: parsed.recurrenceSummary,
+      audienceUserIds: parsed.audienceUserIds,
+      updatedBy: parsed.updatedBy,
     });
     const itemInput = {
       id: item.id,
       text,
       authorName: item.authorName,
       sourceUrl: item.sourceUrl,
-      reason: input.reason === undefined ? item.reason : nullish(input.reason),
+      reason:
+        parsed.reason === undefined ? item.reason : nullish(parsed.reason),
       createdAt: item.createdAt,
     };
     const updated = buildTodoItem(
@@ -202,10 +180,11 @@ export async function updateItem(
 export async function completeItem(
   input: CompleteTodoItemInput,
 ): Promise<TodoListResult> {
-  const { guildId, channelId } = currentTodoTarget(input.channel);
+  const parsed = CompleteTodoItemInputSchema.parse(input);
+  const { guildId, channelId } = currentTodoTarget(parsed.channel);
   return updateStoredList(guildId, channelId, async (list) => {
-    const item = findOneItem(list.items, input);
-    const nextItem = await completedRecurringItem(item, input.doneBy);
+    const item = findOneItem(list.items, parsed);
+    const nextItem = await completedRecurringItem(item, parsed.doneBy);
     if (nextItem) return replaceItem(list, nextItem);
     return {
       ...list,
@@ -217,9 +196,10 @@ export async function completeItem(
 export async function removeItem(
   input: RemoveTodoItemInput,
 ): Promise<TodoListResult> {
-  const { guildId, channelId } = currentTodoTarget(input.channel);
+  const parsed = RemoveTodoItemInputSchema.parse(input);
+  const { guildId, channelId } = currentTodoTarget(parsed.channel);
   return updateStoredList(guildId, channelId, async (list) => {
-    const item = findOneItem(list.items, input);
+    const item = findOneItem(list.items, parsed);
     if (item.reminderId) await deleteReminder(remindersRoot(), item.reminderId);
     return {
       ...list,
@@ -458,14 +438,17 @@ function buildTodoItem(input: {
 
 function findOneItem(
   items: readonly TodoItem[],
-  input: { itemId?: string; matchText?: string },
+  input: {
+    itemId?: string | undefined;
+    matchText?: string | undefined;
+  },
 ): TodoItem {
   if (input.itemId) {
     const item = items.find((candidate) => candidate.id === input.itemId);
     if (!item) throw new Error(`No todo item found with id ${input.itemId}.`);
     return item;
   }
-  const query = input.matchText?.trim().toLocaleLowerCase();
+  const query = input.matchText?.toLocaleLowerCase();
   if (!query) throw new Error("Provide itemId or matchText.");
   const matches = items.filter((item) =>
     item.text.toLocaleLowerCase().includes(query),
@@ -656,7 +639,7 @@ function currentTodoTarget(channelRef: string | undefined): {
   const context = optionalContext();
   const guildId = resolveGuildId(context?.guildId);
   const channelId = channelRef
-    ? explicitChannelId(channelRef)
+    ? channelRef
     : (context?.threadId ?? context?.channelId);
   if (!channelId) {
     throw new Error(

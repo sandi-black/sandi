@@ -39,6 +39,8 @@ const CodexConversionConfigSchema = z
 await withTempDir("sandi-pi-setup-", async (tempRoot) => {
   verifyPackageListParsing();
   await verifyPerAccountSetup(tempRoot);
+  await verifyConfiguredExtensionPreflight(tempRoot);
+  await verifyExtensionFailureStopsStartup(tempRoot);
   await verifyStaleConfigReplacement(tempRoot);
   await verifyUnsupportedVersionStopsEarly(tempRoot);
   console.log("Pi runtime setup verification passed");
@@ -55,6 +57,91 @@ function verifyPackageListParsing(): void {
     [...installed].join(",") ===
       "npm:@howaboua/pi-codex-conversion,git:sandi.local/example-package",
     "pi list package parser should return npm and git package sources",
+  );
+}
+
+async function verifyConfiguredExtensionPreflight(root: string): Promise<void> {
+  const calls: PiSetupCommandRequest[] = [];
+  const config = piConfig(root, "extension-preflight", {
+    extensionPaths: [
+      join(root, "custom", "first-extension.ts"),
+      join(root, "custom", "second-extension.ts"),
+    ],
+  });
+
+  await ensurePiRuntimeSetup(config, {
+    manifest: { packages: [], blockedPackages: [] },
+    runner: async (request) => {
+      calls.push(request);
+      const command = request.args.join(" ");
+      if (command === "--version") return ok(SUPPORTED_PI_VERSION);
+      if (command === "list") return ok("User packages:\n");
+      if (command.includes("__sandi_extension_load_probe__")) {
+        return fail('Unknown provider "__sandi_extension_load_probe__"');
+      }
+      if (
+        command === "--offline --provider openai-codex --list-models gpt-5.5"
+      ) {
+        return ok("openai-codex/gpt-5.5\n");
+      }
+      return fail(`unexpected command: ${command}`);
+    },
+  });
+
+  const preflight = calls.find((call) =>
+    call.args.includes("__sandi_extension_load_probe__"),
+  );
+  assert(
+    preflight !== undefined,
+    "setup should preflight configured extensions",
+  );
+  assert(
+    preflight.args.join("|") ===
+      [
+        "--print",
+        "--no-session",
+        "--extension",
+        config.extensionPaths[0],
+        "--extension",
+        config.extensionPaths[1],
+        "--provider",
+        "__sandi_extension_load_probe__",
+        "--model",
+        "__sandi_extension_load_probe__",
+        "probe extension loading only",
+      ].join("|"),
+    "preflight should load the active config paths without a provider request",
+  );
+}
+
+async function verifyExtensionFailureStopsStartup(root: string): Promise<void> {
+  const calls: PiSetupCommandRequest[] = [];
+  let rejected = false;
+  try {
+    await ensurePiRuntimeSetup(
+      piConfig(root, "failed-extension", {
+        extensionPaths: [join(root, "missing-extension.ts")],
+      }),
+      {
+        manifest: { packages: [], blockedPackages: [] },
+        runner: async (request) => {
+          calls.push(request);
+          const command = request.args.join(" ");
+          if (command === "--version") return ok(SUPPORTED_PI_VERSION);
+          if (command === "list") return ok("User packages:\n");
+          return fail("Failed to load extension: module not found");
+        },
+      },
+    );
+  } catch (error) {
+    rejected =
+      error instanceof Error &&
+      error.message.includes("Failed to load extension: module not found");
+  }
+  assert(rejected, "extension load failures should reject runtime setup");
+  assert(
+    !calls.some((call) => call.args.includes("--list-models")),
+    "extension failures should stop setup before model validation or surfaces",
   );
 }
 
@@ -233,6 +320,7 @@ function piConfig(
     agentDir?: string;
     accountDirs?: string[];
     packageDir?: string;
+    extensionPaths?: string[];
   },
 ): PiConfig {
   const accountDirs = options?.accountDirs ?? [];
@@ -244,7 +332,7 @@ function piConfig(
     packageManifestPath: join(root, name, "pi-packages.json"),
     sessionDir: join(root, name, "sessions"),
     tokenUsagePath: join(root, name, "token-usage.jsonl"),
-    extensionPaths: [],
+    extensionPaths: options?.extensionPaths ?? [],
     timeoutMs: 1000,
     eventsRoot: join(root, name, "events"),
     remindersRoot: join(root, name, "reminders"),

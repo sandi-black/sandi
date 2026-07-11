@@ -2,8 +2,8 @@ import { randomBytes } from "node:crypto";
 
 import type { HumanIdentityStore } from "@/lib/identity/resolver";
 import {
-  consumePairing,
   normalizePairingCode,
+  redeemPairingTransaction,
 } from "@/lib/pairing/pairing-store";
 import { isRecord } from "@/lib/type-guards";
 import {
@@ -11,7 +11,12 @@ import {
   requireApiSegment,
 } from "@/surfaces/api/api/conversations";
 import { apiParticipantFromHuman } from "@/surfaces/api/auth/participant";
-import { mintApiToken } from "@/surfaces/api/auth/tokens";
+import {
+  apiTokenEntry,
+  apiTokenEntryExists,
+  appendApiTokenEntry,
+  generateApiToken,
+} from "@/surfaces/api/auth/tokens";
 
 const MAX_DEVICE_LABEL_LENGTH = 200;
 
@@ -64,32 +69,59 @@ export async function redeemPairing(input: {
     deviceId = generateDeviceId();
   }
 
-  const consumed = await consumePairing({
+  const label = parsed.label ?? `Device ${deviceId}`;
+  const transaction = await redeemPairingTransaction({
     path: input.pairingsPath,
     code,
     ...(input.now !== undefined ? { now: input.now } : {}),
+    authorize: async (identityId) => {
+      const identities = await input.identities.load();
+      const human = identities.humans.find((item) => item.id === identityId);
+      return human ? apiParticipantFromHuman(human) !== undefined : false;
+    },
+    prepare: () => {
+      const token = generateApiToken();
+      return {
+        token,
+        deviceId,
+        label,
+      };
+    },
+    persist: async ({ identityId, redemption }) => {
+      await appendApiTokenEntry(
+        input.tokensPath,
+        apiTokenEntry({
+          token: redemption.token,
+          identityId,
+          deviceId: redemption.deviceId,
+          label: redemption.label,
+        }),
+      );
+    },
+    isPersisted: ({ identityId, redemption }) =>
+      apiTokenEntryExists(
+        input.tokensPath,
+        apiTokenEntry({
+          token: redemption.token,
+          identityId,
+          deviceId: redemption.deviceId,
+          label: redemption.label,
+        }),
+      ),
   });
-  if (!consumed) return { ok: false, status: 401, error: "invalid_code" };
-
-  // The code bound an identity at issue time. Re-resolve it now: a member
-  // removed or unmapped between issue and redemption gets a 403 and no token.
-  const identities = await input.identities.load();
-  const human = identities.humans.find(
-    (item) => item.id === consumed.identityId,
-  );
-  const participant = human ? apiParticipantFromHuman(human) : undefined;
-  if (!participant) {
+  if (transaction.kind === "invalid") {
+    return { ok: false, status: 401, error: "invalid_code" };
+  }
+  if (transaction.kind === "rejected") {
     return { ok: false, status: 403, error: "identity_unmapped" };
   }
-
-  const label = parsed.label ?? `Device ${deviceId}`;
-  const token = await mintApiToken({
-    tokensPath: input.tokensPath,
-    identityId: consumed.identityId,
-    deviceId,
-    label,
-  });
-  return { ok: true, identityId: consumed.identityId, deviceId, label, token };
+  return {
+    ok: true,
+    identityId: transaction.identityId,
+    deviceId: transaction.redemption.deviceId,
+    label: transaction.redemption.label,
+    token: transaction.redemption.token,
+  };
 }
 
 // A short, segment-safe device id (matches the conversation segment alphabet) so

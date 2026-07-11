@@ -79,26 +79,39 @@ identity-bearing surface acting as the mediator that proves who they are:
    replies privately (ephemerally) with it.
 2. The member pastes that code into their desktop client, which redeems it at
    `POST /v1/auth/pair`.
-3. The server validates and atomically consumes the code, re-checks against a
-   freshly reloaded `humans.json` that the bound identity still maps to a
-   platform account (so a member removed after the code was issued is rejected
-   without a server restart), mints a per-device bearer token, and returns it
-   once. The client stores the token and uses it for every later turn.
+3. The server validates the code, re-checks against a freshly reloaded
+   `humans.json` that the bound identity still maps to a platform account (so a
+   member removed after the code was issued is rejected without a server
+   restart), journals a reservation, durably stores one per-device bearer token,
+   marks the reservation complete, and returns the token. The client stores the
+   token and uses it for every later turn.
 
-The pairing store (`src/lib/pairing/pairing-store.ts`) is platform-neutral: it
-records only the resolved `identityId`, never which surface issued the code. Because a token binds to an identity, and that identity already
-carries both the Discord and GitHub mappings, pairing through Discord also
+The pairing store (`src/lib/pairing/pairing-store.ts`) is platform-neutral. An
+issued code binds to the resolved `identityId`, never the surface that issued
+it. Its redemption journal adds only the device credential fields needed for
+transaction recovery. Because a token binds to an identity, and that identity
+already carries both Discord and GitHub mappings, pairing through Discord also
 connects the member's GitHub account when one is on file, with no extra step.
 
-Codes are short-lived (10 minutes), single-use, and stored only as SHA-256
-hashes (default `data/config/api-pairings.json`, override with
-`SANDI_API_PAIRINGS_PATH`). A code is 50 bits of Crockford base32 rendered as
-two readable groups, with the ambiguous letters folded on redemption so a typo
-of `O` for `0` still works. Issuing a new code supersedes the member's previous
-unconsumed one, and expired codes are pruned on every write. Redemption runs
-under the managed-write lock, so even two clients racing the same code mint at
-most one token. The unauthenticated `POST /v1/auth/pair` is additionally rate
-limited per client and globally as a flood guard.
+Codes are short-lived (10 minutes), single-token secrets. Before redemption the
+pairing file stores only a SHA-256 code hash (default
+`data/config/api-pairings.json`, override with `SANDI_API_PAIRINGS_PATH`). During
+redemption the private pairing file temporarily journals the raw device token,
+device id, and label so a crash or ambiguous HTTP response can resume with the
+same credential. The journal disappears when the pairing expires or a new code
+supersedes it. A code is 50 bits of Crockford base32 rendered as two readable
+groups, with ambiguous letters folded on redemption so a typo of `O` for `0`
+still works.
+
+Redemption holds the pairing managed-write lock across reservation, token-file
+persistence, and completion. A known failed token write rolls the reservation
+back, leaving the code redeemable. If the process exits after reservation, a
+retry resumes the journaled token. If it exits after token persistence, the
+idempotent token write detects the existing entry and completes the same
+transaction. If the response is lost after completion, the same code replays
+the same token until expiry. Concurrent requests therefore persist at most one
+token. The unauthenticated endpoint is also rate limited per client and
+globally as a flood guard.
 
 Each pairing failure returns a terse status and mints no token: a malformed or
 unknown code is `401`, a body with no code is `400`, an identity that no longer
@@ -478,7 +491,8 @@ on `DesktopClientOptions`; the reference `chat` REPL prints a one-line
 ```text
 src/lib/pairing/
   pairing-store.ts              platform-neutral pairing-code store (issue/redeem)
-  verify-pairing.ts             store-level verify (single-use, expiry, supersede)
+  verify-pairing.ts             store and transaction recovery verification
+  verify-pairing-transaction.ts crash, rollback, and idempotency scenarios
 src/lib/identity/
   resolver.ts                   strict id resolver + reloading HumanIdentityStore
   verify-auth-resolver.ts       strict resolver, store freshness, duplicate ids
@@ -562,9 +576,10 @@ Configuration lives in `.env.example` under the `SANDI_API_*` keys (plus the
 client-side `SANDI_API_URL` and `SANDI_DESKTOP_CONFIG`). Coverage runs as part of
 `npm run check`: `verify:api-bot` proves health, auth rejection, the
 unmapped-identity 403, identity routing, session reuse, token revocation, the
-full pairing redemption loop, that a freshly minted token authenticates a turn at
-once, and the device routes (auth, SSE open, unknown-result 404); `verify:pairing`
-covers the store's single-use, expiry, supersede, and concurrency properties;
+full pairing redemption loop, idempotent response replay, that a freshly minted
+token authenticates a turn at once, and the device routes (auth, SSE open,
+unknown-result 404); `verify:pairing` covers expiry, superseding, concurrency,
+write rollback, and recovery at each transaction transition;
 `verify:auth-resolver` covers strict resolution, identity-store freshness, and
 duplicate-id rejection; `verify:api-rate-limiter` and `verify:discord-auth` cover
 the limiter and the issuer. For hands-local, `verify:tool-broker` covers the

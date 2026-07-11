@@ -60,16 +60,44 @@ export function hashApiToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
-// A raw bearer token is 32 random bytes rendered as 64 hex characters. Only its
-// SHA-256 hash is ever written to disk; the raw value is returned to the caller
-// exactly once and must never be logged.
+// A raw bearer token is 32 random bytes rendered as 64 hex characters. The
+// token store persists only its SHA-256 hash. Pairing redemption temporarily
+// journals the raw value in its private transaction file so a retry can recover
+// the same credential. Raw tokens must never be logged.
 const TOKEN_BYTES = 32;
 
+export function generateApiToken(): string {
+  return randomBytes(TOKEN_BYTES).toString("hex");
+}
+
+export function apiTokenEntry(input: {
+  token: string;
+  identityId: string;
+  deviceId: string;
+  label: string;
+}): ApiTokenEntry {
+  return ApiTokenEntrySchema.parse({
+    tokenSha256: hashApiToken(input.token),
+    identityId: input.identityId,
+    deviceId: input.deviceId,
+    label: input.label,
+  });
+}
+
+export async function apiTokenEntryExists(
+  tokensPath: string,
+  entry: ApiTokenEntry,
+): Promise<boolean> {
+  return (await loadApiTokens(tokensPath)).tokens.some((candidate) =>
+    sameApiTokenEntry(candidate, entry),
+  );
+}
+
 /**
- * Appends a token entry to the tokens file under the managed-write lock, so a
- * concurrent enrollment (from the CLI or the pairing endpoint, possibly in
- * another process) cannot clobber an entry. The file is written with private
- * permissions because it gates authentication.
+ * Persists a token entry under the managed-write lock. Repeating the exact
+ * entry succeeds without writing a duplicate, which lets pairing recovery
+ * resume after an ambiguous process exit. Reusing a hash with different
+ * metadata fails closed. The file is private because it gates authentication.
  */
 export async function appendApiTokenEntry(
   tokensPath: string,
@@ -77,6 +105,13 @@ export async function appendApiTokenEntry(
 ): Promise<void> {
   await withManagedWrite(tokensPath, async () => {
     const current = await loadApiTokens(tokensPath);
+    const sameHash = current.tokens.find(
+      (candidate) => candidate.tokenSha256 === entry.tokenSha256,
+    );
+    if (sameHash) {
+      if (sameApiTokenEntry(sameHash, entry)) return;
+      throw new Error("API token hash already exists with different metadata");
+    }
     const next: ApiTokensFile = {
       version: 1,
       tokens: [...current.tokens, entry],
@@ -96,15 +131,19 @@ export async function mintApiToken(input: {
   deviceId: string;
   label: string;
 }): Promise<string> {
-  const rawToken = randomBytes(TOKEN_BYTES).toString("hex");
-  const entry: ApiTokenEntry = {
-    tokenSha256: hashApiToken(rawToken),
-    identityId: input.identityId,
-    deviceId: input.deviceId,
-    label: input.label,
-  };
+  const rawToken = generateApiToken();
+  const entry = apiTokenEntry({ token: rawToken, ...input });
   await appendApiTokenEntry(input.tokensPath, entry);
   return rawToken;
+}
+
+function sameApiTokenEntry(left: ApiTokenEntry, right: ApiTokenEntry): boolean {
+  return (
+    left.tokenSha256 === right.tokenSha256 &&
+    left.identityId === right.identityId &&
+    left.deviceId === right.deviceId &&
+    left.label === right.label
+  );
 }
 
 /**
@@ -162,11 +201,8 @@ export class ApiTokenStore {
 
   async contains(entry: ApiTokenEntry): Promise<boolean> {
     const tokens = await this.#load();
-    return tokens.tokens.some(
-      (candidate) =>
-        candidate.tokenSha256 === entry.tokenSha256 &&
-        candidate.identityId === entry.identityId &&
-        candidate.deviceId === entry.deviceId,
+    return tokens.tokens.some((candidate) =>
+      sameApiTokenEntry(candidate, entry),
     );
   }
 

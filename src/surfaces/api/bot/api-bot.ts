@@ -93,7 +93,7 @@ const ATTACHMENT_PATH = /^\/v1\/attachments\/([^/]+)$/;
 const ATTACHMENT_UPLOAD_TIMEOUT_MS = 5 * 60_000;
 
 // Rate limits for the unauthenticated pairing endpoint. A code is a 50-bit
-// single-use secret with a short TTL, so brute force is already infeasible;
+// single-token secret with a short TTL, so brute force is already infeasible;
 // these windows cap how fast any one client, or the server as a whole, will
 // consider a redemption, so a flood cannot grind the disk or chase codes. The
 // limits leave plenty of room for a human mistyping a code a few times.
@@ -647,10 +647,10 @@ export class ApiBot {
 
   // Redeems a pairing code for a per-device bearer token. The endpoint is
   // unauthenticated because the code itself is the proof: it was issued to a
-  // known human identity by an identity-bearing surface and is single-use with a
-  // short TTL. This method is the HTTP shell (rate limit, read body, map the
-  // result to a status); redeemPairing holds the enrollment logic. The raw token
-  // is logged nowhere, only the identity and device it was minted for.
+  // known human identity by an identity-bearing surface and can produce only one
+  // token during its short TTL. This method is the HTTP shell (rate limit, read
+  // body, map the result to a status); redeemPairing holds the enrollment logic.
+  // The raw token is logged nowhere, only its identity and device.
   async #handlePairRequest(
     request: IncomingMessage,
     response: ServerResponse,
@@ -681,7 +681,7 @@ export class ApiBot {
       return;
     }
 
-    log.info("issued API device token via pairing", {
+    log.info("redeemed API pairing code", {
       identityId: result.identityId,
       deviceId: result.deviceId,
     });

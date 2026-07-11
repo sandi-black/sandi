@@ -1,28 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import { REST, Routes } from "discord.js";
 
 import { z } from "zod/v4";
-import { generateTimestampId } from "@/lib/ids";
 import { JsonFileStore } from "@/lib/state/file-store";
-import {
-  completedReminder,
-  nextRecurrenceRun,
-  validateReminderRecurrence,
-} from "@/surfaces/discord/reminders/recurrence";
-import type {
-  Reminder,
-  ReminderRecurrence,
-  ReminderTarget,
-  ReminderUser,
-} from "@/surfaces/discord/reminders/schemas";
-import {
-  deleteReminder,
-  normalizeReminderId,
-  readReminder,
-  writeReminder,
-} from "@/surfaces/discord/reminders/store";
 import {
   currentDiscordReminderUser,
   readDiscordPlatformContext,
@@ -42,31 +23,25 @@ import {
 } from "@/surfaces/discord/runtime/todo-inputs";
 import type { DiscordContext } from "@/surfaces/discord/shared/rest";
 import {
+  MAX_TODO_ITEMS,
+  TodoApplication,
+  type TodoItemSelector,
+  type TodoListState,
+  TodoListStateSchema,
+} from "@/surfaces/discord/shared/todo-core";
+import {
   type ChannelTodoState,
-  emptyGuildState,
   formatTodoList,
-  GuildTodoStateSchema,
-  listForChannel,
   type TodoItem,
-  type TodoListRef,
-  updateGuildList,
 } from "@/surfaces/discord/shared/todo-format";
 
 const TODO_STATE_PATH = "todo-list/state.json";
-const MAX_TODO_ITEMS = 10;
-const DEFAULT_FOLLOWUP_INTERVAL_MINUTES = 60;
-
-const TodoListStateSchema = z.object({
-  guilds: z.record(z.string(), GuildTodoStateSchema),
-});
-
 const DiscordMessageSchema = z.object({
   id: z.string(),
   channel_id: z.string(),
   content: z.string(),
 });
 
-type TodoListState = z.infer<typeof TodoListStateSchema>;
 type DiscordMessage = z.infer<typeof DiscordMessageSchema>;
 
 export type TodoItemSummary = {
@@ -95,18 +70,13 @@ export type TodoListResult = {
   items: TodoItemSummary[];
 };
 
-const EMPTY_STATE: TodoListState = { guilds: {} };
-
 export async function listItems(
   input: ListTodoItemsInput = {},
 ): Promise<TodoListResult> {
   const parsed = ListTodoItemsInputSchema.parse(input);
   const { guildId, channelId } = currentTodoTarget(parsed.channel);
-  const state = await store().read(EMPTY_STATE);
-  const current = state.guilds[guildId] ?? emptyGuildState();
-  const list =
-    listForChannel(current, channelId)?.list ?? emptyChannelList(channelId);
-  return todoListResult(list);
+  const list = await application().list(guildId, { channelId });
+  return todoListResult(list ?? emptyChannelList(channelId));
 }
 
 export async function addItem(
@@ -114,33 +84,28 @@ export async function addItem(
 ): Promise<TodoListResult> {
   const parsed = AddTodoItemInputSchema.parse(input);
   const { guildId, channelId } = currentTodoTarget(parsed.channel);
-  const reminderPlan = await createReminderPlan({
-    channelId,
+  const result = await application().add({
+    guildId,
+    list: { channelId },
     text: parsed.text,
-    reminderAt: parsed.reminderAt,
-    recurrence: parsed.recurrence,
-    recurrenceSummary: parsed.recurrenceSummary,
-    audienceUserIds: parsed.audienceUserIds,
+    authorName: parsed.authorName ?? "Sandi",
+    ...(parsed.sourceUrl !== undefined ? { sourceUrl: parsed.sourceUrl } : {}),
+    ...(parsed.reason !== undefined ? { reason: parsed.reason } : {}),
+    ...(parsed.reminderAt !== undefined
+      ? { reminderAt: parsed.reminderAt }
+      : {}),
+    ...(parsed.recurrence !== undefined
+      ? { recurrence: parsed.recurrence }
+      : {}),
+    ...(parsed.recurrenceSummary !== undefined
+      ? { recurrenceSummary: parsed.recurrenceSummary }
+      : {}),
+    ...(parsed.audienceUserIds !== undefined
+      ? { audienceUserIds: parsed.audienceUserIds }
+      : {}),
     createdBy: parsed.createdBy ?? currentDiscordReminderUser(),
   });
-
-  return updateStoredList(guildId, channelId, async (list) => {
-    if (list.items.length >= MAX_TODO_ITEMS) {
-      throw new Error(`This todo list is full at ${MAX_TODO_ITEMS} items.`);
-    }
-    const itemInput = {
-      id: randomUUID(),
-      text: parsed.text,
-      authorName: parsed.authorName ?? "Sandi",
-      sourceUrl: parsed.sourceUrl,
-      reason: parsed.reason,
-      createdAt: new Date().toISOString(),
-    };
-    const item = buildTodoItem(
-      reminderPlan ? { ...itemInput, reminderPlan } : itemInput,
-    );
-    return { ...list, items: [...list.items, item] };
-  });
+  return todoListResult(result.list);
 }
 
 export async function updateItem(
@@ -148,33 +113,27 @@ export async function updateItem(
 ): Promise<TodoListResult> {
   const parsed = UpdateTodoItemInputSchema.parse(input);
   const { guildId, channelId } = currentTodoTarget(parsed.channel);
-  return updateStoredList(guildId, channelId, async (list) => {
-    const item = findOneItem(list.items, parsed);
-    const text = parsed.text ?? item.text;
-    const reminderPlan = await updateReminderPlan({
-      channelId,
-      item,
-      text,
-      reminderAt: parsed.reminderAt,
-      recurrence: parsed.recurrence,
-      recurrenceSummary: parsed.recurrenceSummary,
-      audienceUserIds: parsed.audienceUserIds,
-      updatedBy: parsed.updatedBy,
-    });
-    const itemInput = {
-      id: item.id,
-      text,
-      authorName: item.authorName,
-      sourceUrl: item.sourceUrl,
-      reason:
-        parsed.reason === undefined ? item.reason : nullish(parsed.reason),
-      createdAt: item.createdAt,
-    };
-    const updated = buildTodoItem(
-      reminderPlan ? { ...itemInput, reminderPlan } : itemInput,
-    );
-    return replaceItem(list, updated);
+  const result = await application().update({
+    guildId,
+    list: { channelId },
+    item: todoSelector(parsed),
+    ...(parsed.text !== undefined ? { text: parsed.text } : {}),
+    ...(parsed.reason !== undefined ? { reason: parsed.reason } : {}),
+    ...(parsed.reminderAt !== undefined
+      ? { reminderAt: parsed.reminderAt }
+      : {}),
+    ...(parsed.recurrence !== undefined
+      ? { recurrence: parsed.recurrence }
+      : {}),
+    ...(parsed.recurrenceSummary !== undefined
+      ? { recurrenceSummary: parsed.recurrenceSummary }
+      : {}),
+    ...(parsed.audienceUserIds !== undefined
+      ? { audienceUserIds: parsed.audienceUserIds }
+      : {}),
+    ...(parsed.updatedBy !== undefined ? { updatedBy: parsed.updatedBy } : {}),
   });
+  return todoListResult(result.list);
 }
 
 export async function completeItem(
@@ -182,15 +141,13 @@ export async function completeItem(
 ): Promise<TodoListResult> {
   const parsed = CompleteTodoItemInputSchema.parse(input);
   const { guildId, channelId } = currentTodoTarget(parsed.channel);
-  return updateStoredList(guildId, channelId, async (list) => {
-    const item = findOneItem(list.items, parsed);
-    const nextItem = await completedRecurringItem(item, parsed.doneBy);
-    if (nextItem) return replaceItem(list, nextItem);
-    return {
-      ...list,
-      items: list.items.filter((candidate) => candidate.id !== item.id),
-    };
+  const result = await application().complete({
+    guildId,
+    list: { channelId },
+    item: todoSelector(parsed),
+    ...(parsed.doneBy !== undefined ? { doneBy: parsed.doneBy } : {}),
   });
+  return todoListResult(result.list);
 }
 
 export async function removeItem(
@@ -198,284 +155,12 @@ export async function removeItem(
 ): Promise<TodoListResult> {
   const parsed = RemoveTodoItemInputSchema.parse(input);
   const { guildId, channelId } = currentTodoTarget(parsed.channel);
-  return updateStoredList(guildId, channelId, async (list) => {
-    const item = findOneItem(list.items, parsed);
-    if (item.reminderId) await deleteReminder(remindersRoot(), item.reminderId);
-    return {
-      ...list,
-      items: list.items.filter((candidate) => candidate.id !== item.id),
-    };
+  const result = await application().remove({
+    guildId,
+    list: { channelId },
+    item: todoSelector(parsed),
   });
-}
-
-async function updateStoredList(
-  guildId: string,
-  channelId: string,
-  mutator: (list: ChannelTodoState) => Promise<ChannelTodoState>,
-): Promise<TodoListResult> {
-  // Read, mutate, render, and write run inside one cross-process lock so a
-  // concurrent todo turn in another process cannot lose this update. The
-  // render performs Discord I/O while the lock is held; the heartbeat keeps the
-  // lock alive for the duration, so no waiter steals it.
-  let next: ChannelTodoState | undefined;
-  await store().updateManaged(async (state) => {
-    const current = state.guilds[guildId] ?? emptyGuildState();
-    const ref = listForChannel(current, channelId);
-    const existing = ref?.list ?? emptyChannelList(channelId);
-    const mutated = await upsertRenderedList(await mutator(existing));
-    next = mutated;
-    // Preserve the slot (legacy vs the per-channel map) the list was already
-    // living in; a brand-new list not found by listForChannel always lands in
-    // the map, matching listForChannel's own map-first lookup order.
-    const nextRef: TodoListRef =
-      ref?.kind === "legacy"
-        ? { kind: "legacy", list: mutated }
-        : { kind: "channel", channelId, list: mutated };
-    return {
-      guilds: {
-        ...state.guilds,
-        [guildId]: updateGuildList(current, nextRef),
-      },
-    };
-  }, EMPTY_STATE);
-  if (!next) throw new Error("todo update produced no list");
-  return todoListResult(next);
-}
-
-async function createReminderPlan(input: {
-  channelId: string;
-  text: string;
-  reminderAt: string | undefined;
-  recurrence: ReminderRecurrence | undefined;
-  recurrenceSummary: string | undefined;
-  audienceUserIds: string[] | undefined;
-  createdBy: ReminderUser | undefined;
-}): Promise<ReminderPlan | undefined> {
-  const reminderAt = input.reminderAt ?? nextReminderAt(input.recurrence);
-  if (!reminderAt) return undefined;
-  const reminderId = generatedTodoReminderId();
-  await writeReminder(
-    remindersRoot(),
-    reminderId,
-    buildReminder({
-      channelId: input.channelId,
-      text: input.text,
-      at: reminderAt,
-      recurrence: input.recurrence,
-      audienceUserIds: input.audienceUserIds,
-      createdBy: input.createdBy,
-    }),
-  );
-  return buildReminderPlan({
-    id: reminderId,
-    at: reminderAt,
-    recurrenceSummary: input.recurrenceSummary,
-  });
-}
-
-async function updateReminderPlan(input: {
-  channelId: string;
-  item: TodoItem;
-  text: string;
-  reminderAt: string | null | undefined;
-  recurrence: ReminderRecurrence | null | undefined;
-  recurrenceSummary: string | null | undefined;
-  audienceUserIds: string[] | undefined;
-  updatedBy: ReminderUser | undefined;
-}): Promise<ReminderPlan | undefined> {
-  const existing = input.item.reminderId
-    ? await readReminderSafely(input.item.reminderId)
-    : undefined;
-  const recurrence =
-    input.recurrence === undefined
-      ? existing?.recurrence
-      : nullish(input.recurrence);
-  const reminderAt =
-    input.reminderAt === undefined
-      ? input.item.reminderAt
-      : nullish(input.reminderAt);
-  const nextAt = reminderAt ?? nextReminderAt(recurrence);
-  if (!nextAt) {
-    if (input.item.reminderId)
-      await deleteReminder(remindersRoot(), input.item.reminderId);
-    return undefined;
-  }
-
-  const reminderId = input.item.reminderId ?? generatedTodoReminderId();
-  await writeReminder(
-    remindersRoot(),
-    reminderId,
-    buildReminder({
-      channelId: input.channelId,
-      text: input.text,
-      at: nextAt,
-      recurrence,
-      audienceUserIds: input.audienceUserIds ?? existing?.audienceUserIds,
-      createdBy:
-        input.updatedBy ?? existing?.createdBy ?? currentDiscordReminderUser(),
-    }),
-  );
-  return buildReminderPlan({
-    id: reminderId,
-    at: nextAt,
-    recurrenceSummary:
-      input.recurrenceSummary === undefined
-        ? input.item.reminderRepeat
-        : nullish(input.recurrenceSummary),
-  });
-}
-
-async function completedRecurringItem(
-  item: TodoItem,
-  doneBy: ReminderUser | undefined,
-): Promise<TodoItem | undefined> {
-  if (!item.reminderId) return undefined;
-  const reminder = await readReminderSafely(item.reminderId);
-  if (reminder?.status !== "active") return undefined;
-  const completed = completedReminder(reminder, doneBy);
-  await writeReminder(remindersRoot(), item.reminderId, completed);
-  if (completed.status !== "active") return undefined;
-  const reminderPlan = buildReminderPlan({
-    id: item.reminderId,
-    at: completed.nextFireAt,
-    recurrenceSummary: item.reminderRepeat,
-  });
-  return buildTodoItem({
-    id: item.id,
-    text: item.text,
-    authorName: item.authorName,
-    sourceUrl: item.sourceUrl,
-    reason: item.reason,
-    createdAt: item.createdAt,
-    reminderPlan,
-  });
-}
-
-async function readReminderSafely(id: string): Promise<Reminder | undefined> {
-  try {
-    return await readReminder(remindersRoot(), id);
-  } catch {
-    return undefined;
-  }
-}
-
-function buildReminder(input: {
-  channelId: string;
-  text: string;
-  at: string;
-  recurrence: ReminderRecurrence | undefined;
-  audienceUserIds: string[] | undefined;
-  createdBy: ReminderUser | undefined;
-}): Reminder {
-  if (input.recurrence) validateReminderRecurrence(input.recurrence);
-  const targetTime = new Date(input.at).getTime();
-  if (!Number.isFinite(targetTime)) {
-    throw new Error(`Invalid reminder timestamp: ${input.at}`);
-  }
-  return {
-    target: reminderTarget(input.channelId),
-    text: `Todo: ${input.text}`,
-    createdAt: new Date().toISOString(),
-    ...(input.createdBy ? { createdBy: input.createdBy } : {}),
-    audienceUserIds: input.audienceUserIds ?? [],
-    status: "active",
-    nextFireAt: input.at,
-    ...(input.recurrence ? { recurrence: input.recurrence } : {}),
-    followupIntervalMinutes: DEFAULT_FOLLOWUP_INTERVAL_MINUTES,
-    fireCount: 0,
-    messageRefs: [],
-  };
-}
-
-function reminderTarget(channelId: string): ReminderTarget {
-  return { kind: "channel", channelId };
-}
-
-type ReminderPlan = {
-  id: string;
-  at: string;
-  recurrenceSummary?: string;
-};
-
-function buildReminderPlan(input: {
-  id: string;
-  at: string;
-  recurrenceSummary: string | undefined;
-}): ReminderPlan {
-  const base = { id: input.id, at: input.at };
-  return input.recurrenceSummary
-    ? { ...base, recurrenceSummary: input.recurrenceSummary }
-    : base;
-}
-
-function buildTodoItem(input: {
-  id: string;
-  text: string;
-  authorName: string;
-  sourceUrl: string | undefined;
-  reason: string | undefined;
-  createdAt: string;
-  reminderPlan?: ReminderPlan;
-}): TodoItem {
-  const base = {
-    id: input.id,
-    text: input.text,
-    authorName: input.authorName,
-    ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
-    ...(input.reason ? { reason: input.reason } : {}),
-    createdAt: input.createdAt,
-  };
-  if (!input.reminderPlan) return base;
-  return {
-    ...base,
-    reminderAt: input.reminderPlan.at,
-    ...(input.reminderPlan.recurrenceSummary
-      ? { reminderRepeat: input.reminderPlan.recurrenceSummary }
-      : {}),
-    reminderId: input.reminderPlan.id,
-  };
-}
-
-function findOneItem(
-  items: readonly TodoItem[],
-  input: {
-    itemId?: string | undefined;
-    matchText?: string | undefined;
-  },
-): TodoItem {
-  if (input.itemId) {
-    const item = items.find((candidate) => candidate.id === input.itemId);
-    if (!item) throw new Error(`No todo item found with id ${input.itemId}.`);
-    return item;
-  }
-  const query = input.matchText?.toLocaleLowerCase();
-  if (!query) throw new Error("Provide itemId or matchText.");
-  const matches = items.filter((item) =>
-    item.text.toLocaleLowerCase().includes(query),
-  );
-  if (matches.length === 0) {
-    throw new Error(`No todo item matched ${input.matchText}.`);
-  }
-  if (matches.length > 1) {
-    throw new Error(
-      `Multiple todo items matched ${input.matchText}; use listItems and pass itemId.`,
-    );
-  }
-  const match = matches[0];
-  if (!match) throw new Error(`No todo item matched ${input.matchText}.`);
-  return match;
-}
-
-function replaceItem(
-  list: ChannelTodoState,
-  updated: TodoItem,
-): ChannelTodoState {
-  return {
-    ...list,
-    items: list.items.map((candidate) =>
-      candidate.id === updated.id ? updated : candidate,
-    ),
-  };
+  return todoListResult(result.list);
 }
 
 async function upsertRenderedList(
@@ -670,6 +355,24 @@ function store(): JsonFileStore<TodoListState> {
   );
 }
 
+function application(): TodoApplication {
+  return new TodoApplication({
+    store: store(),
+    remindersRoot: remindersRoot(),
+    renderList: upsertRenderedList,
+    currentUser: currentDiscordReminderUser,
+  });
+}
+
+function todoSelector(input: {
+  itemId?: string | undefined;
+  matchText?: string | undefined;
+}): TodoItemSelector {
+  if (input.itemId) return { itemId: input.itemId };
+  if (input.matchText) return { matchText: input.matchText };
+  throw new Error("Provide itemId or matchText.");
+}
+
 function dataDir(): string {
   return process.env["SANDI_DATA_DIR"]?.trim() || "data";
 }
@@ -679,20 +382,4 @@ function remindersRoot(): string {
     process.env["SANDI_REMINDERS_ROOT"]?.trim() ||
     `${process.env["SANDI_DATA_DIR"]?.trim() || "data"}/reminders`
   );
-}
-
-function nextReminderAt(
-  recurrence: ReminderRecurrence | null | undefined,
-): string | undefined {
-  if (!recurrence) return undefined;
-  validateReminderRecurrence(recurrence);
-  return nextRecurrenceRun(recurrence)?.toISOString();
-}
-
-function generatedTodoReminderId(): string {
-  return normalizeReminderId(generateTimestampId("todo"));
-}
-
-function nullish<T>(value: T | null): T | undefined {
-  return value === null ? undefined : value;
 }

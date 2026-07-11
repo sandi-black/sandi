@@ -247,6 +247,14 @@ from a desktop turn) take an explicit target since there is no current channel o
 thread. Native Codex conversion tools handle web search, file reads, and file
 edits directly when Pi exposes them. Code-mode conventions and examples live in
 [`code-mode.md`](code-mode.md).
+
+Discord todo interactions and runtime helpers delegate item mutations to the
+shared todo application core in `src/surfaces/discord/shared/todo-core.ts`. The
+core serializes state changes, preserves per-list presentation settings, and owns
+linked reminder creation, rescheduling, completion, and deletion. Adapters own
+input parsing and Discord rendering; they do not write todo or reminder state
+directly.
+
 Process stdout and stderr from `sandi_js_run` are wrapped as untrusted execution
 evidence so external text cannot masquerade as instructions.
 

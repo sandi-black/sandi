@@ -72,6 +72,38 @@ const WindowSchema = z.object({
 });
 type DesktopWindow = z.infer<typeof WindowSchema>;
 
+const WindowWarningSchema = z.object({
+  handle: z.string().regex(/^\d+$/u).optional(),
+  operation: z.enum([
+    "GetWindowText",
+    "GetWindowRect",
+    "GetWindowThreadProcessId",
+    "result-limit",
+  ]),
+  message: z.string().min(1),
+});
+
+const WindowEnumerationLineSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("window"), window: WindowSchema }),
+  z.object({ kind: z.literal("warning"), warning: WindowWarningSchema }),
+]);
+
+export const WindowEnumerationResultSchema = z.object({
+  windows: z.array(WindowSchema),
+  warnings: z.array(WindowWarningSchema),
+  complete: z.boolean(),
+});
+export type WindowEnumerationResult = z.infer<
+  typeof WindowEnumerationResultSchema
+>;
+
+export type WindowEnumerationCommandResult = {
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  error?: string;
+};
+
 // The capture subprocess is a trust boundary like any other: its stdout is
 // parsed precisely, including that the payload is canonical base64 whose decoded
 // bytes are a JPEG, so a mangled capture fails closed here rather than
@@ -119,21 +151,25 @@ export async function listWindows(
   const unsupported = ensureWindows("list windows");
   if (unsupported) return unsupported;
   try {
-    const windows = await enumerateWindows(signal);
-    if (windows.length === 0) return ok("No visible windows were found.");
-    const shown = windows.slice(0, MAX_WINDOWS);
-    const lines = shown.map((win) => {
-      const b = win.bounds;
-      const minimized = win.minimized ? " [minimized]" : "";
-      return `- ${JSON.stringify(win.title)}  ${win.processName} (pid ${win.pid})  ${b.width}x${b.height} at (${b.x},${b.y})  handle ${win.handle}${minimized}`;
-    });
-    const note =
-      windows.length > shown.length
-        ? `\n(${windows.length - shown.length} more windows omitted)`
-        : "";
-    return ok(
-      `${[`Open windows (${windows.length}):`, ...lines].join("\n")}${note}`,
-    );
+    const enumeration = await enumerateWindows(signal);
+    const windows = enumeration.windows.slice(0, MAX_WINDOWS);
+    const omitted = enumeration.windows.length - windows.length;
+    const limitWarning: z.infer<typeof WindowWarningSchema> | undefined =
+      omitted > 0
+        ? {
+            operation: "result-limit",
+            message: `${omitted} additional windows were omitted`,
+          }
+        : undefined;
+    const warnings = limitWarning
+      ? [...enumeration.warnings, limitWarning]
+      : enumeration.warnings;
+    const result: WindowEnumerationResult = {
+      windows,
+      warnings,
+      complete: enumeration.complete && omitted === 0,
+    };
+    return ok(JSON.stringify(result, null, 2));
   } catch (error) {
     return refused(errorMessage(error));
   }
@@ -199,15 +235,18 @@ async function screenshotWindow(
   maxDimension: number,
   signal: AbortSignal | undefined,
 ): Promise<ToolCallOutcome> {
-  const windows = await enumerateWindows(signal);
-  const target = resolveWindow(windows, selector);
+  const enumeration = await enumerateWindows(signal);
+  const target = resolveWindow(enumeration.windows, selector);
   if (!target) {
-    const sample = windows
+    const sample = enumeration.windows
       .slice(0, 10)
       .map((win) => JSON.stringify(win.title))
       .join(", ");
     const hint = sample.length > 0 ? `; some open windows: ${sample}` : "";
-    return refused(`no window matches "${selector}"${hint}`);
+    const incomplete = enumeration.complete
+      ? ""
+      : `; window enumeration was incomplete (${enumeration.warnings.length} warning(s)), so absence is not definitive`;
+    return refused(`no window matches "${selector}"${hint}${incomplete}`);
   }
   if (target.minimized) {
     return refused(
@@ -272,10 +311,27 @@ async function enumerateMonitors(signal?: AbortSignal): Promise<Monitor[]> {
 
 async function enumerateWindows(
   signal?: AbortSignal,
-): Promise<DesktopWindow[]> {
+): Promise<WindowEnumerationResult> {
   const result = await runPowerShell(WINDOWS_SCRIPT, signal);
+  return readWindowEnumeration(result);
+}
+
+export function readWindowEnumeration(
+  result: WindowEnumerationCommandResult,
+): WindowEnumerationResult {
   ensureExited(result, "list windows");
-  return parseJsonLines(result.stdout, WindowSchema, "the window list");
+  const lines = parseJsonLines(
+    result.stdout,
+    WindowEnumerationLineSchema,
+    "the window list",
+  );
+  const windows: DesktopWindow[] = [];
+  const warnings: z.infer<typeof WindowWarningSchema>[] = [];
+  for (const line of lines) {
+    if (line.kind === "window") windows.push(line.window);
+    else warnings.push(line.warning);
+  }
+  return { windows, warnings, complete: warnings.length === 0 };
 }
 
 async function captureRegion(
@@ -356,6 +412,8 @@ for ($i = 0; $i -lt $screens.Count; $i++) {
 
 const WINDOWS_SCRIPT = `
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$OutputEncoding = [Console]::OutputEncoding
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -373,7 +431,6 @@ public class SandiWin {
 }
 "@
 $rows = New-Object System.Collections.Generic.List[string]
-$errs = New-Object System.Collections.Generic.List[string]
 # Best-effort process-name table. A window whose owning process this session
 # cannot read (elevated, or exited mid-scan) simply lists with an empty
 # processName; the window is still real. This is the one supplementary field,
@@ -387,9 +444,17 @@ $cb = [SandiWin+EnumProc] {
   if ($len -le 0) { return $true }
   $sb = New-Object System.Text.StringBuilder ($len + 1)
   $copied = [SandiWin]::GetWindowText($hWnd, $sb, $sb.Capacity)
-  if ($copied -le 0) { $errs.Add('GetWindowText failed'); return $true }
+  if ($copied -le 0) {
+    $warning = [pscustomobject]@{ kind = 'warning'; warning = [pscustomobject]@{ handle = $hWnd.ToString(); operation = 'GetWindowText'; message = 'window disappeared or became inaccessible' } }
+    [void]$rows.Add(($warning | ConvertTo-Json -Compress -Depth 4))
+    return $true
+  }
   $rect = New-Object SandiWin+RECT
-  if (-not [SandiWin]::GetWindowRect($hWnd, [ref]$rect)) { $errs.Add('GetWindowRect failed'); return $true }
+  if (-not [SandiWin]::GetWindowRect($hWnd, [ref]$rect)) {
+    $warning = [pscustomobject]@{ kind = 'warning'; warning = [pscustomobject]@{ handle = $hWnd.ToString(); operation = 'GetWindowRect'; message = 'window disappeared or became inaccessible' } }
+    [void]$rows.Add(($warning | ConvertTo-Json -Compress -Depth 4))
+    return $true
+  }
   $w = $rect.Right - $rect.Left
   $h = $rect.Bottom - $rect.Top
   # A visible titled window with no area is a helper window, not something to
@@ -397,23 +462,32 @@ $cb = [SandiWin+EnumProc] {
   if ($w -le 0 -or $h -le 0) { return $true }
   $procId = [uint32]0
   $tid = [SandiWin]::GetWindowThreadProcessId($hWnd, [ref]$procId)
-  if ($tid -eq 0) { $errs.Add('GetWindowThreadProcessId failed'); return $true }
+  if ($tid -eq 0) {
+    $warning = [pscustomobject]@{ kind = 'warning'; warning = [pscustomobject]@{ handle = $hWnd.ToString(); operation = 'GetWindowThreadProcessId'; message = 'window disappeared or became inaccessible' } }
+    [void]$rows.Add(($warning | ConvertTo-Json -Compress -Depth 4))
+    return $true
+  }
   $procName = ''
   if ($procNames.ContainsKey([int]$procId)) { $procName = $procNames[[int]$procId] }
+  # Windows PowerShell 5.1's ConvertTo-Json leaves C0 control characters raw,
+  # producing invalid JSON. They have no display value in a window title, so
+  # replace them at the subprocess boundary while preserving the rest.
+  $replacement = [string]([char]0xFFFD)
+  $title = [regex]::Replace($sb.ToString(), '[\\x00-\\x1F]', $replacement)
   $obj = [pscustomobject]@{
     handle = $hWnd.ToString()
-    title = $sb.ToString()
+    title = $title
     processName = $procName
     pid = [int]$procId
     minimized = [bool]([SandiWin]::IsIconic($hWnd))
     bounds = [pscustomobject]@{ x = $rect.Left; y = $rect.Top; width = $w; height = $h }
   }
-  $rows.Add(($obj | ConvertTo-Json -Compress -Depth 4))
+  $entry = [pscustomobject]@{ kind = 'window'; window = $obj }
+  [void]$rows.Add(($entry | ConvertTo-Json -Compress -Depth 5))
   return $true
 }
 $ok = [SandiWin]::EnumWindows($cb, [IntPtr]::Zero)
 if (-not $ok) { throw 'EnumWindows failed' }
-if ($errs.Count -gt 0) { throw $errs[0] }
 $rows | ForEach-Object { $_ }
 `;
 

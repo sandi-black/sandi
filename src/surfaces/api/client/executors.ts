@@ -17,6 +17,7 @@ import { TextDecoder } from "node:util";
 
 import { errorMessage } from "@/lib/errors";
 import { isMissingPathError } from "@/lib/fs-errors";
+import { compileBoundedRegex } from "@/surfaces/api/client/bounded-regex";
 import {
   listMonitors,
   listWindows,
@@ -289,11 +290,11 @@ async function grepLocal(
   context: ExecutorContext,
   signal?: AbortSignal,
 ): Promise<ToolCallOutcome> {
-  let regex: RegExp;
+  let regex: ReturnType<typeof compileBoundedRegex>;
   try {
-    regex = new RegExp(params.pattern, params.ignoreCase ? "i" : "");
+    regex = compileBoundedRegex(params.pattern, params.ignoreCase);
   } catch (error) {
-    return refused(`invalid regular expression: ${errorMessage(error)}`);
+    return refused(errorMessage(error));
   }
   const base = resolvePath(context, params.path ?? ".");
   const fileFilter =

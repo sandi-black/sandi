@@ -255,6 +255,20 @@ window list, and `System.Drawing` with `PrintWindow`/`CopyFromScreen` for the
 image, in `client/desktop-state.ts`); on any other platform the tools refuse with
 a clear message.
 
+`local_grep` accepts the Unicode Google RE2 regular-expression dialect, with a
+16,384-character pattern limit. RE2 keeps matching time linear for untrusted
+patterns. Backreferences and lookaround are unsupported and fail before file
+traversal starts. This is intentionally narrower than JavaScript regular
+expressions; callers that used those constructs must rewrite the search. File
+count, file size, traversal, cancellation, and output limits still apply.
+
+`local_list_windows` returns a JSON object with `windows`, `warnings`, and
+`complete`. A window that disappears or becomes inaccessible during enumeration
+adds a handle-scoped warning while usable windows remain available and
+`complete` becomes false. Trimming the result to its 300-window output limit also
+adds a warning. Failure of the top-level Windows enumeration refuses the call
+instead of returning a misleading empty or partial result.
+
 Every `local_*` tool (file, shell, and state alike) takes an optional `desktop`
 selector, so Sandi can run any call on any of the caller's connected desktops,
 not only the one the turn is paired with. `local_list_desktops` names the

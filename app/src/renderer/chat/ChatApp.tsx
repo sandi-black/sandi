@@ -354,7 +354,22 @@ export function ChatApp(): JSX.Element {
                 : selectionGeneration.current;
               if (deletingActive) selectionTarget.current = undefined;
               try {
-                await window.sandiChat.deleteSession(conversationId);
+                const outcome =
+                  await window.sandiChat.deleteSession(conversationId);
+                if (!outcome.ok) {
+                  if (
+                    deletingActive &&
+                    generation === selectionGeneration.current
+                  ) {
+                    selectionTarget.current = conversationId;
+                  }
+                  useChatStore
+                    .getState()
+                    .setUiError(
+                      "Finish or cancel this conversation's active and queued messages before deleting it.",
+                    );
+                  return;
+                }
                 await refreshSessions();
               } catch (error) {
                 if (

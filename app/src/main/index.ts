@@ -295,7 +295,7 @@ async function main(): Promise<void> {
         // The renderer reloads successful turns from disk to pick up thinking
         // and attachments. Publish settlement only after that append finishes
         // so the reload cannot race ahead of the authoritative transcript.
-        void persistSettled(event)
+        return persistSettled(event)
           .catch((error: unknown) => {
             // The turn itself settled; a failed transcript append loses
             // history but must not crash the app or hide the live outcome.
@@ -304,18 +304,20 @@ async function main(): Promise<void> {
           .then(() => sendToChat(IPC.turnSettled, event))
           .catch((error: unknown) => {
             console.error("failed to publish a settled turn", error);
+          })
+          .finally(() => {
+            activeTurns.delete(event.turnId);
+            pet.sendDisplayEvent({
+              type: "one-shot",
+              row: event.ok ? "celebrating" : "startled",
+            });
+            // Failures earn the marker as much as replies do: either way there
+            // is an outcome waiting in a chat the user cannot currently see.
+            if (!chat.window.isVisible()) {
+              pet.sendDisplayEvent({ type: "reply-alert", visible: true });
+            }
+            refreshPetBackground();
           });
-        activeTurns.delete(event.turnId);
-        pet.sendDisplayEvent({
-          type: "one-shot",
-          row: event.ok ? "celebrating" : "startled",
-        });
-        // Failures earn the marker as much as replies do: either way there is
-        // an outcome waiting in a chat the user cannot currently see.
-        if (!chat.window.isVisible()) {
-          pet.sendDisplayEvent({ type: "reply-alert", visible: true });
-        }
-        refreshPetBackground();
       },
       onQueueState: (state) => sendToChat(IPC.queueState, state),
     },
@@ -375,6 +377,7 @@ async function main(): Promise<void> {
   registerSessionHandlers({
     owner: ipcOwner,
     store,
+    hasWork: (conversationId) => turnManager.hasWork(conversationId),
     onSessionsChanged: notifySessionsChanged,
   });
   registerTurnHandlers({

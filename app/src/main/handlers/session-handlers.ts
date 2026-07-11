@@ -3,6 +3,7 @@ import { ipcMain, type WebContents } from "electron";
 
 import { requireIpcOwner } from "../ipc-owner";
 import { ConversationIdSchema, SessionTitleSchema } from "../ipc-schemas";
+import { deleteSessionIfIdle } from "../session-deletion";
 import type { TranscriptStore } from "../transcript-store";
 
 // Session CRUD over the transcript store. Sessions are app-local; creating
@@ -12,6 +13,7 @@ import type { TranscriptStore } from "../transcript-store";
 export function registerSessionHandlers(input: {
   owner: WebContents;
   store: TranscriptStore;
+  hasWork(conversationId: string): boolean;
   onSessionsChanged(): void;
 }): void {
   const { store, onSessionsChanged } = input;
@@ -49,7 +51,11 @@ export function registerSessionHandlers(input: {
 
   ipcMain.handle(IPC.sessionDelete, async (event, conversationId: unknown) => {
     requireIpcOwner(event, input.owner);
-    await store.deleteSession(ConversationIdSchema.parse(conversationId));
-    onSessionsChanged();
+    return deleteSessionIfIdle({
+      conversationId: ConversationIdSchema.parse(conversationId),
+      hasWork: input.hasWork,
+      deleteSession: (id) => store.deleteSession(id),
+      onDeleted: onSessionsChanged,
+    });
   });
 }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import "./verify-session-deletion";
 
 import type { QueueState, TurnSettledEvent } from "@shared/ipc-contract";
 
@@ -24,7 +25,9 @@ function main(): void {
     },
     events: {
       onTurnStarted: () => undefined,
-      onTurnSettled: (event) => synchronousFailures.push(event),
+      onTurnSettled: (event) => {
+        synchronousFailures.push(event);
+      },
       onQueueState: () => undefined,
     },
   });
@@ -64,7 +67,9 @@ function main(): void {
     sendTurn,
     events: {
       onTurnStarted: (event) => started.push(event.turnId),
-      onTurnSettled: (event) => settled.push(event),
+      onTurnSettled: (event) => {
+        settled.push(event);
+      },
       onQueueState: (state) => queueStates.push(state),
     },
   });

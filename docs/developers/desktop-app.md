@@ -94,6 +94,10 @@ Main owns all state; the renderers are pure UI over typed IPC.
   own ThreadQueue: one `sendTurn` POST in flight per conversation, extra
   submits render instantly as cancellable chips. Stop closes the in-flight
   socket, which aborts the pi child server-side.
+- Conversation deletion returns a typed busy result while a turn is active,
+  queued, or persisting its settlement. The renderer keeps the conversation
+  selected and asks the user to finish or cancel that work; idle conversations
+  delete normally.
 - Streamed deltas arrive on the device link the app already holds. A shared
   response buffer dedupes and orders them per turn; the renderer renders the
   live text and main persists the reconciled final (the POST body stays

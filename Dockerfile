@@ -6,6 +6,8 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+COPY scripts/install-git-hooks.mjs ./scripts/install-git-hooks.mjs
+
 FROM base AS check
 
 # The desktop app workspace is excluded from server images: install with

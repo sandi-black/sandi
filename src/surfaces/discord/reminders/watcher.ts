@@ -19,7 +19,7 @@ export type ReminderTrigger = {
 
 export class ReminderWatcher {
   readonly #remindersRoot: string;
-  readonly #onTrigger: (trigger: ReminderTrigger) => void;
+  readonly #onTrigger: (trigger: ReminderTrigger) => Promise<void>;
   readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #triggeredDueAt = new Map<string, string>();
@@ -29,7 +29,7 @@ export class ReminderWatcher {
 
   constructor(
     remindersRoot: string,
-    onTrigger: (trigger: ReminderTrigger) => void,
+    onTrigger: (trigger: ReminderTrigger) => Promise<void>,
   ) {
     this.#remindersRoot = remindersRoot;
     this.#onTrigger = onTrigger;
@@ -151,7 +151,21 @@ export class ReminderWatcher {
       if (this.#triggeredDueAt.get(id) === reminder.nextFireAt) return;
       this.#triggeredDueAt.set(id, reminder.nextFireAt);
       log.info("executing reminder", { id });
-      this.#onTrigger({ id, reminder });
+      void this.#onTrigger({ id, reminder }).catch((error: unknown) => {
+        if (this.#triggeredDueAt.get(id) === reminder.nextFireAt) {
+          this.#triggeredDueAt.delete(id);
+        }
+        log.error("failed to persist due reminder delivery", {
+          id,
+          error: errorMessage(error),
+        });
+        if (!this.#running) return;
+        const timer = setTimeout(() => {
+          this.#timers.delete(id);
+          this.#schedule(id, reminder);
+        }, 1_000);
+        this.#timers.set(id, timer);
+      });
       return;
     }
     this.#triggeredDueAt.delete(id);

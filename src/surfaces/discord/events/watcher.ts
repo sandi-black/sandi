@@ -18,19 +18,27 @@ export type EventTrigger = {
   id: string;
   event: SandiEvent;
   label: string;
+  occurrence: string;
 };
 
 export class EventWatcher {
   readonly #eventsRoot: string;
-  readonly #onTrigger: (trigger: EventTrigger) => void;
+  readonly #onTrigger: (trigger: EventTrigger) => Promise<void>;
   readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #crons = new Map<string, Cron>();
   readonly #debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  readonly #triggerRetryTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   #watcher: FSWatcher | undefined;
   #running = false;
   #generation = 0;
 
-  constructor(eventsRoot: string, onTrigger: (trigger: EventTrigger) => void) {
+  constructor(
+    eventsRoot: string,
+    onTrigger: (trigger: EventTrigger) => Promise<void>,
+  ) {
     this.#eventsRoot = eventsRoot;
     this.#onTrigger = onTrigger;
   }
@@ -78,6 +86,8 @@ export class EventWatcher {
     this.#crons.clear();
     for (const timer of this.#debounceTimers.values()) clearTimeout(timer);
     this.#debounceTimers.clear();
+    for (const timer of this.#triggerRetryTimers.values()) clearTimeout(timer);
+    this.#triggerRetryTimers.clear();
   }
 
   async #scanExisting(): Promise<void> {
@@ -140,7 +150,7 @@ export class EventWatcher {
     if (!this.#running) return;
     switch (event.type) {
       case "immediate":
-        this.#triggerAndDelete(id, event, `[EVENT:${id}:immediate]`);
+        void this.#triggerAndDelete(id, event, `[EVENT:${id}:immediate]`);
         return;
       case "one-shot":
         this.#scheduleOneShot(id, event);
@@ -161,7 +171,7 @@ export class EventWatcher {
     }
     const delay = targetTime - Date.now();
     if (delay <= 0) {
-      this.#triggerAndDelete(id, event, `[EVENT:${id}:one-shot:overdue]`);
+      void this.#triggerAndDelete(id, event, `[EVENT:${id}:one-shot:overdue]`);
       return;
     }
 
@@ -187,27 +197,66 @@ export class EventWatcher {
       schedule: event.schedule,
       timezone: event.timezone,
     });
-    const cron = new Cron(event.schedule, { timezone: event.timezone }, () => {
-      if (!this.#running) return;
-      this.#onTrigger({
-        id,
-        event,
-        label: `[EVENT:${id}:periodic:${event.schedule}]`,
-      });
-    });
+    const cron = new Cron(
+      event.schedule,
+      { timezone: event.timezone },
+      (self) => {
+        if (!this.#running) return;
+        const occurrence = (self.currentRun() ?? new Date()).toISOString();
+        this.#triggerPeriodic({
+          id,
+          event,
+          label: `[EVENT:${id}:periodic:${event.schedule}]`,
+          occurrence,
+        });
+      },
+    );
     this.#crons.set(id, cron);
   }
 
-  #triggerAndDelete(id: string, event: SandiEvent, label: string): void {
+  #triggerPeriodic(trigger: EventTrigger): void {
+    const retryKey = `${trigger.id}:${trigger.occurrence}`;
+    void this.#onTrigger(trigger).catch((error: unknown) => {
+      log.error("failed to persist periodic event delivery", {
+        id: trigger.id,
+        occurrence: trigger.occurrence,
+        error: errorMessage(error),
+      });
+      this.#scheduleTriggerRetry(retryKey, () =>
+        this.#triggerPeriodic(trigger),
+      );
+    });
+  }
+
+  async #triggerAndDelete(
+    id: string,
+    event: SandiEvent,
+    label: string,
+  ): Promise<void> {
     if (!this.#running) return;
     log.info("executing event", { id, type: event.type });
-    this.#onTrigger({ id, event, label });
-    void deleteEvent(this.#eventsRoot, id).catch((error: unknown) => {
-      log.error("failed to delete triggered event", {
+    const occurrence = event.type === "one-shot" ? event.at : event.createdAt;
+    try {
+      await this.#onTrigger({ id, event, label, occurrence });
+      await deleteEvent(this.#eventsRoot, id);
+    } catch (error) {
+      log.error("failed to persist or delete triggered event", {
         id,
         error: errorMessage(error),
       });
-    });
+      this.#scheduleTriggerRetry(`${id}:${occurrence}`, () => {
+        void this.#triggerAndDelete(id, event, label);
+      });
+    }
+  }
+
+  #scheduleTriggerRetry(key: string, retry: () => void): void {
+    if (!this.#running || this.#triggerRetryTimers.has(key)) return;
+    const timer = setTimeout(() => {
+      this.#triggerRetryTimers.delete(key);
+      retry();
+    }, 1_000);
+    this.#triggerRetryTimers.set(key, timer);
   }
 
   #cancel(id: string): void {
@@ -220,6 +269,11 @@ export class EventWatcher {
     if (cron) {
       cron.stop();
       this.#crons.delete(id);
+    }
+    for (const [key, retry] of this.#triggerRetryTimers) {
+      if (!key.startsWith(`${id}:`)) continue;
+      clearTimeout(retry);
+      this.#triggerRetryTimers.delete(key);
     }
   }
 }

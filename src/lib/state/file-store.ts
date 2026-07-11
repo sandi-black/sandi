@@ -76,7 +76,29 @@ export class JsonFileStore<T> {
       tempPath,
       `${JSON.stringify(parsed, null, 2)}\n`,
     );
-    await rename(tempPath, this.#path);
+    await renameWithSharingRetry(tempPath, this.#path);
     await chmodPrivateFile(this.#path);
   }
+}
+
+async function renameWithSharingRetry(
+  source: string,
+  destination: string,
+): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(source, destination);
+      return;
+    } catch (error) {
+      if (!isSharingViolation(error) || attempt >= 19) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+  }
+}
+
+function isSharingViolation(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return false;
+  }
+  return error.code === "EPERM" || error.code === "EACCES";
 }

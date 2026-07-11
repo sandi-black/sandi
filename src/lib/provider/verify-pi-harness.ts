@@ -1,4 +1,5 @@
 import { chmod, readFile, writeFile } from "node:fs/promises";
+import "@/lib/delivery/verify-outbox";
 import "@/lib/provider/verify-provider-capacity";
 import { join } from "node:path";
 

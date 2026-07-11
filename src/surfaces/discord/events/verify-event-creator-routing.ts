@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import "@/surfaces/discord/events/verify-durable-scheduled-delivery";
 import { assert, withTempDir } from "@/lib/verification/harness";
 import { readEvent, resolveEventPath } from "@/surfaces/discord/events/store";
 import { createEvent } from "@/surfaces/discord/runtime/events";

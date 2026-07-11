@@ -189,6 +189,25 @@ rescheduled to the next allowed fire time instead of sending another ping. This
 does not change the initial requested reminder time or explicit Done, Snooze,
 and Delete controls.
 
+Scheduled events, reminders (including todo-linked reminders), and automatic
+Discord and GitHub response messages use the durable outbox at
+`data/state/delivery-outbox.json`. The accepted delivery is written before its
+first provider or platform side effect. Each record keeps a stable idempotency
+key, status, attempt count, next-attempt time, last classified error, claim
+lease, and multipart progress. A worker crash leaves a reclaimable lease, so a
+later process resumes the same record. Transient failures retry with bounded
+exponential backoff; permanent failures remain terminal and inspectable.
+
+Delivery is at least once. A connection failure after a request is classified
+as an ambiguous acknowledgement and recorded with the policy
+`retry-same-idempotency-key`. Discord retries a chunk with the same enforced
+nonce so Discord can deduplicate it during the platform nonce window. GitHub
+comments carry a stable hidden marker; a retry searches the thread for that
+marker before posting again. Each successfully acknowledged chunk checkpoints
+its cursor before the next chunk starts. Completed records retain their key and
+payload hash for restart-safe deduplication while releasing the potentially
+large payload body.
+
 Every Pi model turn logs a local account-routing audit record before execution
 and a completion or failure record afterward. The audit fields include the
 mapped identity id, configured Pi account id, provider, model, session mode,

@@ -30,6 +30,21 @@ const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const CODE_LENGTH = 10;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
+const PairingRedemptionBaseSchema = z.object({
+  token: z.string().regex(SHA256_HEX, "token must be 64 hex chars"),
+  deviceId: z.string().min(1),
+  label: z.string().min(1),
+  reservedAtMs: z.number().int().nonnegative(),
+});
+
+const PairingRedemptionSchema = z.discriminatedUnion("status", [
+  PairingRedemptionBaseSchema.extend({ status: z.literal("reserved") }),
+  PairingRedemptionBaseSchema.extend({
+    status: z.literal("completed"),
+    completedAtMs: z.number().int().nonnegative(),
+  }),
+]);
+
 // Timestamps are epoch milliseconds, parsed to a number at the boundary so the
 // rest of the code compares them directly and never reparses a string at use.
 const ApiPairingSchema = z.object({
@@ -37,6 +52,7 @@ const ApiPairingSchema = z.object({
   identityId: z.string().min(1),
   createdAtMs: z.number().int().nonnegative(),
   expiresAtMs: z.number().int().nonnegative(),
+  redemption: PairingRedemptionSchema.optional(),
 });
 
 const ApiPairingsFileSchema = z.object({
@@ -46,6 +62,21 @@ const ApiPairingsFileSchema = z.object({
 
 export type ApiPairing = z.infer<typeof ApiPairingSchema>;
 export type ApiPairingsFile = z.infer<typeof ApiPairingsFileSchema>;
+export type PairingRedemption = z.infer<typeof PairingRedemptionSchema>;
+
+export type PreparedPairingRedemption = Pick<
+  PairingRedemption,
+  "token" | "deviceId" | "label"
+>;
+
+export type PairingRedemptionResult =
+  | { kind: "invalid" }
+  | { kind: "rejected"; identityId: string }
+  | {
+      kind: "success";
+      identityId: string;
+      redemption: PairingRedemption;
+    };
 
 const EMPTY_PAIRINGS: ApiPairingsFile = { version: 1, pairings: [] };
 
@@ -192,6 +223,10 @@ export async function consumePairing(input: {
     const remaining: ApiPairing[] = [];
     for (const pairing of current.pairings) {
       if (isExpired(pairing, now)) continue;
+      if (pairing.redemption) {
+        remaining.push(pairing);
+        continue;
+      }
       if (!consumed && hexEquals(pairing.codeSha256, codeSha256)) {
         consumed = pairing;
         continue;
@@ -211,6 +246,158 @@ export async function consumePairing(input: {
     await atomicWriteInPlace(input.path, `${JSON.stringify(next, null, 2)}\n`);
     return consumed ? { identityId: consumed.identityId } : undefined;
   });
+}
+
+/**
+ * Coordinates pairing and token persistence while holding the pairing lock as
+ * the transaction lock. The journaled raw token exists only until the pairing
+ * expires, allowing crash and ambiguous-response retries to return the same
+ * credential without issuing a second token.
+ */
+export async function redeemPairingTransaction(input: {
+  path: string;
+  code: string;
+  now?: number;
+  authorize: (identityId: string) => Promise<boolean>;
+  prepare: (
+    identityId: string,
+  ) => Promise<PreparedPairingRedemption> | PreparedPairingRedemption;
+  persist: (input: {
+    identityId: string;
+    redemption: PairingRedemption;
+  }) => Promise<void>;
+  isPersisted: (input: {
+    identityId: string;
+    redemption: PairingRedemption;
+  }) => Promise<boolean>;
+}): Promise<PairingRedemptionResult> {
+  const now = input.now ?? Date.now();
+  const codeSha256 = hashPairingCode(input.code);
+
+  return withManagedWrite(input.path, async () => {
+    const current = await loadApiPairings(input.path);
+    const live = current.pairings.filter((pairing) => !isExpired(pairing, now));
+    const pairing = live.find((candidate) =>
+      hexEquals(candidate.codeSha256, codeSha256),
+    );
+    if (!pairing) {
+      if (live.length !== current.pairings.length) {
+        await writePairings(input.path, live);
+      }
+      return { kind: "invalid" };
+    }
+
+    if (!(await input.authorize(pairing.identityId))) {
+      if (pairing.redemption?.status === "reserved") {
+        await writePairings(
+          input.path,
+          replacePairing(live, pairing, withoutRedemption(pairing)),
+        );
+      } else if (live.length !== current.pairings.length) {
+        await writePairings(input.path, live);
+      }
+      return { kind: "rejected", identityId: pairing.identityId };
+    }
+
+    if (pairing.redemption?.status === "completed") {
+      if (live.length !== current.pairings.length) {
+        await writePairings(input.path, live);
+      }
+      return {
+        kind: "success",
+        identityId: pairing.identityId,
+        redemption: pairing.redemption,
+      };
+    }
+
+    const reserved =
+      pairing.redemption ??
+      PairingRedemptionSchema.parse({
+        ...(await input.prepare(pairing.identityId)),
+        status: "reserved",
+        reservedAtMs: now,
+      });
+    const reservedPairing: ApiPairing = { ...pairing, redemption: reserved };
+    if (!pairing.redemption) {
+      await writePairings(
+        input.path,
+        replacePairing(live, pairing, reservedPairing),
+      );
+    }
+
+    const persistenceInput = {
+      identityId: pairing.identityId,
+      redemption: reserved,
+    };
+    try {
+      await input.persist(persistenceInput);
+    } catch (persistenceError) {
+      let isPersisted: boolean;
+      try {
+        isPersisted = await input.isPersisted(persistenceInput);
+      } catch {
+        // The reservation is the recovery record when persistence state cannot
+        // be determined. A retry will check and commit the same token.
+        throw persistenceError;
+      }
+      if (!isPersisted) {
+        try {
+          await writePairings(
+            input.path,
+            replacePairing(live, pairing, withoutRedemption(pairing)),
+          );
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [persistenceError, rollbackError],
+            "token persistence and pairing reservation rollback both failed",
+          );
+        }
+        throw persistenceError;
+      }
+    }
+
+    const completed = PairingRedemptionSchema.parse({
+      ...reserved,
+      status: "completed",
+      completedAtMs: now,
+    });
+    await writePairings(
+      input.path,
+      replacePairing(live, pairing, { ...pairing, redemption: completed }),
+    );
+    return {
+      kind: "success",
+      identityId: pairing.identityId,
+      redemption: completed,
+    };
+  });
+}
+
+async function writePairings(
+  path: string,
+  pairings: readonly ApiPairing[],
+): Promise<void> {
+  const next: ApiPairingsFile = { version: 1, pairings: [...pairings] };
+  await atomicWriteInPlace(path, `${JSON.stringify(next, null, 2)}\n`);
+}
+
+function replacePairing(
+  pairings: readonly ApiPairing[],
+  current: ApiPairing,
+  replacement: ApiPairing,
+): ApiPairing[] {
+  return pairings.map((pairing) =>
+    pairing.codeSha256 === current.codeSha256 ? replacement : pairing,
+  );
+}
+
+function withoutRedemption(pairing: ApiPairing): ApiPairing {
+  return {
+    codeSha256: pairing.codeSha256,
+    identityId: pairing.identityId,
+    createdAtMs: pairing.createdAtMs,
+    expiresAtMs: pairing.expiresAtMs,
+  };
 }
 
 function isExpired(pairing: ApiPairing, now: number): boolean {

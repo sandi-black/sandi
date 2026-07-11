@@ -1,5 +1,6 @@
 import { join } from "node:path";
 
+import "@/lib/pairing/verify-pairing-transaction";
 import {
   consumePairing,
   createPairing,

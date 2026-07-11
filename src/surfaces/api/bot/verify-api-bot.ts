@@ -860,13 +860,24 @@ async function verifyPairing(
     "freshly minted token authenticates a turn at once",
   );
 
-  // Single-use: the same code cannot be redeemed twice.
+  // Ambiguous-response retry: the same code returns the already-durable token
+  // rather than issuing another credential.
+  const tokenCountBeforeReuse = (await loadApiTokens(config.api.tokensPath))
+    .tokens.length;
   const reuse = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ code: pairing.code }),
   });
-  assertEqual(reuse.status, 401, "pair single-use rejection");
+  assertEqual(reuse.status, 200, "pair idempotent retry status");
+  const reuseBody = await reuse.json();
+  if (!isRecord(reuseBody)) throw new Error("pair retry is not an object");
+  assertEqual(reuseBody["token"], token, "pair retry returns the same token");
+  assertEqual(
+    (await loadApiTokens(config.api.tokensPath)).tokens.length,
+    tokenCountBeforeReuse,
+    "pair retry does not persist a second token",
+  );
 
   // An unknown but well-formed code fails closed.
   const unknown = await fetch(url, {
@@ -930,7 +941,7 @@ async function verifyPairing(
   );
 
   console.log(
-    "ok pairing redeems a single-use code into a per-device token and rejects bad input",
+    "ok pairing persists one token, replays ambiguous retries, and rejects bad input",
   );
 }
 

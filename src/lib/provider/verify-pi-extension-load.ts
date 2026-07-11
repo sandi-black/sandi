@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 import {
+  defaultPiBrowserExtensionPath,
   defaultPiFeedbackExtensionPath,
   defaultPiImagegenExtensionPath,
   defaultPiJsRunExtensionPath,
@@ -17,6 +18,7 @@ import { spawnCommandIgnoringStdin } from "@/lib/provider/spawn-command";
 const piCommand = resolve("node_modules/.bin/pi");
 const invalidProvider = "__sandi_extension_load_probe__";
 const extensionPaths = [
+  defaultPiBrowserExtensionPath(),
   defaultPiJsRunExtensionPath(),
   defaultPiMemoryExtensionPath(),
   defaultPiSkillExtensionPath(),

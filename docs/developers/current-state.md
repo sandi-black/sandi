@@ -210,6 +210,7 @@ printf '%s' '<message>' | pi --print \
   --extension ./src/lib/pi-extension/skill-tools.ts \
   --extension ./src/lib/pi-extension/policy-tools.ts \
   --extension ./src/lib/pi-extension/imagegen-tools.ts \
+  --extension ./src/lib/pi-extension/browser-tools.ts \
   --extension ./src/lib/pi-extension/stop-sentinel.ts \
   --extension ./src/lib/pi-extension/token-usage-recorder.ts \
   --system-prompt <short-notice> \
@@ -466,6 +467,18 @@ On Discord, citations should normally render as inline masked links such as
 `[source](<https://example.com>)` or as a compact `Sources:` line with masked
 links. Wrapping URLs in angle brackets suppresses Discord's link unfurls.
 Discord supports line-level subtext, but not native superscript citation syntax.
+
+## Authenticated Browser Sessions
+
+Authenticated and interactive browser work uses the official Browser Use SDK.
+Sessions use identity-owned persistent profiles, bounded task costs and
+lifetimes, and explicit cleanup. Human login or approval steps use a private
+Discord handoff: the channel sees only a neutral prompt, while an authorized
+button click receives the live browser URL and Continue or Cancel controls in an
+ephemeral response. Live URLs and the provider API key are excluded from model
+tool results and file-backed state. See
+[`browser-sessions.md`](browser-sessions.md) for lifecycle, security, and
+deployment details.
 
 ## Google Maps
 

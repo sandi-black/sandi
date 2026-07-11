@@ -1,5 +1,7 @@
 import { resolve } from "node:path";
 
+import { startBrowserUseReaper } from "@/lib/browser-use/reaper";
+import { BrowserUseService } from "@/lib/browser-use/service";
 import { ContextCompiler } from "@/lib/context/context-compiler";
 import { ConversationStore } from "@/lib/conversations/store";
 import { errorMessage } from "@/lib/errors";
@@ -24,6 +26,15 @@ const embeddingMaintenance = startEmbeddingIndexMaintenance({
   memoryRoot: resolve(config.paths.dataDir, "memory"),
   logger: createLogger("embedding-index"),
 });
+const browserUse = config.browserUse
+  ? new BrowserUseService(config.browserUse)
+  : undefined;
+const browserUseReaper = browserUse
+  ? startBrowserUseReaper({
+      service: browserUse,
+      logger: createLogger("browser-use-reaper"),
+    })
+  : undefined;
 
 const bot = new SandiBot({
   config,
@@ -35,6 +46,7 @@ const bot = new SandiBot({
     config.environmentHint,
   ),
   provider: new PiCliClient(config.pi),
+  ...(browserUse ? { browserUse } : {}),
 });
 
 process.once("unhandledRejection", (reason) => {
@@ -56,6 +68,15 @@ function shutdown(signal: string): void {
     bot.stop();
   } catch (error) {
     log.error("Discord bot shutdown failed", { error: errorMessage(error) });
+    process.exitCode = 1;
+  }
+
+  try {
+    browserUseReaper?.stop();
+  } catch (error) {
+    log.error("browser session cleanup shutdown failed", {
+      error: errorMessage(error),
+    });
     process.exitCode = 1;
   }
 

@@ -5,8 +5,13 @@ import "dotenv/config";
 
 import { z } from "zod";
 
+import {
+  type BrowserUseConfig,
+  loadBrowserUseConfig,
+} from "@/lib/browser-use/config";
 import type { PiAccountRoutingConfig } from "@/lib/provider/pi-account-routing";
 import {
+  defaultPiBrowserExtensionPath,
   defaultPiFeedbackExtensionPath,
   defaultPiImagegenExtensionPath,
   defaultPiJsRunExtensionPath,
@@ -50,6 +55,7 @@ export type PathConfig = {
 export type CoreConfig = {
   pi: PiConfig;
   paths: PathConfig;
+  browserUse?: BrowserUseConfig;
   environmentHint?: string;
 };
 
@@ -169,6 +175,7 @@ export function loadCoreConfig(): CoreConfig {
     configDirs,
     dataDir,
   });
+  const browserUse = loadBrowserUseConfig(dataDir);
 
   const config: CoreConfig = {
     pi: {
@@ -204,6 +211,7 @@ export function loadCoreConfig(): CoreConfig {
   };
 
   if (accountRouting) config.pi.accountRouting = accountRouting;
+  if (browserUse) config.browserUse = browserUse;
   if (piModel) config.pi.model = piModel;
   if (piProvider) config.pi.provider = piProvider;
   if (piThinking) config.pi.thinking = piThinking;
@@ -228,6 +236,9 @@ function readExtensionPaths(): string[] {
 
   const jsRunExtension = resolve(
     readEnv(["SANDI_PI_JS_EXTENSION"]) ?? defaultPiJsRunExtensionPath(),
+  );
+  const browserExtension = resolve(
+    readEnv(["SANDI_PI_BROWSER_EXTENSION"]) ?? defaultPiBrowserExtensionPath(),
   );
   const memoryExtension = resolve(
     readEnv(["SANDI_PI_MEMORY_EXTENSION"]) ?? defaultPiMemoryExtensionPath(),
@@ -254,6 +265,7 @@ function readExtensionPaths(): string[] {
       defaultPiTokenUsageExtensionPath(),
   );
   return [
+    browserExtension,
     jsRunExtension,
     memoryExtension,
     skillExtension,

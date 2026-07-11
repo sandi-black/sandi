@@ -18,6 +18,7 @@ import {
   type User,
 } from "discord.js";
 
+import type { BrowserUseService } from "@/lib/browser-use/service";
 import type { ContextCompiler } from "@/lib/context/context-compiler";
 import { buildMemoryContext, type MemoryContext } from "@/lib/context/memory";
 import type { ConversationStore } from "@/lib/conversations/store";
@@ -49,6 +50,10 @@ import {
 } from "@/lib/provider/pi-cli-client";
 import { ThreadQueue } from "@/lib/turns/turn-queue";
 import { isRecord } from "@/lib/type-guards";
+import {
+  type BrowserHandoffDecision,
+  BrowserHandoffManager,
+} from "@/surfaces/discord/bot/browser-handoffs";
 import { issueDeviceCode } from "@/surfaces/discord/bot/device-auth";
 import {
   appendIgnoredConversationChannel,
@@ -160,16 +165,19 @@ export type SandiBotDependencies = {
   // linked can run file and shell tools on that desktop. Absent in a standalone
   // Discord process, where no desktop links exist to reach.
   desktopHands?: DesktopHands;
+  browserUse?: BrowserUseService;
 };
 
 type DiscordToolContext = {
   platform: "discord";
+  surfaceTargetId: string;
   guildId?: string;
   channelId: string;
   parentChannelId?: string;
   threadId?: string;
   messageId: string;
   author?: {
+    platformUserId: string;
     discordUserId: string;
     username?: string;
     displayName?: string;
@@ -216,6 +224,7 @@ export class SandiBot {
   readonly #reminders: ReminderManager;
   readonly #reactions: ReactionDigestStore;
   readonly #todoList: TodoListManager;
+  readonly #browserHandoffs: BrowserHandoffManager | undefined;
   readonly #queue = new ThreadQueue();
   #ignoredChannels: Promise<Set<string>> | undefined;
   readonly #failureNotices = new Map<string, number>();
@@ -256,6 +265,13 @@ export class SandiBot {
         Partials.User,
       ],
     });
+    this.#browserHandoffs = deps.browserUse
+      ? new BrowserHandoffManager({
+          client: this.#client,
+          service: deps.browserUse,
+          onDecision: (decision) => this.#enqueueBrowserHandoffTurn(decision),
+        })
+      : undefined;
     this.#todoList = new TodoListManager({
       client: this.#client,
       dataDir: this.#config.paths.dataDir,
@@ -679,6 +695,7 @@ export class SandiBot {
   }
 
   async #handleInteraction(interaction: Interaction): Promise<void> {
+    if (await this.#browserHandoffs?.handleInteraction(interaction)) return;
     if (await this.#reminders.handleInteraction(interaction)) return;
     if (await this.#todoList.handleInteraction(interaction)) return;
     if (!interaction.isChatInputCommand()) return;
@@ -1260,6 +1277,9 @@ export class SandiBot {
         responseLength: response.text.length,
         deliverySideEffects: response.deliverySideEffects,
       });
+      await this.#browserHandoffs?.publishPending(
+        input.conversation.canonicalId,
+      );
       if (input.suppressFinalResponse) {
         if (!response.deliverySideEffects && response.text.trim()) {
           log.info("suppressing provider final text for todo channel turn", {
@@ -1304,6 +1324,59 @@ export class SandiBot {
     } finally {
       clearInterval(typingTimer);
     }
+  }
+
+  async #enqueueBrowserHandoffTurn(
+    decision: BrowserHandoffDecision,
+  ): Promise<void> {
+    const conversation = await this.#conversations.get(decision.channelId);
+    if (!conversation || conversation.canonicalId !== decision.conversationId) {
+      throw new Error(
+        `Browser handoff conversation ${decision.conversationId} is unavailable`,
+      );
+    }
+    const author = conversation.participants.find(
+      (participant) =>
+        participant.platform === "discord" &&
+        participant.platformUserId === decision.discordUserId,
+    );
+    if (!author) {
+      throw new Error(
+        "Browser handoff requester is not a conversation participant",
+      );
+    }
+    const fetched = await this.#client.channels.fetch(decision.channelId);
+    const channel = asConversationChannel(fetched);
+    if (!channel) {
+      throw new Error(
+        `Browser handoff channel ${decision.channelId} is unavailable`,
+      );
+    }
+
+    const messageId = `browser-handoff:${decision.sessionId}:${decision.action}`;
+    const input =
+      decision.action === "continue"
+        ? `The user confirmed that the private browser handoff is complete and the browser is ready. Resume the original request using Browser Use session ${decision.sessionId}.`
+        : `The user canceled the active browser handoff for Browser Use session ${decision.sessionId}. The browser session is already closed. Acknowledge the cancellation and do not continue the original request.`;
+    this.#queue.enqueue(conversation.canonicalId, messageId, async (signal) => {
+      await this.#runTurn({
+        channel,
+        conversation,
+        author,
+        messageId,
+        input,
+        metadata: [
+          "source: browser_handoff_interaction",
+          `action: ${decision.action}`,
+          `session_id: ${decision.sessionId}`,
+        ].join("\n"),
+        toolContext: toolContextFromChannel(channel, messageId, author),
+        signal,
+        ...(decision.promptMessageId
+          ? { replyToMessageId: decision.promptMessageId }
+          : {}),
+      });
+    });
   }
 
   async #enqueueEventTurn(trigger: EventTrigger): Promise<void> {
@@ -2622,6 +2695,7 @@ function toolContextFromMessage(
   const thread = asThread(message.channel);
   const context: DiscordToolContext = {
     platform: "discord",
+    surfaceTargetId: message.channelId,
     channelId: message.channelId,
     messageId: message.id,
   };
@@ -2641,6 +2715,7 @@ function toolContextFromThreadStarter(input: {
 }): DiscordToolContext {
   const context: DiscordToolContext = {
     platform: "discord",
+    surfaceTargetId: input.thread.id,
     channelId: input.thread.id,
     messageId: input.originMessage.id,
     threadId: input.thread.id,
@@ -2661,6 +2736,7 @@ function toolContextFromChannel(
 ): DiscordToolContext {
   const context: DiscordToolContext = {
     platform: "discord",
+    surfaceTargetId: channel.id,
     guildId: channel.guildId,
     channelId: channel.id,
     messageId: `event:${eventId}`,
@@ -2677,6 +2753,7 @@ function toolContextAuthor(
   participant: ConversationParticipant,
 ): NonNullable<DiscordToolContext["author"]> {
   const author = {
+    platformUserId: participant.platformUserId,
     discordUserId: participant.platformUserId,
     username: participant.username,
   };

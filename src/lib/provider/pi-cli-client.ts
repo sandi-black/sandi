@@ -908,6 +908,10 @@ export function defaultPiJsRunExtensionPath(): string {
   return resolve("src/lib/pi-extension/js-run-tool.ts");
 }
 
+export function defaultPiBrowserExtensionPath(): string {
+  return resolve("src/lib/pi-extension/browser-tools.ts");
+}
+
 export function defaultPiImagegenExtensionPath(): string {
   return resolve("src/lib/pi-extension/imagegen-tools.ts");
 }

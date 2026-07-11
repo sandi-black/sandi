@@ -1,6 +1,8 @@
 import { resolve } from "node:path";
 
 import { loadHostConfig } from "@/host/config";
+import { startBrowserUseReaper } from "@/lib/browser-use/reaper";
+import { BrowserUseService } from "@/lib/browser-use/service";
 import { ContextCompiler } from "@/lib/context/context-compiler";
 import { ConversationStore } from "@/lib/conversations/store";
 import { errorMessage } from "@/lib/errors";
@@ -45,6 +47,15 @@ await ensurePiRuntimeSetup(pi);
 // desktop holds one link, and a turn from any surface can reach it.
 const conversations = new ConversationStore(paths.dataDir);
 const provider = new PiCliClient(pi);
+const browserUse = config.api.browserUse
+  ? new BrowserUseService(config.api.browserUse)
+  : undefined;
+const browserUseReaper = browserUse
+  ? startBrowserUseReaper({
+      service: browserUse,
+      logger: createLogger("browser-use-reaper"),
+    })
+  : undefined;
 const devices = new DeviceRegistry();
 const broker = new ToolBroker(devices);
 // Lets a turn from any surface reach the desktop belonging to its human, by
@@ -117,6 +128,7 @@ if (config.discord) {
     ),
     provider,
     desktopHands,
+    ...(browserUse ? { browserUse } : {}),
   });
   registerSurface("discord", discordBot);
 }
@@ -178,6 +190,15 @@ function shutdown(signal: string): void {
     broker.stop();
   } catch (error) {
     log.error("shared resource shutdown failed", {
+      error: errorMessage(error),
+    });
+    process.exitCode = 1;
+  }
+
+  try {
+    browserUseReaper?.stop();
+  } catch (error) {
+    log.error("browser session cleanup shutdown failed", {
       error: errorMessage(error),
     });
     process.exitCode = 1;

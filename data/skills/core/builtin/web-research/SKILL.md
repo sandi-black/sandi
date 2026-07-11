@@ -11,6 +11,26 @@ Use the native web-search and URL-fetching tools exposed by Pi's Codex conversio
 extension. Do not import `web` from `./sandi/runtime.ts`; Sandi no longer ships
 Exa-backed code-mode web helpers.
 
+Use Browser Use only when the request needs an authenticated account, interactive
+page state, or a human login, payment, passkey, 2FA, or approval step. Keep public
+research on the native web tools. Never put passwords, payment details, API keys,
+or other secrets in a browser task prompt.
+
+For an interactive Browser Use flow:
+
+1. Start a named persistent profile with `browser_session_start`.
+2. If human action is required, call `browser_session_handoff`. The requesting
+   human receives a private link with Continue and Cancel controls on the active
+   surface.
+3. After Continue creates a follow-up turn, resume the same session with
+   `browser_session_continue`.
+4. Always close the session with `browser_session_stop` when the request is
+   complete. Cancel closes it automatically.
+
+Do not ask the human to paste a live browser URL into chat. That URL is a
+short-lived capability and is intentionally hidden from model-visible tool
+results and persistent state.
+
 Available tool names and schemas come from the active Pi run. Prefer the native
 tool that searches the web for broad discovery, and the native URL/page-reading
 tool when a specific source needs exact content. For implementation examples,

@@ -1,13 +1,10 @@
 import { mkdir, readFile, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 
+import { isMissingFileError } from "../fs-errors";
+import { withManagedWrite } from "./managed-write";
+import { chmodPrivateFile, writePrivateTextFile } from "./private-files";
 import type { z } from "zod/v4";
-import { isMissingFileError } from "@/lib/fs-errors";
-import { withManagedWrite } from "@/lib/state/managed-write";
-import {
-  chmodPrivateFile,
-  writePrivateTextFile,
-} from "@/lib/state/private-files";
 
 export class JsonFileStore<T> {
   readonly #path: string;

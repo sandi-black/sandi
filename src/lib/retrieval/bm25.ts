@@ -17,6 +17,18 @@ export type Bm25SearchResult = {
 type IndexedDocument = Bm25Document & {
   frequencies: Map<string, number>;
   length: number;
+  lines: IndexedLine[];
+};
+
+type IndexedLine = {
+  line: string;
+  lineNumber: number;
+  tokens: ReadonlySet<string>;
+};
+
+export type Bm25Index = {
+  documents: readonly IndexedDocument[];
+  documentsById: ReadonlyMap<string, IndexedDocument>;
 };
 
 const DEFAULT_MAX_SNIPPETS = 3;
@@ -127,10 +139,39 @@ export function searchBm25(
   query: string,
   options: Bm25SearchOptions = {},
 ): Bm25SearchResult[] {
-  const queryTokens = uniqueTokens(tokenize(query));
-  if (documents.length === 0 || queryTokens.length === 0) return [];
+  return searchBm25Index(buildBm25Index(documents), query, options);
+}
 
+/**
+ * Stores query-independent lexical work so a loaded corpus can reuse its
+ * tokenization without freezing the corpus statistics of any filtered view.
+ */
+export function buildBm25Index(documents: readonly Bm25Document[]): Bm25Index {
   const indexedDocuments = documents.map(indexDocument);
+  const documentsById = new Map<string, IndexedDocument>();
+  for (const document of indexedDocuments) {
+    if (documentsById.has(document.id)) {
+      throw new Error(`Duplicate BM25 document id: ${document.id}`);
+    }
+    documentsById.set(document.id, document);
+  }
+  return { documents: indexedDocuments, documentsById };
+}
+
+/**
+ * Recomputes BM25 statistics over the requested IDs, preserving the exact
+ * semantics of searching that document subset without re-tokenizing it.
+ */
+export function searchBm25Index(
+  index: Bm25Index,
+  query: string,
+  options: Bm25SearchOptions = {},
+  documentIds?: readonly string[] | undefined,
+): Bm25SearchResult[] {
+  const queryTokens = uniqueTokens(tokenize(query));
+  const indexedDocuments = selectIndexedDocuments(index, documentIds);
+  if (indexedDocuments.length === 0 || queryTokens.length === 0) return [];
+
   const documentFrequencies = computeDocumentFrequencies(indexedDocuments);
   const averageDocumentLength =
     indexedDocuments.reduce((sum, document) => sum + document.length, 0) /
@@ -151,13 +192,25 @@ export function searchBm25(
         documentCount: indexedDocuments.length,
         averageDocumentLength,
       }),
-      snippets: selectSnippets(document.content, queryTokens, maxSnippets),
+      snippets: selectSnippets(document.lines, queryTokens, maxSnippets),
     }))
     .filter((result) => result.score > 0)
     .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
 
   const maxResults = positiveIntOrUndefined(options.maxResults);
   return maxResults === undefined ? results : results.slice(0, maxResults);
+}
+
+function selectIndexedDocuments(
+  index: Bm25Index,
+  documentIds: readonly string[] | undefined,
+): readonly IndexedDocument[] {
+  if (documentIds === undefined) return index.documents;
+  return documentIds.map((id) => {
+    const document = index.documentsById.get(id);
+    if (!document) throw new Error(`BM25 index missing document id: ${id}`);
+    return document;
+  });
 }
 
 export function tokenize(text: string): string[] {
@@ -187,11 +240,16 @@ function indexDocument(document: Bm25Document): IndexedDocument {
     ...document,
     frequencies,
     length: tokens.length,
+    lines: document.content.split("\n").map((line, index) => ({
+      line,
+      lineNumber: index + 1,
+      tokens: new Set(tokenize(line)),
+    })),
   };
 }
 
 function computeDocumentFrequencies(
-  documents: IndexedDocument[],
+  documents: readonly IndexedDocument[],
 ): Map<string, number> {
   const frequencies = new Map<string, number>();
   for (const document of documents) {
@@ -233,18 +291,16 @@ function scoreDocument(input: {
 }
 
 function selectSnippets(
-  content: string,
+  lines: readonly IndexedLine[],
   queryTokens: string[],
   maxSnippets: number,
 ): string[] {
   if (maxSnippets === 0) return [];
 
-  const scoredLines = content
-    .split("\n")
-    .map((line, index) => ({
-      line,
-      lineNumber: index + 1,
-      score: countQueryTokens(line, queryTokens),
+  const scoredLines = lines
+    .map((line) => ({
+      ...line,
+      score: countQueryTokens(line.tokens, queryTokens),
     }))
     .filter((line) => line.score > 0)
     .sort(
@@ -260,8 +316,10 @@ function selectSnippets(
   });
 }
 
-function countQueryTokens(line: string, queryTokens: string[]): number {
-  const lineTokens = new Set(tokenize(line));
+function countQueryTokens(
+  lineTokens: ReadonlySet<string>,
+  queryTokens: string[],
+): number {
   let count = 0;
   for (const token of queryTokens) {
     if (lineTokens.has(token)) count += 1;

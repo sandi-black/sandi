@@ -11,12 +11,13 @@ import {
 import { basename, dirname, join, relative, resolve } from "node:path";
 
 import { isMissingFileError, isMissingPathError } from "../fs-errors";
+import { type Bm25Index, buildBm25Index } from "./bm25";
 import {
   createEmbeddingEngineFromEnv,
   type EmbeddingEngine,
   type EmbeddingEngineStatus,
 } from "./embeddings";
-import type { SearchPassage } from "./parent-search";
+import { type SearchPassage, searchPassageDocumentId } from "./parent-search";
 import { z } from "zod/v4";
 
 export const EMBEDDING_INDEX_VERSION = 1;
@@ -48,6 +49,7 @@ export type EmbeddingIndexManifest = {
 export type CachedEmbeddingIndex = {
   manifest: EmbeddingIndexManifest;
   passages: IndexedSearchPassage[];
+  bm25Index: Bm25Index;
 };
 
 export type RebuildEmbeddingIndexResult =
@@ -218,9 +220,18 @@ export async function loadCurrentEmbeddingIndex(input: {
   );
   if (!rawIndex) return null;
   const parsed = INDEX_FILE_SCHEMA.parse(rawIndex);
+  const passages = parsed.passages.map(indexedPassageFromDisk);
   const index: CachedEmbeddingIndex = {
     manifest,
-    passages: parsed.passages.map(indexedPassageFromDisk),
+    passages,
+    bm25Index: buildBm25Index(
+      passages
+        .map((passage) => ({
+          id: searchPassageDocumentId(passage),
+          content: passage.content.trim(),
+        }))
+        .filter((passage) => passage.content.length > 0),
+    ),
   };
   LOADED_INDEX_CACHE.set(cacheKey, { generation: pointer.generation, index });
   return index;

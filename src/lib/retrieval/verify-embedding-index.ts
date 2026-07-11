@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { verifyBm25Cache } from "./verify-bm25-cache";
 import {
   memoryEmbeddingIndexSnapshot,
   rebuildMemoryEmbeddingIndex,
@@ -54,6 +55,11 @@ async function verifySkillIndex(dataDir: string): Promise<void> {
   assert.equal(cached?.manifest.version, EMBEDDING_INDEX_VERSION);
   assert.equal(cached?.manifest.contentHash, snapshot.contentHash);
   assert.equal(cached?.manifest.sourceFileCount, 2);
+  const sameGeneration = await loadCurrentEmbeddingIndex({
+    kind: "skills",
+    cacheRoot: embeddingIndexCacheRoot(dataDir),
+  });
+  assert.equal(sameGeneration?.bm25Index, cached?.bm25Index);
 
   const search = await searchSkillsHybrid({
     root: skillsRoot,
@@ -79,6 +85,21 @@ async function verifySkillIndex(dataDir: string): Promise<void> {
     cacheRoot: embeddingIndexCacheRoot(dataDir),
   });
   assert.equal(stale?.manifest.contentHash, snapshot.contentHash);
+
+  const refreshed = await rebuildSkillEmbeddingIndex({
+    root: skillsRoot,
+    embeddingEngine: buildEmbeddingEngine,
+  });
+  assert.equal(refreshed.rebuilt, true);
+  const nextGeneration = await loadCurrentEmbeddingIndex({
+    kind: "skills",
+    cacheRoot: embeddingIndexCacheRoot(dataDir),
+  });
+  assert.notEqual(nextGeneration?.bm25Index, cached?.bm25Index);
+  assert.equal(
+    nextGeneration?.manifest.contentHash,
+    changedSnapshot.contentHash,
+  );
 }
 
 async function verifyMemoryIndex(dataDir: string): Promise<void> {
@@ -180,6 +201,8 @@ const queryOnlyEmbeddingEngine: EmbeddingEngine = {
 };
 
 const previousDataDir = process.env["SANDI_DATA_DIR"];
+
+verifyBm25Cache();
 
 assert.equal(
   cosineSimilarity([1, 0], [1]),

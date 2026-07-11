@@ -1,38 +1,38 @@
 import type { ConversationParticipant } from "@/lib/conversations/types";
-import type { HumanIdentityRecord } from "@/lib/identity/types";
+import {
+  type HumanIdentityRecord,
+  IDENTITY_PLATFORMS,
+  PLATFORM_IDENTITY_DESCRIPTORS,
+} from "@/lib/identity/types";
 
 /**
- * Resolves a human identity to the API participant, reusing the human's primary
- * platform account (Discord first, else GitHub) so an API turn shares that
- * human's existing memory arena and account routing. Returns undefined when the
- * human has no usable platform mapping, so callers can reject it.
+ * Resolves a human identity to the configured primary platform account so API
+ * turns keep a stable memory arena and account route. Records without an
+ * explicit preference retain the established Discord-first fallback.
  */
 export function apiParticipantFromHuman(
   human: HumanIdentityRecord,
 ): ConversationParticipant | undefined {
-  const discord = human.platforms.discord;
-  if (discord) {
-    const participant: ConversationParticipant = {
-      platform: "discord",
-      platformUserId: discord.id ?? discord.username,
-      username: discord.username,
-      identityId: human.id,
-      joinedAt: new Date().toISOString(),
-    };
-    if (human.displayName) participant.displayName = human.displayName;
-    return participant;
-  }
-  const github = human.platforms.github;
-  if (github) {
-    const participant: ConversationParticipant = {
-      platform: "github",
-      platformUserId: github.id ?? github.login,
-      username: github.login,
-      identityId: human.id,
-      joinedAt: new Date().toISOString(),
-    };
-    if (human.displayName) participant.displayName = human.displayName;
-    return participant;
-  }
-  return undefined;
+  const platform =
+    human.primaryPlatform ??
+    IDENTITY_PLATFORMS.find((candidate) =>
+      Boolean(
+        PLATFORM_IDENTITY_DESCRIPTORS[candidate].readAccount(human.platforms),
+      ),
+    );
+  if (!platform) return undefined;
+  const account = PLATFORM_IDENTITY_DESCRIPTORS[platform].readAccount(
+    human.platforms,
+  );
+  if (!account) return undefined;
+
+  const participant: ConversationParticipant = {
+    platform,
+    platformUserId: account.id ?? account.username,
+    username: account.username,
+    identityId: human.id,
+    joinedAt: new Date().toISOString(),
+  };
+  if (human.displayName) participant.displayName = human.displayName;
+  return participant;
 }

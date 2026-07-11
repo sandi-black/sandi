@@ -3,26 +3,27 @@
   "version": 1,
   "humans": [
     {
-      "id": "primary-human",
-      "displayName": "Primary Human",
+      "id": "ada-lovelace",
+      "displayName": "Ada Lovelace",
+      "primaryPlatform": "github",
       "platforms": {
         "discord": {
-          "id": "discord-user-primary",
-          "username": "primary-user"
+          "id": "discord-user-ada",
+          "username": "ada-lovelace"
         },
         "github": {
           "id": "22222222",
-          "login": "primary-user"
+          "login": "ada-lovelace"
         }
       }
     },
     {
-      "id": "secondary-human",
-      "displayName": "Secondary Human",
+      "id": "grace-hopper",
+      "displayName": "Grace Hopper",
       "platforms": {
         "discord": {
-          "id": "discord-user-secondary",
-          "username": "secondary-user"
+          "id": "discord-user-grace",
+          "username": "grace-hopper"
         }
       }
     }

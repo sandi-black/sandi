@@ -60,6 +60,7 @@ const ConversationManifestSchema = z.object({
   starterParticipantRef: z.string(),
   participants: z.array(ParticipantSchema),
   memoryScopes: z.array(MemoryScopeSchema),
+  attachmentHashes: z.array(z.string().regex(/^[0-9a-f]{64}$/)).optional(),
   surfacePrompt: z.string().optional(),
   surfaceContext: z.record(z.string(), z.unknown()).optional(),
 });
@@ -165,6 +166,25 @@ export class ConversationStore {
       };
     }, input.manifest);
     return updated;
+  }
+
+  async addAttachmentReferences(input: {
+    storageId: string;
+    manifest: ConversationManifest;
+    hashes: readonly string[];
+  }): Promise<ConversationManifest> {
+    if (input.hashes.length === 0) return input.manifest;
+    const hashes = new Set(input.hashes);
+    return this.#storeFor(input.storageId).updateManaged(
+      (current) => ({
+        ...current,
+        updatedAt: new Date().toISOString(),
+        attachmentHashes: [
+          ...new Set([...(current.attachmentHashes ?? []), ...hashes]),
+        ],
+      }),
+      input.manifest,
+    );
   }
 
   /**

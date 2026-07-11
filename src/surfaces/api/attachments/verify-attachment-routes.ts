@@ -16,6 +16,7 @@ import {
   isRecord,
   withTempDir,
 } from "@/lib/verification/harness";
+import { AttachmentRefsSchema } from "@/surfaces/api/attachments/turn-materialize";
 import { ApiBot } from "@/surfaces/api/bot/api-bot";
 import type { ApiAppConfig } from "@/surfaces/api/config";
 import { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
@@ -67,8 +68,10 @@ async function verifyAttachmentRoutes(): Promise<void> {
       await verifyDownloadOfMissingBlobFailsClosed(base, dataDir);
       await verifyUploadRejectsBadNameAndMime(base);
       await verifyUploadRejectsOverCap(base);
-      await verifyTurnWithAttachmentsMaterializesFiles(base, provider);
+      await verifyUploadRejectsQuota(base);
+      await verifyTurnWithAttachmentsMaterializesFiles(base, provider, dataDir);
       await verifyTurnWithBadAttachmentRefIsRejected(base, provider);
+      await verifyTurnAttachmentBounds(base, provider, dataDir);
 
       console.log("attachment routes verification passed");
     } finally {
@@ -304,9 +307,31 @@ async function verifyUploadRejectsOverCap(base: string): Promise<void> {
   console.log("ok POST /v1/attachments over the size cap returns 413");
 }
 
+async function verifyUploadRejectsQuota(base: string): Promise<void> {
+  const response = await fetch(`${base}/v1/attachments`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${RAW_TOKEN}`,
+      "content-type": "application/octet-stream",
+      "x-sandi-name": "quota.bin",
+    },
+    body: Buffer.alloc(1_024, 7),
+    duplex: "half",
+  });
+  assertEqual(response.status, 413, "an identity quota overflow returns 413");
+  const body = await response.json();
+  assertEqual(
+    isRecord(body) && body["error"],
+    "quota_exceeded",
+    "a quota overflow has a distinct error",
+  );
+  console.log("ok POST /v1/attachments reports identity quota exhaustion");
+}
+
 async function verifyTurnWithAttachmentsMaterializesFiles(
   base: string,
   provider: RecordingProvider,
+  dataDir: string,
 ): Promise<void> {
   const bytes = pngFixtureBytes();
   const uploadResponse = await fetch(`${base}/v1/attachments`, {
@@ -381,8 +406,125 @@ async function verifyTurnWithAttachmentsMaterializesFiles(
       "the per-turn attachment temp dir is removed after the turn finishes",
     );
   }
+  const conversation = (await new ConversationStore(dataDir).list()).find(
+    (manifest) => manifest.canonicalId.endsWith(":attachment-session"),
+  );
+  assert(
+    conversation?.attachmentHashes?.includes(hash) === true,
+    "the retained conversation records its attachment reference",
+  );
   console.log(
     "ok a turn body with attachment refs materializes files under a sanitized name and cleans up afterward",
+  );
+}
+
+async function verifyTurnAttachmentBounds(
+  base: string,
+  provider: RecordingProvider,
+  dataDir: string,
+): Promise<void> {
+  assert(
+    AttachmentRefsSchema.safeParse(
+      Array.from({ length: 16 }, (_, index) => ({
+        hash: createHash("sha256").update(`boundary-${index}`).digest("hex"),
+      })),
+    ).success,
+    "exactly 16 attachment refs pass boundary parsing",
+  );
+  const hashes: string[] = [];
+  for (const label of ["one", "two", "three"]) {
+    const hash = createHash("sha256")
+      .update(`aggregate-${label}`)
+      .digest("hex");
+    hashes.push(hash);
+    const dir = join(dataDir, "attachments", hash.slice(0, 2));
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, hash), label);
+    await writeFile(
+      join(dir, `${hash}.json`),
+      `${JSON.stringify({
+        hash,
+        size: 64 * 1024 * 1024,
+        mimeType: "application/octet-stream",
+        name: `${label}.bin`,
+        ownerIdentityIds: [IDENTITY_ID],
+        createdAt: "2026-07-11T00:00:00.000Z",
+      })}\n`,
+    );
+  }
+
+  const beforeBoundary = provider.callCount;
+  const boundary = await postTurnWithHashes(
+    base,
+    "aggregate-boundary",
+    hashes.slice(0, 2),
+  );
+  assertEqual(
+    boundary.status,
+    200,
+    "exactly 128 MiB of attachment metadata is accepted",
+  );
+  assertEqual(
+    provider.callCount,
+    beforeBoundary + 1,
+    "the boundary turn reaches the provider",
+  );
+
+  const beforeOverflow = provider.callCount;
+  const overflow = await postTurnWithHashes(base, "aggregate-overflow", hashes);
+  assertEqual(
+    overflow.status,
+    413,
+    "aggregate attachment data over 128 MiB is rejected",
+  );
+  const overflowBody = await overflow.json();
+  assertEqual(
+    isRecord(overflowBody) && overflowBody["error"],
+    "attachments_too_large",
+    "aggregate overflow has a distinct error",
+  );
+  assertEqual(
+    provider.callCount,
+    beforeOverflow,
+    "aggregate overflow is rejected before provider work",
+  );
+
+  const tooMany = await postTurnWithHashes(
+    base,
+    "attachment-count-overflow",
+    Array.from({ length: 17 }, (_, index) =>
+      createHash("sha256").update(`missing-${index}`).digest("hex"),
+    ),
+  );
+  assertEqual(tooMany.status, 400, "more than 16 attachment refs is rejected");
+  assertEqual(
+    provider.callCount,
+    beforeOverflow,
+    "count overflow is rejected before provider work",
+  );
+  console.log(
+    "ok per-turn attachment count and aggregate byte boundaries are enforced",
+  );
+}
+
+function postTurnWithHashes(
+  base: string,
+  conversationId: string,
+  hashes: readonly string[],
+): Promise<Response> {
+  return fetch(
+    `${base}/v1/conversations/${encodeURIComponent(conversationId)}/turns`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${RAW_TOKEN}`,
+      },
+      body: JSON.stringify({
+        input: "inspect these attachments",
+        attachments: hashes.map((hash) => ({ hash })),
+      }),
+    },
   );
 }
 
@@ -560,6 +702,9 @@ function testConfig(dataDir: string): ApiAppConfig {
       port: 0,
       tokensPath: join(dataDir, "config", "api-tokens.json"),
       pairingsPath: join(dataDir, "config", "api-pairings.json"),
+      attachmentQuotaBytes: 1_024,
+      attachmentRetentionMs: 30 * 24 * 60 * 60 * 1_000,
+      attachmentCleanupIntervalMs: 24 * 60 * 60 * 1_000,
     },
   };
 }

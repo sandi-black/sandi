@@ -43,11 +43,13 @@ import {
   DESKTOP_TITLE_PLACEHOLDER,
   desktopTitleRequestInput,
 } from "@/surfaces/api/api/title";
+import { cleanupAttachmentStore } from "@/surfaces/api/attachments/cleanup";
 import { handleAttachmentDownload } from "@/surfaces/api/attachments/download-route";
 import { AttachmentStore } from "@/surfaces/api/attachments/store";
 import {
   type AttachmentRef,
   AttachmentRefsSchema,
+  AttachmentTurnTooLargeError,
   cleanupMaterializedAttachments,
   InvalidAttachmentRefError,
   materializeAttachmentRefs,
@@ -131,6 +133,9 @@ export class ApiBot {
   readonly #broker: ToolBroker;
   readonly #deviceRoutes: DeviceRoutes;
   readonly #attachments: AttachmentStore;
+  readonly #attachmentsRoot: string;
+  #attachmentCleanupTimer: NodeJS.Timeout | undefined;
+  #attachmentCleanupRunning = false;
   #server: Server | undefined;
 
   constructor(input: ApiBotInput) {
@@ -142,11 +147,11 @@ export class ApiBot {
     this.#broker = input.broker;
     // Content-addressed, alongside conversations under the same server data
     // dir, following the same per-surface data-dir resolution ConversationStore
-    // uses (no separate config knob; attachments are server state, not
-    // something an operator points elsewhere today).
-    this.#attachments = new AttachmentStore(
-      join(input.config.paths.dataDir, "attachments"),
-    );
+    // uses. The root is fixed server state; quota and retention are configurable.
+    this.#attachmentsRoot = join(input.config.paths.dataDir, "attachments");
+    this.#attachments = new AttachmentStore(this.#attachmentsRoot, {
+      quotaBytes: input.config.api.attachmentQuotaBytes,
+    });
     // ttlMs 0 on both auth stores: re-stat on every check so a token minted by
     // the pairing endpoint authenticates immediately (no cache-window 401), a
     // revoked token stops working at once, and a removed or unmapped identity
@@ -187,12 +192,17 @@ export class ApiBot {
           host: this.#config.api.host,
           port: this.address()?.port ?? this.#config.api.port,
         });
+        this.#scheduleAttachmentCleanup();
         resolveStart();
       });
     });
   }
 
   stop(): void {
+    if (this.#attachmentCleanupTimer) {
+      clearInterval(this.#attachmentCleanupTimer);
+      this.#attachmentCleanupTimer = undefined;
+    }
     const server = this.#server;
     if (!server) return;
     this.#server = undefined;
@@ -526,6 +536,12 @@ export class ApiBot {
               body: { error: "invalid_attachment", hash: error.hash },
             };
           }
+          if (error instanceof AttachmentTurnTooLargeError) {
+            return {
+              status: 413,
+              body: { error: "attachments_too_large" },
+            };
+          }
           throw error;
         }
 
@@ -540,10 +556,17 @@ export class ApiBot {
             storageId,
             fallback: buildApiConversationManifest(manifestInput),
           });
-          const conversation = await this.#conversations.addParticipant({
+          let conversation = await this.#conversations.addParticipant({
             storageId,
             manifest: created,
             participant,
+          });
+          conversation = await this.#conversations.addAttachmentReferences({
+            storageId,
+            manifest: conversation,
+            hashes: (parsed.attachments ?? []).map(
+              (attachment) => attachment.hash,
+            ),
           });
 
           const text = await this.#runQueuedTurn({
@@ -564,6 +587,38 @@ export class ApiBot {
         }
       },
     );
+  }
+
+  #scheduleAttachmentCleanup(): void {
+    if (this.#attachmentCleanupTimer) return;
+    void this.#runAttachmentCleanup();
+    this.#attachmentCleanupTimer = setInterval(() => {
+      void this.#runAttachmentCleanup();
+    }, this.#config.api.attachmentCleanupIntervalMs);
+    this.#attachmentCleanupTimer.unref();
+  }
+
+  async #runAttachmentCleanup(): Promise<void> {
+    if (this.#attachmentCleanupRunning) return;
+    this.#attachmentCleanupRunning = true;
+    try {
+      const retainedHashes = new Set<string>();
+      for (const conversation of await this.#conversations.list()) {
+        for (const hash of conversation.attachmentHashes ?? []) {
+          retainedHashes.add(hash);
+        }
+      }
+      const report = await cleanupAttachmentStore({
+        root: this.#attachmentsRoot,
+        retainedHashes,
+        retentionMs: this.#config.api.attachmentRetentionMs,
+      });
+      log.info("attachment cleanup finished", report);
+    } catch (error) {
+      log.warn("attachment cleanup failed", { error: errorMessage(error) });
+    } finally {
+      this.#attachmentCleanupRunning = false;
+    }
   }
 
   // Names a conversation from a single message with a one-off, stateless model

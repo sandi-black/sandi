@@ -4,7 +4,12 @@ import { join } from "node:path";
 
 import { z } from "zod/v4";
 import {
+  MAX_TURN_ATTACHMENT_BYTES,
+  MAX_TURN_ATTACHMENTS,
+} from "@/surfaces/api/attachments/policy";
+import {
   AttachmentNameSchema,
+  type AttachmentReadResult,
   type AttachmentStore,
 } from "@/surfaces/api/attachments/store";
 
@@ -36,7 +41,6 @@ export type AttachmentRef = z.infer<typeof AttachmentRefSchema>;
 // A turn body may reference at most this many attachments; beyond this it is
 // almost certainly a mistake (or abuse), and materializing each ref costs a
 // store lookup and a file copy, so the cap keeps a single turn bounded.
-export const MAX_TURN_ATTACHMENTS = 16;
 export const AttachmentRefsSchema = z
   .array(AttachmentRefSchema)
   .max(MAX_TURN_ATTACHMENTS);
@@ -54,6 +58,15 @@ export class InvalidAttachmentRefError extends Error {
   }
 }
 
+export class AttachmentTurnTooLargeError extends Error {
+  constructor() {
+    super(
+      `turn attachments exceed the ${MAX_TURN_ATTACHMENT_BYTES} byte aggregate cap`,
+    );
+    this.name = "AttachmentTurnTooLargeError";
+  }
+}
+
 // Creates a fresh temp directory, copies each ref's blob into it under a safe
 // name, and returns the absolute paths in ref order. Throws
 // InvalidAttachmentRefError (naming only the offending hash) the first time a
@@ -66,13 +79,23 @@ export async function materializeAttachmentRefs(input: {
 }): Promise<{ dir: string | undefined; paths: string[] }> {
   if (input.refs.length === 0) return { dir: undefined, paths: [] };
 
+  const resolved: { ref: AttachmentRef; found: AttachmentReadResult }[] = [];
+  let totalBytes = 0;
+  for (const ref of input.refs) {
+    const found = await input.store.get(ref.hash, input.identityId);
+    if (!found) throw new InvalidAttachmentRefError(ref.hash);
+    totalBytes += found.metadata.size;
+    if (totalBytes > MAX_TURN_ATTACHMENT_BYTES) {
+      throw new AttachmentTurnTooLargeError();
+    }
+    resolved.push({ ref, found });
+  }
+
   const dir = await mkdtemp(join(tmpdir(), "sandi-turn-attachments-"));
   try {
     const usedNames = new Set<string>();
     const paths: string[] = [];
-    for (const ref of input.refs) {
-      const found = await input.store.get(ref.hash, input.identityId);
-      if (!found) throw new InvalidAttachmentRefError(ref.hash);
+    for (const { ref, found } of resolved) {
       const preferredName = ref.name?.trim() || found.metadata.name;
       const safeName = dedupeName(usedNames, sanitizeFileName(preferredName));
       usedNames.add(safeName);

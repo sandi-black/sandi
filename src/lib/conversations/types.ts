@@ -30,6 +30,7 @@ export type ConversationManifest = {
   starterParticipantRef: string;
   participants: ConversationParticipant[];
   memoryScopes: ConversationMemoryScope[];
+  attachmentHashes?: string[] | undefined;
   surfacePrompt?: string | undefined;
   surfaceContext?: Record<string, unknown> | undefined;
 };

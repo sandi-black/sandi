@@ -98,6 +98,10 @@ Main owns all state; the renderers are pure UI over typed IPC.
   queued, or persisting its settlement. The renderer keeps the conversation
   selected and asks the user to finish or cancel that work; idle conversations
   delete normally.
+- Composer drafts and staged attachments are scoped by conversation. Submission
+  moves them into a pending snapshot until main acknowledges the turn. An IPC
+  failure restores that snapshot to its originating conversation for an
+  explicit resend; success consumes it once.
 - Streamed deltas arrive on the device link the app already holds. A shared
   response buffer dedupes and orders them per turn; the renderer renders the
   live text and main persists the reconciled final (the POST body stays

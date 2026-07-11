@@ -9,6 +9,7 @@ import { CursorPointSchema, IgnoreMouseSchema } from "./ipc-schemas";
 import { parseRendererDevServerUrl } from "./renderer-url";
 import type { SettingsStore } from "./settings-store";
 import { clampIntoWorkArea } from "./window-anchor";
+import { lockWindowToRenderer } from "./window-navigation";
 
 // The pet's window is exactly one sprite frame: transparent, chromeless, above
 // everything, absent from the taskbar. Dragging is manual (main moves the
@@ -89,6 +90,7 @@ export function createPetWindow(input: {
       backgroundThrottling: false,
     },
   });
+  lockWindowToRenderer(win);
   // Above normal always-on-top windows, so another app's own AOT window does
   // not cover her.
   win.setAlwaysOnTop(true, "screen-saver");

@@ -6,6 +6,7 @@ const log = createLogger("thread-queue");
 type QueuedJob = {
   name: string;
   run: (signal: AbortSignal) => Promise<void>;
+  queued: boolean;
 };
 
 type ActiveJob = {
@@ -22,6 +23,12 @@ type QueueState = {
 export type ThreadQueueStatus = {
   running: boolean;
   queuedJobs: number;
+};
+
+export type QueuedJobHandle = {
+  // Removes work only while it is waiting. Once execution starts, callers use
+  // abortActive because side effects may already be underway.
+  cancel(): boolean;
 };
 
 export class ThreadQueue {
@@ -50,20 +57,33 @@ export class ThreadQueue {
     threadKey: string,
     name: string,
     run: (signal: AbortSignal) => Promise<void>,
-  ): void {
+  ): QueuedJobHandle {
     const queue = this.#queues.get(threadKey) ?? { running: false, jobs: [] };
-    queue.jobs.push({ name, run });
+    const job: QueuedJob = { name, run, queued: true };
+    queue.jobs.push(job);
     this.#queues.set(threadKey, queue);
     if (!queue.running) {
       queue.running = true;
       void this.#drain(threadKey, queue);
     }
+    return {
+      cancel: () => {
+        if (!job.queued) return false;
+        const index = queue.jobs.indexOf(job);
+        if (index < 0) return false;
+        queue.jobs.splice(index, 1);
+        job.queued = false;
+        log.info("queued thread job canceled", { threadKey, job: name });
+        return true;
+      },
+    };
   }
 
   async #drain(threadKey: string, queue: QueueState): Promise<void> {
     while (queue.jobs.length > 0) {
       const job = queue.jobs.shift();
       if (!job) continue;
+      job.queued = false;
       const controller = new AbortController();
       queue.activeJob = { name: job.name, controller };
       try {

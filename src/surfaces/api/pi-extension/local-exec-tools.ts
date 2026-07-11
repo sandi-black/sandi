@@ -23,6 +23,10 @@ const TOOL_BROKER_TOKEN_ENV = "SANDI_TOOL_BROKER_TOKEN";
 // A loopback call may carry a long shell command; stay just past the broker's
 // own backstop so the broker, not the socket, decides a stalled call's fate.
 const CALL_TIMEOUT_MS = 11 * 60_000;
+// Match the broker's body ceiling in both directions. The desktop may return a
+// screenshot near this limit, but a broken broker must not make the pi child
+// retain an arbitrarily large response before JSON parsing.
+const CALL_MAX_BODY_BYTES = 8 * 1024 * 1024;
 const DESKTOP_HINT =
   "Operates on the human's local desktop, not the server. Paths are resolved on that machine.";
 // Every tool may run on any desktop the human has connected, not only the one
@@ -209,8 +213,8 @@ export default function localExecToolsExtension(pi: ExtensionAPI): void {
         label: spec.label,
         description: spec.description,
         parameters: spec.parameters,
-        async execute(_id, params) {
-          return callTool(broker, spec.name, params);
+        async execute(_id, params, signal) {
+          return callTool(broker, spec.name, params, signal);
         },
       }),
     );
@@ -270,8 +274,9 @@ export async function callTool(
   broker: Broker,
   tool: string,
   params: unknown,
+  signal?: AbortSignal,
 ): Promise<AgentToolResult<Record<string, unknown>>> {
-  const outcome = await post(broker, { tool, params });
+  const outcome = await post(broker, { tool, params }, signal);
   if (!outcome.ok) {
     // The desktop refused or could not attempt the call. Throw so pi surfaces a
     // tool error to the model instead of presenting a failure as evidence.
@@ -309,8 +314,13 @@ export async function callTool(
 function post(
   broker: Broker,
   body: { tool: string; params: unknown },
+  signal?: AbortSignal,
 ): Promise<ToolCallOutcome> {
   return new Promise((resolvePost, rejectPost) => {
+    if (signal?.aborted) {
+      rejectPost(abortReason(signal, "local tool call aborted"));
+      return;
+    }
     let target: URL;
     try {
       target = new URL("/call", broker.url);
@@ -319,6 +329,26 @@ function post(
       return;
     }
     const payload = Buffer.from(JSON.stringify(body), "utf8");
+    if (payload.length > CALL_MAX_BODY_BYTES) {
+      rejectPost(new Error("local tool call request exceeded 8 MiB"));
+      return;
+    }
+
+    let settled = false;
+    let responseStarted = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settle = (run: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      run();
+    };
+    const rejectOnce = (error: unknown): void => {
+      settle(() =>
+        rejectPost(error instanceof Error ? error : new Error(String(error))),
+      );
+    };
     const req = httpRequest(
       target,
       {
@@ -330,13 +360,46 @@ function post(
         },
       },
       (res) => {
+        responseStarted = true;
         const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        let received = 0;
+        let ended = false;
+        const declaredLength = parseContentLength(
+          res.headers["content-length"],
+        );
+        if (
+          declaredLength !== undefined &&
+          declaredLength > CALL_MAX_BODY_BYTES
+        ) {
+          const error = new Error("tool broker response exceeded 8 MiB");
+          rejectOnce(error);
+          res.destroy();
+          req.destroy();
+          return;
+        }
+        res.on("data", (chunk: Buffer) => {
+          received += chunk.length;
+          if (received > CALL_MAX_BODY_BYTES) {
+            const error = new Error("tool broker response exceeded 8 MiB");
+            rejectOnce(error);
+            res.destroy(error);
+            req.destroy(error);
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on("aborted", () => {
+          rejectOnce(
+            new Error("tool broker response aborted before completion"),
+          );
+        });
+        res.on("error", rejectOnce);
         res.on("end", () => {
+          ended = true;
           const status = res.statusCode ?? 0;
           const raw = Buffer.concat(chunks).toString("utf8");
           if (status === 503) {
-            rejectPost(
+            rejectOnce(
               new Error(
                 "the desktop is not connected; local file and shell tools are unavailable",
               ),
@@ -344,27 +407,63 @@ function post(
             return;
           }
           if (status !== 200) {
-            rejectPost(
+            rejectOnce(
               new Error(`tool broker returned status ${status}: ${raw}`),
             );
             return;
           }
           try {
-            resolvePost(parseOutcome(raw));
+            const outcome = parseOutcome(raw);
+            settle(() => resolvePost(outcome));
           } catch (error) {
-            rejectPost(
-              error instanceof Error ? error : new Error(String(error)),
+            rejectOnce(error);
+          }
+        });
+        res.on("close", () => {
+          if (!ended) {
+            rejectOnce(
+              new Error("tool broker response closed before completion"),
             );
           }
         });
       },
     );
-    req.setTimeout(CALL_TIMEOUT_MS, () => {
-      req.destroy(new Error("local tool call timed out"));
+    const onAbort = (): void => {
+      const error = abortReason(signal, "local tool call aborted");
+      rejectOnce(error);
+      req.destroy(error);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => {
+      const error = new Error("local tool call timed out");
+      rejectOnce(error);
+      req.destroy(error);
+    }, CALL_TIMEOUT_MS);
+    req.on("error", rejectOnce);
+    req.on("close", () => {
+      if (!settled && !responseStarted) {
+        rejectOnce(
+          new Error("tool broker connection closed before a response"),
+        );
+      }
     });
-    req.on("error", (error) => rejectPost(error));
-    req.end(payload);
+    try {
+      req.end(payload);
+    } catch (error) {
+      rejectOnce(error);
+      req.destroy();
+    }
   });
+}
+
+function abortReason(signal: AbortSignal | undefined, fallback: string): Error {
+  return signal?.reason instanceof Error ? signal.reason : new Error(fallback);
+}
+
+function parseContentLength(value: string | undefined): number | undefined {
+  if (value === undefined || !/^\d+$/.test(value)) return undefined;
+  const length = Number(value);
+  return Number.isSafeInteger(length) ? length : undefined;
 }
 
 function parseOutcome(raw: string): ToolCallOutcome {
@@ -393,13 +492,29 @@ function parseOutcome(raw: string): ToolCallOutcome {
 // proxy parses an image result exactly as precisely as the protocol's
 // DeviceImageSchema does on the wire.
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png"]);
-const CANONICAL_BASE64 =
-  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+function decodeCanonicalBase64(value: string): Buffer | undefined {
+  if (value.length === 0 || value.length % 4 !== 0) return undefined;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    const isAlphabet =
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) ||
+      code === 43 ||
+      code === 47;
+    if (!isAlphabet && code !== 61) return undefined;
+    if (code === 61 && index < value.length - 2) return undefined;
+  }
+  const bytes = Buffer.from(value, "base64");
+  return bytes.toString("base64") === value ? bytes : undefined;
+}
 
 // Confirms the decoded bytes start with the declared type's signature, so a
 // payload cannot claim image/png while carrying jpeg (or arbitrary) bytes.
 function imageBytesMatchMime(mimeType: string, dataBase64: string): boolean {
-  const bytes = Buffer.from(dataBase64, "base64");
+  const bytes = decodeCanonicalBase64(dataBase64);
+  if (!bytes) return false;
   if (mimeType === "image/jpeg") {
     return (
       bytes.length >= 3 &&
@@ -410,11 +525,15 @@ function imageBytesMatchMime(mimeType: string, dataBase64: string): boolean {
   }
   if (mimeType === "image/png") {
     return (
-      bytes.length >= 4 &&
+      bytes.length >= 8 &&
       bytes[0] === 0x89 &&
       bytes[1] === 0x50 &&
       bytes[2] === 0x4e &&
-      bytes[3] === 0x47
+      bytes[3] === 0x47 &&
+      bytes[4] === 0x0d &&
+      bytes[5] === 0x0a &&
+      bytes[6] === 0x1a &&
+      bytes[7] === 0x0a
     );
   }
   return false;
@@ -440,7 +559,7 @@ function parseImage(value: unknown): ToolCallImage | undefined {
       `tool broker returned an unsupported image type: ${mimeType}`,
     );
   }
-  if (!CANONICAL_BASE64.test(dataBase64)) {
+  if (decodeCanonicalBase64(dataBase64) === undefined) {
     throw new Error("tool broker returned image data that was not base64");
   }
   if (!imageBytesMatchMime(mimeType, dataBase64)) {

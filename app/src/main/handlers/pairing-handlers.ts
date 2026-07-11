@@ -2,8 +2,9 @@ import { hostname } from "node:os";
 
 import type { PairOutcomeSummary } from "@shared/ipc-contract";
 import { IPC } from "@shared/ipc-contract";
-import { ipcMain } from "electron";
+import { ipcMain, type WebContents } from "electron";
 
+import { requireIpcOwner } from "../ipc-owner";
 import { PairCodeSchema } from "../ipc-schemas";
 import {
   desktopConfigPath,
@@ -18,11 +19,13 @@ import { pairDesktop } from "@sandi-server/surfaces/api/client/pairing";
 // CLI uses (pairing once covers both), and restart the device link.
 
 export function registerPairingHandlers(input: {
+  owner: WebContents;
   onPaired(): Promise<void>;
 }): void {
   ipcMain.handle(
     IPC.pairRedeem,
-    async (_event, code: unknown): Promise<PairOutcomeSummary> => {
+    async (event, code: unknown): Promise<PairOutcomeSummary> => {
+      requireIpcOwner(event, input.owner);
       const parsedCode = PairCodeSchema.safeParse(code);
       if (!parsedCode.success) {
         return { ok: false, error: "enter the code from /sandi auth" };

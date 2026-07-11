@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 
 import { ContextCompiler } from "@/lib/context/context-compiler";
 import { ConversationStore } from "@/lib/conversations/store";
+import { errorMessage } from "@/lib/errors";
 import { createLogger } from "@/lib/logging";
 import { migrateDataDir } from "@/lib/migrations/data-dir";
 import { PiCliClient } from "@/lib/provider/pi-cli-client";
@@ -45,24 +46,37 @@ const bot = new GitHubBot({
   provider: new PiCliClient(config.pi),
 });
 
-process.on("unhandledRejection", (reason) => {
-  log.error("unhandled rejection", { reason });
+process.once("unhandledRejection", (reason) => {
+  fatalShutdown("unhandled rejection", reason);
 });
 
-process.on("uncaughtException", (error) => {
-  log.error("uncaught exception", { error: error.message });
-  process.exitCode = 1;
+process.once("uncaughtException", (error) => {
+  fatalShutdown("uncaught exception", error);
 });
 
 let shutdownStarted = false;
 
-function shutdown(signal: NodeJS.Signals): void {
+function shutdown(signal: string): void {
   if (shutdownStarted) return;
   shutdownStarted = true;
   log.info("shutdown signal received", { signal });
 
   bot.stop();
   embeddingMaintenance.stop();
+}
+
+function fatalShutdown(kind: string, error: unknown): void {
+  log.error(kind, { error: errorMessage(error) });
+  process.exitCode = 1;
+  try {
+    shutdown(kind);
+  } catch (shutdownError) {
+    log.error("GitHub bot fatal shutdown failed", {
+      error: errorMessage(shutdownError),
+    });
+  }
+  const forcedExit = setTimeout(() => process.exit(1), 5_000);
+  forcedExit.unref();
 }
 
 process.once("SIGINT", () => {

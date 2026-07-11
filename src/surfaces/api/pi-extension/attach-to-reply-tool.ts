@@ -23,6 +23,8 @@ const TURN_ID_ENV = "SANDI_TURN_ID";
 // An attachment notice is a small JSON body relayed without a device reply to
 // wait on, so a slow POST means the link is wedged, not busy.
 const CALL_TIMEOUT_MS = 10_000;
+const ATTACHMENT_MAX_BODY_BYTES = 8 * 1024 * 1024;
+const STATUS_RESPONSE_MAX_BYTES = 64 * 1024;
 
 export type AttachTarget = {
   url: string;
@@ -167,7 +169,7 @@ export default function attachToReplyToolExtension(pi: ExtensionAPI): void {
           }),
         ),
       }),
-      async execute(_id, params) {
+      async execute(_id, params, signal) {
         if (!target) return noDesktopLinkResult();
         const validated = validateAttachParams(params);
         if (!validated.ok) return invalidParamsResult(validated.reason);
@@ -179,7 +181,7 @@ export default function attachToReplyToolExtension(pi: ExtensionAPI): void {
             ? { name: validated.params.name }
             : {}),
         };
-        await postAttachment(target, attachment);
+        await postAttachment(target, attachment, signal);
         return attachedResult(validated.params.name ?? validated.params.path);
       },
     }),
@@ -215,8 +217,9 @@ export function readAttachTarget(): AttachTarget | undefined {
 export async function postAttachment(
   target: AttachTarget,
   attachment: unknown,
+  signal?: AbortSignal,
 ): Promise<void> {
-  const status = await post(target, attachment);
+  const status = await post(target, attachment, signal);
   if (status === 503) {
     throw new Error(
       "the desktop is not connected; attach_to_reply is unavailable",
@@ -229,8 +232,16 @@ export async function postAttachment(
   }
 }
 
-function post(target: AttachTarget, body: unknown): Promise<number> {
+function post(
+  target: AttachTarget,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<number> {
   return new Promise((resolvePost, rejectPost) => {
+    if (signal?.aborted) {
+      rejectPost(abortReason(signal, "attach_to_reply POST aborted"));
+      return;
+    }
     let url: URL;
     try {
       url = new URL("/attachment", target.url);
@@ -239,6 +250,25 @@ function post(target: AttachTarget, body: unknown): Promise<number> {
       return;
     }
     const payload = Buffer.from(JSON.stringify(body), "utf8");
+    if (payload.length > ATTACHMENT_MAX_BODY_BYTES) {
+      rejectPost(new Error("attach_to_reply POST exceeded 8 MiB"));
+      return;
+    }
+    let settled = false;
+    let responseStarted = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settle = (run: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      run();
+    };
+    const rejectOnce = (error: unknown): void => {
+      settle(() =>
+        rejectPost(error instanceof Error ? error : new Error(String(error))),
+      );
+    };
     const req = httpRequest(
       url,
       {
@@ -250,18 +280,91 @@ function post(target: AttachTarget, body: unknown): Promise<number> {
         },
       },
       (res) => {
-        res.resume();
-        res.on("end", () => resolvePost(res.statusCode ?? 0));
-        // A broker that dies after sending headers must reject through
-        // postAttachment, not escape as an unhandled 'error' emission or
-        // leave this promise unsettled forever.
-        res.on("error", (error) => rejectPost(error));
+        responseStarted = true;
+        let received = 0;
+        let ended = false;
+        const declaredLength = parseContentLength(
+          res.headers["content-length"],
+        );
+        if (
+          declaredLength !== undefined &&
+          declaredLength > STATUS_RESPONSE_MAX_BYTES
+        ) {
+          const error = new Error(
+            "attach_to_reply broker reply exceeded 64 KiB",
+          );
+          rejectOnce(error);
+          res.destroy();
+          req.destroy();
+          return;
+        }
+        res.on("data", (data: Buffer) => {
+          received += data.length;
+          if (received > STATUS_RESPONSE_MAX_BYTES) {
+            const error = new Error(
+              "attach_to_reply broker reply exceeded 64 KiB",
+            );
+            rejectOnce(error);
+            res.destroy(error);
+            req.destroy(error);
+          }
+        });
+        res.on("aborted", () => {
+          rejectOnce(
+            new Error("attach_to_reply broker reply aborted before completion"),
+          );
+        });
+        res.on("error", rejectOnce);
+        res.on("end", () => {
+          ended = true;
+          const status = res.statusCode ?? 0;
+          settle(() => resolvePost(status));
+        });
+        res.on("close", () => {
+          if (!ended) {
+            rejectOnce(
+              new Error(
+                "attach_to_reply broker reply closed before completion",
+              ),
+            );
+          }
+        });
       },
     );
-    req.setTimeout(CALL_TIMEOUT_MS, () => {
-      req.destroy(new Error("attach_to_reply POST timed out"));
+    const onAbort = (): void => {
+      const error = abortReason(signal, "attach_to_reply POST aborted");
+      rejectOnce(error);
+      req.destroy(error);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => {
+      const error = new Error("attach_to_reply POST timed out");
+      rejectOnce(error);
+      req.destroy(error);
+    }, CALL_TIMEOUT_MS);
+    req.on("error", rejectOnce);
+    req.on("close", () => {
+      if (!settled && !responseStarted) {
+        rejectOnce(
+          new Error("attach_to_reply broker closed before a response"),
+        );
+      }
     });
-    req.on("error", (error) => rejectPost(error));
-    req.end(payload);
+    try {
+      req.end(payload);
+    } catch (error) {
+      rejectOnce(error);
+      req.destroy();
+    }
   });
+}
+
+function abortReason(signal: AbortSignal | undefined, fallback: string): Error {
+  return signal?.reason instanceof Error ? signal.reason : new Error(fallback);
+}
+
+function parseContentLength(value: string | undefined): number | undefined {
+  if (value === undefined || !/^\d+$/.test(value)) return undefined;
+  const length = Number(value);
+  return Number.isSafeInteger(length) ? length : undefined;
 }

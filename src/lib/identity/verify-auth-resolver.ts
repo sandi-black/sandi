@@ -2,7 +2,6 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
-  findHumanIdentity,
   findHumanIdentityByPlatformId,
   HumanIdentityStore,
   loadHumanIdentities,
@@ -34,18 +33,8 @@ function verifyStrictResolverRequiresImmutableId(): void {
     ],
   };
 
-  // The lenient resolver matches a mutable username even when the id differs:
-  // exactly the behavior that is unsafe for an auth gate.
-  const lenient = findHumanIdentity({
-    identities,
-    platform: "discord",
-    platformUserId: "999",
-    username: "jess",
-  });
-  assertEqual(lenient?.id, "jess", "lenient resolver matches on username");
-
-  // The strict resolver must NOT match when the immutable id differs, even if
-  // the username collides. This is the impersonation case.
+  // Resolution must not match when the immutable id differs, even if the
+  // username collides. This is the impersonation case.
   const impersonation = findHumanIdentityByPlatformId({
     identities,
     platform: "discord",
@@ -104,8 +93,39 @@ async function verifyIdentityStoreHonorsRemoval(): Promise<void> {
       0,
       "identity store drops a removed identity after reload",
     );
+
+    let now = 0;
+    await writeIdentities(path, ["jess"]);
+    const failClosedStore = new HumanIdentityStore(
+      [configDir],
+      5_000,
+      () => now,
+    );
+    await failClosedStore.load();
+    await writeFile(path, "{", "utf8");
+    now = 6_000;
+    assertEqual(
+      await storeLoadThrows(failClosedStore),
+      true,
+      "malformed identity reload fails closed",
+    );
+    now = 6_001;
+    assertEqual(
+      await storeLoadThrows(failClosedStore),
+      true,
+      "failed identity reload does not refresh the stale-cache TTL",
+    );
     console.log("ok identity store honors removal without restart");
   });
+}
+
+async function storeLoadThrows(store: HumanIdentityStore): Promise<boolean> {
+  try {
+    await store.load();
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 async function verifyDuplicateIdentitiesRejected(): Promise<void> {

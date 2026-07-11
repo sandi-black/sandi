@@ -24,6 +24,13 @@ const TURN_ID_ENV = "SANDI_TURN_ID";
 // reply, so a slow POST means the link is wedged, not busy. Cap it short so a
 // stalled send cannot pile up behind the model's generation.
 const CALL_TIMEOUT_MS = 10_000;
+const STREAM_MAX_BODY_BYTES = 1 * 1024 * 1024;
+const STATUS_RESPONSE_MAX_BYTES = 64 * 1024;
+// Keep at most a modest live-preview backlog while one POST is stalled. The
+// completed turn body is authoritative, so stopping the preview is safer than
+// retaining an unbounded promise chain for model token deltas.
+const MAX_PENDING_CHUNKS = 32;
+const MAX_PENDING_DELTA_BYTES = 256 * 1024;
 
 export type StreamTarget = {
   url: string;
@@ -84,9 +91,9 @@ export function intentToChunk(
 }
 
 export type ChunkRelay = {
-  // Queue one chunk for the broker. Stamps it with the target's turnId and the
-  // next seq (assigned synchronously so order is fixed at call time), then sends
-  // it after any prior chunk. A no-op once the stream has stopped.
+  // Queue one chunk for the broker. Adjacent pending deltas on the same channel
+  // are coalesced, then stamped with the target's turnId and the next seq when
+  // sent. A no-op once the stream has stopped.
   relay(partial: OutChunk): void;
   // Resolves once every queued send has settled (exposed for tests).
   drain(): Promise<void>;
@@ -105,32 +112,98 @@ export function createChunkRelay(
 ): ChunkRelay {
   let seq = 0;
   let stopped = false;
-  let chain: Promise<void> = Promise.resolve();
+  let running = false;
+  let pendingBytes = 0;
+  const pending: OutChunk[] = [];
+  let idlePromise: Promise<void> = Promise.resolve();
+  let resolveIdle: (() => void) | undefined;
+
+  const finish = (): void => {
+    running = false;
+    const resolve = resolveIdle;
+    resolveIdle = undefined;
+    resolve?.();
+  };
+
+  const pump = async (): Promise<void> => {
+    while (!stopped) {
+      const partial = pending.shift();
+      if (!partial) break;
+      pendingBytes -= chunkBytes(partial);
+      const chunk = { ...partial, turnId: target.turnId, seq: seq++ };
+      try {
+        const status = await post(target, chunk);
+        // Anything but 202 is terminal for this turn's stream. Stop pushing;
+        // the turn's final HTTP body still carries the complete answer.
+        if (status !== 202) stopped = true;
+      } catch {
+        // A transport error is terminal too. A lost stream costs only the live
+        // preview, never the turn (the final body is authoritative).
+        stopped = true;
+      }
+    }
+    if (stopped) {
+      pending.length = 0;
+      pendingBytes = 0;
+    }
+    finish();
+  };
+
+  const start = (): void => {
+    if (running) return;
+    running = true;
+    idlePromise = new Promise((resolve) => {
+      resolveIdle = resolve;
+    });
+    void pump();
+  };
+
   return {
     relay(partial: OutChunk): void {
       if (stopped) return;
-      const chunk = { ...partial, turnId: target.turnId, seq: seq++ };
-      chain = chain.then(async () => {
-        if (stopped) return;
-        try {
-          const status = await post(target, chunk);
-          // Anything but 202 is terminal for this turn's stream. Stop pushing;
-          // the turn's final HTTP body still carries the complete answer.
-          if (status !== 202) stopped = true;
-        } catch {
-          // A transport error is terminal too. A lost stream costs only the live
-          // preview, never the turn (the final body is authoritative).
+      const bytes = chunkBytes(partial);
+      if (bytes > MAX_PENDING_DELTA_BYTES) {
+        stopped = true;
+        pending.length = 0;
+        pendingBytes = 0;
+        return;
+      }
+
+      const last = pending.at(-1);
+      if (
+        partial.type === "delta" &&
+        last?.type === "delta" &&
+        last.channel === partial.channel &&
+        pendingBytes + bytes <= MAX_PENDING_DELTA_BYTES
+      ) {
+        last.delta += partial.delta;
+        pendingBytes += bytes;
+      } else {
+        if (
+          pending.length >= MAX_PENDING_CHUNKS ||
+          pendingBytes + bytes > MAX_PENDING_DELTA_BYTES
+        ) {
           stopped = true;
+          pending.length = 0;
+          pendingBytes = 0;
+          return;
         }
-      });
+        pending.push({ ...partial });
+        pendingBytes += bytes;
+      }
+      start();
     },
     drain(): Promise<void> {
-      return chain;
+      return idlePromise;
     },
     get stopped(): boolean {
       return stopped;
     },
   };
+}
+
+function chunkBytes(chunk: OutChunk): number {
+  return chunk.type === "delta" ? Buffer.byteLength(chunk.delta, "utf8") : 0;
 }
 
 // The streaming intents this extension acts on, distilled from pi's assistant
@@ -205,6 +278,24 @@ export function postChunk(
       return;
     }
     const payload = Buffer.from(JSON.stringify(chunk), "utf8");
+    if (payload.length > STREAM_MAX_BODY_BYTES) {
+      rejectPost(new Error("response stream POST exceeded 1 MiB"));
+      return;
+    }
+    let settled = false;
+    let responseStarted = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settle = (run: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      run();
+    };
+    const rejectOnce = (error: unknown): void => {
+      settle(() =>
+        rejectPost(error instanceof Error ? error : new Error(String(error))),
+      );
+    };
     const req = httpRequest(
       url,
       {
@@ -216,16 +307,81 @@ export function postChunk(
         },
       },
       (res) => {
-        // The body carries no information the streamer needs; drain it so the
-        // socket can be reused and the response can end.
-        res.resume();
-        res.on("end", () => resolvePost(res.statusCode ?? 0));
+        responseStarted = true;
+        let received = 0;
+        let ended = false;
+        const declaredLength = parseContentLength(
+          res.headers["content-length"],
+        );
+        if (
+          declaredLength !== undefined &&
+          declaredLength > STATUS_RESPONSE_MAX_BYTES
+        ) {
+          const error = new Error(
+            "response stream broker reply exceeded 64 KiB",
+          );
+          rejectOnce(error);
+          res.destroy();
+          req.destroy();
+          return;
+        }
+        res.on("data", (data: Buffer) => {
+          received += data.length;
+          if (received > STATUS_RESPONSE_MAX_BYTES) {
+            const error = new Error(
+              "response stream broker reply exceeded 64 KiB",
+            );
+            rejectOnce(error);
+            res.destroy(error);
+            req.destroy(error);
+          }
+        });
+        res.on("aborted", () => {
+          rejectOnce(
+            new Error("response stream broker reply aborted before completion"),
+          );
+        });
+        res.on("error", rejectOnce);
+        res.on("end", () => {
+          ended = true;
+          const status = res.statusCode ?? 0;
+          settle(() => resolvePost(status));
+        });
+        res.on("close", () => {
+          if (!ended) {
+            rejectOnce(
+              new Error(
+                "response stream broker reply closed before completion",
+              ),
+            );
+          }
+        });
       },
     );
-    req.setTimeout(CALL_TIMEOUT_MS, () => {
-      req.destroy(new Error("response stream POST timed out"));
+    timer = setTimeout(() => {
+      const error = new Error("response stream POST timed out");
+      rejectOnce(error);
+      req.destroy(error);
+    }, CALL_TIMEOUT_MS);
+    req.on("error", rejectOnce);
+    req.on("close", () => {
+      if (!settled && !responseStarted) {
+        rejectOnce(
+          new Error("response stream broker closed before a response"),
+        );
+      }
     });
-    req.on("error", (error) => rejectPost(error));
-    req.end(payload);
+    try {
+      req.end(payload);
+    } catch (error) {
+      rejectOnce(error);
+      req.destroy();
+    }
   });
+}
+
+function parseContentLength(value: string | undefined): number | undefined {
+  if (value === undefined || !/^\d+$/.test(value)) return undefined;
+  const length = Number(value);
+  return Number.isSafeInteger(length) ? length : undefined;
 }

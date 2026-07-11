@@ -1,4 +1,4 @@
-import { type JSX, useCallback, useEffect, useState } from "react";
+import { type JSX, useCallback, useEffect, useRef, useState } from "react";
 
 import { Composer } from "./Composer";
 import { guard } from "./guard";
@@ -21,15 +21,49 @@ export function ChatApp(): JSX.Element {
   );
   const sessions = useChatStore((state) => state.sessions);
   const [dragOver, setDragOver] = useState(false);
+  const selectionGeneration = useRef(0);
+  const selectionTarget = useRef<string | undefined>(undefined);
 
-  // The store constant is module-scoped, so these callbacks depend on nothing.
+  // A transcript and queue are fetched independently. Only the newest click
+  // may commit them, or a slow response for an older session can snap the UI
+  // back after the human has already selected another conversation.
   const selectSession = useCallback(
     async (conversationId: string): Promise<void> => {
-      const transcript = await window.sandiChat.selectSession(conversationId);
-      useChatStore.getState().setActive(conversationId, transcript);
+      const generation = ++selectionGeneration.current;
+      selectionTarget.current = conversationId;
+      let transcript: Awaited<
+        ReturnType<typeof window.sandiChat.selectSession>
+      >;
+      let queue: Awaited<ReturnType<typeof window.sandiChat.getQueueState>>;
+      try {
+        transcript = await window.sandiChat.selectSession(conversationId);
+        if (generation !== selectionGeneration.current) return;
+        // Read queue state last. Any transition after this response is also a
+        // push event, while reading it in parallel with a slower transcript
+        // could commit an old snapshot after that push had been ignored for
+        // the not-yet-active conversation.
+        queue = await window.sandiChat.getQueueState(conversationId);
+      } catch (error) {
+        if (generation === selectionGeneration.current) {
+          selectionTarget.current =
+            useChatStore.getState().activeConversationId;
+        }
+        throw error;
+      }
+      if (generation !== selectionGeneration.current) return;
+      useChatStore.getState().setActive(conversationId, transcript, queue);
     },
     [],
   );
+
+  const activateNewSession = useCallback((conversationId: string): void => {
+    selectionGeneration.current++;
+    selectionTarget.current = conversationId;
+    useChatStore.getState().setActive(conversationId, [], {
+      conversationId,
+      pending: [],
+    });
+  }, []);
 
   const refreshSessions = useCallback(async (): Promise<void> => {
     useChatStore.getState().setSessions(await window.sandiChat.listSessions());
@@ -49,7 +83,7 @@ export function ChatApp(): JSX.Element {
         } else {
           const created = await chat.createSession();
           useChatStore.getState().setSessions(await chat.listSessions());
-          useChatStore.getState().setActive(created.conversationId, []);
+          activateNewSession(created.conversationId);
         }
         useChatStore.getState().setLink(await chat.getLinkStatus());
       })(),
@@ -60,32 +94,55 @@ export function ChatApp(): JSX.Element {
       chat.onLinkStatus((status) => useChatStore.getState().setLink(status)),
       chat.onTurnDelta((event) => {
         const state = useChatStore.getState();
+        if (
+          event.conversationId !== state.activeConversationId ||
+          event.conversationId !== selectionTarget.current
+        ) {
+          return;
+        }
         // A delta for a turn we are not yet rendering live means the queue
         // just promoted it; begin its live view.
         if (state.liveTurn?.turnId !== event.turnId) {
-          const conversationId = state.activeConversationId;
-          if (conversationId === undefined) return;
-          state.beginLiveTurn(event.turnId, conversationId);
+          state.beginLiveTurn(event.turnId, event.conversationId);
         }
         useChatStore
           .getState()
-          .appendDelta(event.turnId, event.channel, event.delta);
+          .appendDelta(
+            event.turnId,
+            event.conversationId,
+            event.channel,
+            event.delta,
+          );
       }),
       chat.onTurnAttachment((event) => {
         const state = useChatStore.getState();
+        if (
+          event.conversationId !== state.activeConversationId ||
+          event.conversationId !== selectionTarget.current
+        ) {
+          return;
+        }
         if (state.liveTurn?.turnId !== event.turnId) {
-          const conversationId = state.activeConversationId;
-          if (conversationId === undefined) return;
-          state.beginLiveTurn(event.turnId, conversationId);
+          state.beginLiveTurn(event.turnId, event.conversationId);
         }
         useChatStore
           .getState()
-          .appendLiveAttachment(event.turnId, event.attachment);
+          .appendLiveAttachment(
+            event.turnId,
+            event.conversationId,
+            event.attachment,
+          );
       }),
       chat.onTurnSettled((event) => {
         const state = useChatStore.getState();
-        state.endLiveTurn(event.turnId);
-        if (event.conversationId !== state.activeConversationId) return;
+        state.endLiveTurn(event.turnId, event.conversationId);
+        guard(refreshSessions(), "could not refresh the session list");
+        if (
+          event.conversationId !== state.activeConversationId ||
+          event.conversationId !== selectionTarget.current
+        ) {
+          return;
+        }
         if (event.ok) {
           state.appendTranscript({
             type: "assistant",
@@ -107,7 +164,6 @@ export function ChatApp(): JSX.Element {
             text: event.error ?? "turn failed",
           });
         }
-        guard(refreshSessions(), "could not refresh the session list");
       }),
       chat.onQueueState((queueState) => {
         if (
@@ -124,17 +180,24 @@ export function ChatApp(): JSX.Element {
     return () => {
       for (const unsubscribe of unsubscribers) unsubscribe();
     };
-  }, [selectSession, refreshSessions]);
+  }, [activateNewSession, selectSession, refreshSessions]);
 
   const submit = useCallback((text: string, attachmentIds: string[]): void => {
     const conversationId = useChatStore.getState().activeConversationId;
-    if (!conversationId) return;
+    if (!conversationId || selectionTarget.current !== conversationId) return;
     // Optimistic append; main writes the same entry to disk.
     guard(
       window.sandiChat
         .submitTurn({ conversationId, text, attachmentIds })
         .then(({ turnId }) => {
-          useChatStore.getState().appendTranscript({
+          const state = useChatStore.getState();
+          if (
+            state.activeConversationId !== conversationId ||
+            selectionTarget.current !== conversationId
+          ) {
+            return;
+          }
+          state.appendTranscript({
             type: "user",
             turnId,
             ts: new Date().toISOString(),
@@ -261,9 +324,23 @@ export function ChatApp(): JSX.Element {
         onCreate={() =>
           guard(
             (async () => {
-              const session = await window.sandiChat.createSession();
-              await refreshSessions();
-              useChatStore.getState().setActive(session.conversationId, []);
+              const generation = ++selectionGeneration.current;
+              selectionTarget.current = undefined;
+              let session: Awaited<
+                ReturnType<typeof window.sandiChat.createSession>
+              >;
+              try {
+                session = await window.sandiChat.createSession();
+                await refreshSessions();
+              } catch (error) {
+                if (generation === selectionGeneration.current) {
+                  selectionTarget.current =
+                    useChatStore.getState().activeConversationId;
+                }
+                throw error;
+              }
+              if (generation !== selectionGeneration.current) return;
+              activateNewSession(session.conversationId);
             })(),
             "could not create a conversation",
           )
@@ -271,10 +348,27 @@ export function ChatApp(): JSX.Element {
         onDelete={(conversationId) =>
           guard(
             (async () => {
-              await window.sandiChat.deleteSession(conversationId);
-              await refreshSessions();
+              const deletingActive = conversationId === selectionTarget.current;
+              const generation = deletingActive
+                ? ++selectionGeneration.current
+                : selectionGeneration.current;
+              if (deletingActive) selectionTarget.current = undefined;
+              try {
+                await window.sandiChat.deleteSession(conversationId);
+                await refreshSessions();
+              } catch (error) {
+                if (
+                  deletingActive &&
+                  generation === selectionGeneration.current
+                ) {
+                  selectionTarget.current =
+                    useChatStore.getState().activeConversationId;
+                }
+                throw error;
+              }
               if (
-                conversationId !== useChatStore.getState().activeConversationId
+                !deletingActive ||
+                generation !== selectionGeneration.current
               ) {
                 return;
               }
@@ -288,7 +382,7 @@ export function ChatApp(): JSX.Element {
               }
               const session = await window.sandiChat.createSession();
               await refreshSessions();
-              useChatStore.getState().setActive(session.conversationId, []);
+              activateNewSession(session.conversationId);
             })(),
             "could not delete the conversation",
           )

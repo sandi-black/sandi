@@ -1,6 +1,9 @@
 import { readdir, readFile, rm } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 
+import { errorMessage } from "../../../lib/errors";
+import { isMissingPathError } from "../../../lib/fs-errors";
+import { createLogger } from "../../../lib/logging";
 import {
   atomicWriteManaged,
   withManagedWrite,
@@ -8,6 +11,7 @@ import {
 import { type SandiEvent, SandiEventSchema } from "./schemas";
 
 const EVENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,79}$/;
+const log = createLogger("event-store");
 
 export type StoredEvent = {
   id: string;
@@ -19,8 +23,9 @@ export async function listEvents(root: string): Promise<StoredEvent[]> {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await readdir(absoluteRoot, { withFileTypes: true });
-  } catch {
-    return [];
+  } catch (error) {
+    if (isMissingPathError(error)) return [];
+    throw error;
   }
 
   const events: StoredEvent[] = [];
@@ -29,7 +34,12 @@ export async function listEvents(root: string): Promise<StoredEvent[]> {
     const id = entry.name.slice(0, -".json".length);
     try {
       events.push({ id, event: await readEvent(absoluteRoot, id) });
-    } catch {}
+    } catch (error) {
+      log.warn("skipping unreadable event", {
+        id,
+        error: errorMessage(error),
+      });
+    }
   }
   return events.sort((a, b) => a.id.localeCompare(b.id));
 }

@@ -11,7 +11,9 @@ type ServerMode =
   | { kind: "ok"; output: string }
   | { kind: "image"; output: string; mimeType: string; dataBase64: string }
   | { kind: "refuse"; error: string }
-  | { kind: "status"; status: number };
+  | { kind: "status"; status: number }
+  | { kind: "partial-close" }
+  | { kind: "oversized" };
 
 async function verifyLocalExecTools(): Promise<void> {
   verifyReadBroker();
@@ -80,8 +82,67 @@ async function verifyLocalExecTools(): Promise<void> {
       "an unexpected status throws with the status",
     );
     console.log("ok an unexpected broker status throws");
+
+    setMode({ kind: "partial-close" });
+    await assertThrows(
+      () =>
+        withDeadline(
+          callTool(broker, "local_read", { path: "x" }),
+          "partial broker response did not settle",
+        ),
+      "before completion",
+      "a broker response closed after headers rejects promptly",
+    );
+    console.log("ok a partial broker response rejects promptly");
+
+    setMode({ kind: "oversized" });
+    await assertThrows(
+      () => callTool(broker, "local_read", { path: "x" }),
+      "exceeded 8 MiB",
+      "an oversized broker response is rejected from its declared length",
+    );
+    console.log("ok an oversized broker response is rejected before buffering");
   });
+  await verifyAbortSignal();
   console.log("local exec tools verification passed");
+}
+
+async function verifyAbortSignal(): Promise<void> {
+  let markStarted: (() => void) | undefined;
+  let markClosed: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const closed = new Promise<void>((resolve) => {
+    markClosed = resolve;
+  });
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => markStarted?.());
+    response.on("close", () => markClosed?.());
+  });
+  const url = await listen(server);
+  const controller = new AbortController();
+  const call = callTool(
+    { url, token: "broker-token" },
+    "local_read",
+    { path: "x" },
+    controller.signal,
+  );
+  const checked = assertThrows(
+    () => withDeadline(call, "aborted local tool call did not settle"),
+    "cancelled by pi",
+    "the pi tool AbortSignal rejects the broker call",
+  );
+  try {
+    await withDeadline(started, "broker did not receive the local tool call");
+    controller.abort(new Error("cancelled by pi"));
+    await checked;
+    await withDeadline(closed, "aborting did not close the broker request");
+    console.log("ok the pi AbortSignal promptly destroys the broker request");
+  } finally {
+    server.close();
+  }
 }
 
 function verifyReadBroker(): void {
@@ -168,8 +229,22 @@ async function withBroker(
         });
       } else if (mode.kind === "refuse") {
         respond(response, 200, { ok: false, output: "", error: mode.error });
-      } else {
+      } else if (mode.kind === "status") {
         respond(response, mode.status, { error: "broker_error" });
+      } else if (mode.kind === "partial-close") {
+        response.writeHead(200, {
+          "content-type": "application/json",
+          "content-length": "100",
+        });
+        response.flushHeaders();
+        response.write('{"ok":');
+        setImmediate(() => response.destroy());
+      } else {
+        response.writeHead(200, {
+          "content-type": "application/json",
+          "content-length": String(8 * 1024 * 1024 + 1),
+        });
+        response.flushHeaders();
       }
     });
   });
@@ -245,6 +320,22 @@ async function assertThrows(
   }
   console.error(`${label}: expected a throw but none happened`);
   process.exit(1);
+}
+
+function withDeadline<T>(promise: Promise<T>, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), 2_000);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function restoreEnv(key: string, value: string | undefined): void {

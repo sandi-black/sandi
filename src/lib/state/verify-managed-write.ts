@@ -82,9 +82,53 @@ async function runMain(): Promise<void> {
     await runMalformedLockTest(tempRoot);
     await runConcurrentStealersTest(tempRoot);
     await runOwnerTokenReleaseTest(tempRoot);
+    await runSiblingReentrancyIsolationTest(tempRoot);
     await runLiveLongHoldTest(tempRoot);
     console.log("Managed-write verification passed");
   });
+}
+
+// Two sibling branches inherit the outer async context. Holding the secondary
+// path in one branch must not make the other branch look like a nested
+// reentrant call for that path.
+async function runSiblingReentrancyIsolationTest(
+  tempRoot: string,
+): Promise<void> {
+  const outer = join(tempRoot, "sibling-context", "outer.txt");
+  const shared = join(tempRoot, "sibling-context", "shared.txt");
+  await mkdir(join(tempRoot, "sibling-context"), { recursive: true });
+
+  let releaseFirst: (() => void) | undefined;
+  const firstMayExit = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let firstEntered: (() => void) | undefined;
+  const firstIsHolding = new Promise<void>((resolve) => {
+    firstEntered = resolve;
+  });
+  let active = 0;
+  let overlap = false;
+
+  await withManagedWrite(outer, async () => {
+    const first = withManagedWrite(shared, async () => {
+      active += 1;
+      firstEntered?.();
+      await firstMayExit;
+      active -= 1;
+    });
+    await firstIsHolding;
+
+    const second = withManagedWrite(shared, async () => {
+      overlap = active > 0;
+    });
+    // A false reentrant match invokes the callback synchronously before this
+    // call returns. A correctly serialized sibling remains behind the first.
+    releaseFirst?.();
+    await Promise.all([first, second]);
+  });
+
+  assert(!overlap, "Sibling managed writes overlapped on the same path");
+  console.log("ok sibling-context: sibling branches remain serialized");
 }
 
 async function runConcurrencyTest(tempRoot: string): Promise<void> {

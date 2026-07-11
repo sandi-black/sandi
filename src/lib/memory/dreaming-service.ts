@@ -77,6 +77,8 @@ class DreamingService {
   readonly #abort = new AbortController();
   #rootWatcher: FSWatcher | undefined;
   #cron: Cron | undefined;
+  #watcherRefresh: Promise<void> | undefined;
+  #watcherRefreshQueued = false;
   #stopped = false;
   #dreaming = false;
 
@@ -113,6 +115,7 @@ class DreamingService {
     this.#pendingEncode.clear();
     this.#queuedEncode.clear();
     this.#encodeQueue.length = 0;
+    this.#watcherRefreshQueued = false;
     this.#rootWatcher?.close();
     this.#rootWatcher = undefined;
     this.#closeConversationWatchers();
@@ -143,7 +146,7 @@ class DreamingService {
           { persistent: true },
           () => {
             this.#fireAndLog(
-              this.#refreshConversationWatchers(),
+              this.#requestConversationWatcherRefresh(),
               "dreaming watcher refresh failed",
             );
           },
@@ -154,7 +157,36 @@ class DreamingService {
         });
       }
     }
-    await this.#refreshConversationWatchers();
+    await this.#requestConversationWatcherRefresh();
+  }
+
+  // fs.watch can emit a burst for one atomic manifest update. Coalesce those
+  // requests and serialize refreshes so two scans cannot both add a complete
+  // watcher set after each closed the previous set.
+  #requestConversationWatcherRefresh(): Promise<void> {
+    if (this.#stopped) return Promise.resolve();
+    this.#watcherRefreshQueued = true;
+    if (this.#watcherRefresh) return this.#watcherRefresh;
+
+    const refresh = async (): Promise<void> => {
+      try {
+        while (this.#watcherRefreshQueued && !this.#stopped) {
+          this.#watcherRefreshQueued = false;
+          await this.#refreshConversationWatchers();
+        }
+      } finally {
+        this.#watcherRefresh = undefined;
+        if (this.#watcherRefreshQueued && !this.#stopped) {
+          this.#fireAndLog(
+            this.#requestConversationWatcherRefresh(),
+            "dreaming watcher refresh failed",
+          );
+        }
+      }
+    };
+    const work = refresh();
+    this.#watcherRefresh = work;
+    return work;
   }
 
   async #refreshConversationWatchers(): Promise<void> {
@@ -177,7 +209,9 @@ class DreamingService {
       });
       return;
     }
+    if (this.#stopped) return;
     for (const storageId of storageIds) {
+      if (this.#stopped) return;
       try {
         const watcher = watch(
           join(this.#conversationsDir, storageId),

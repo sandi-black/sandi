@@ -75,8 +75,11 @@ export function readNumberEnv(
 ): number {
   const value = readEnv(names);
   if (!value) return defaultValue;
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`${names[0]} must be a positive integer`);
+  }
   const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed) || parsed <= 0) {
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new Error(`${names[0]} must be a positive integer`);
   }
   return parsed;

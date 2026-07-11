@@ -27,6 +27,13 @@ import {
 
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
+const HANDSHAKE_TIMEOUT_MS = 30_000;
+const LINK_IDLE_TIMEOUT_MS = 75_000;
+// Broker calls may carry an 8 MiB write body. Leave room for the dispatch id and
+// SSE fields while preventing a peer from growing one unterminated event forever.
+const MAX_SSE_EVENT_CHARS = 9 * 1024 * 1024;
+const MAX_INFLIGHT_TOOL_CALLS = 8;
+const MAX_PENDING_RESULT_POSTS = 256;
 
 export type DesktopClientOptions = {
   credentials: DesktopCredentials;
@@ -45,6 +52,26 @@ export type DesktopClientOptions = {
   onResponseAttachment?: (attachment: ResponseAttachment) => void;
 };
 
+// Runtime seams keep transport limits deterministic in verification without
+// weakening production defaults or adding multi-second waits to the checks.
+export type DesktopClientRuntime = {
+  handshakeTimeoutMs?: number;
+  idleTimeoutMs?: number;
+  maxSseEventChars?: number;
+  maxInflightToolCalls?: number;
+  maxPendingResultPosts?: number;
+  reconnectDelay?: (attempt: number) => number;
+};
+
+type ResolvedDesktopClientRuntime = {
+  handshakeTimeoutMs: number;
+  idleTimeoutMs: number;
+  maxSseEventChars: number;
+  maxInflightToolCalls: number;
+  maxPendingResultPosts: number;
+  reconnectDelay: (attempt: number) => number;
+};
+
 // One live SSE link. `signal` aborts when the link settles (so in-flight tool
 // calls are cancelled with it); `inflight` maps a dispatch id to the controller
 // for its running call so a `tool_cancel` event can stop just that one.
@@ -52,27 +79,55 @@ type Connection = {
   options: DesktopClientOptions;
   signal: AbortSignal;
   inflight: Map<string, AbortController>;
+  maxInflightToolCalls: number;
+  resultPosts: ResultPostGate;
+};
+
+type ResultPostGate = {
+  active: number;
+  limit: number;
+  pendingLimit: number;
+  waiters: ResultPostWaiter[];
+};
+
+type ResultPostPermit = () => void;
+
+type ResultPostWaiter = {
+  signal: AbortSignal;
+  state: "waiting" | "settled";
+  resolve: (permit: ResultPostPermit | undefined) => void;
+  onAbort: () => void;
 };
 
 export async function runDesktopClient(
   options: DesktopClientOptions,
+  runtimeOptions: DesktopClientRuntime = {},
 ): Promise<void> {
+  const runtime = resolveRuntime(runtimeOptions);
   let attempt = 0;
   while (!options.signal?.aborted) {
     try {
-      await connectOnce(options);
+      await connectOnce(options, runtime, () => {
+        // Reaching a valid event stream proves the route is healthy. A later
+        // reset starts from the base delay even if startup needed many retries.
+        attempt = 0;
+      });
       // A clean end (server closed the stream): reconnect promptly.
       attempt = 0;
     } catch (error) {
       options.onStatus?.(`link dropped: ${errorMessage(error)}`);
     }
     if (options.signal?.aborted) break;
-    await sleep(backoff(attempt), options.signal);
+    await sleep(runtime.reconnectDelay(attempt), options.signal);
     attempt += 1;
   }
 }
 
-function connectOnce(options: DesktopClientOptions): Promise<void> {
+function connectOnce(
+  options: DesktopClientOptions,
+  runtime: ResolvedDesktopClientRuntime,
+  onLinked: () => void,
+): Promise<void> {
   return new Promise((resolveConn, rejectConn) => {
     let target: URL;
     try {
@@ -88,9 +143,18 @@ function connectOnce(options: DesktopClientOptions): Promise<void> {
     const onParentAbort = (): void => connection.abort();
     options.signal?.addEventListener("abort", onParentAbort, { once: true });
     let settled = false;
+    let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearHandshakeTimer = (): void => {
+      if (!handshakeTimer) return;
+      clearTimeout(handshakeTimer);
+      handshakeTimer = undefined;
+    };
     const settle = (run: () => void): void => {
       if (settled) return;
       settled = true;
+      clearHandshakeTimer();
+      if (idleTimer) clearTimeout(idleTimer);
       options.signal?.removeEventListener("abort", onParentAbort);
       connection.abort();
       run();
@@ -99,6 +163,24 @@ function connectOnce(options: DesktopClientOptions): Promise<void> {
       options,
       signal: connection.signal,
       inflight: new Map(),
+      maxInflightToolCalls: runtime.maxInflightToolCalls,
+      resultPosts: {
+        active: 0,
+        limit: runtime.maxInflightToolCalls,
+        pendingLimit: runtime.maxPendingResultPosts,
+        waiters: [],
+      },
+    };
+    const parser = createSseParser(runtime.maxSseEventChars);
+    const armIdleTimer = (): void => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        const error = new Error(
+          `device link was idle for ${runtime.idleTimeoutMs}ms`,
+        );
+        settle(() => rejectConn(error));
+        req.destroy(error);
+      }, runtime.idleTimeoutMs);
     };
 
     const requester = target.protocol === "https:" ? httpsRequest : httpRequest;
@@ -121,27 +203,52 @@ function connectOnce(options: DesktopClientOptions): Promise<void> {
           );
           return;
         }
+        if (!isEventStreamContentType(res.headers["content-type"])) {
+          res.resume();
+          settle(() =>
+            rejectConn(
+              new Error("device link did not return text/event-stream"),
+            ),
+          );
+          return;
+        }
+        clearHandshakeTimer();
+        onLinked();
         options.onStatus?.("linked");
+        armIdleTimer();
         res.setEncoding("utf8");
-        let buffer = "";
         res.on("data", (chunk: string) => {
-          buffer += chunk;
-          let boundary = buffer.indexOf("\n\n");
-          while (boundary !== -1) {
-            const block = buffer.slice(0, boundary);
-            buffer = buffer.slice(boundary + 2);
+          armIdleTimer();
+          const parsed = parser.push(chunk);
+          if (!parsed.ok) {
+            settle(() => rejectConn(parsed.error));
+            res.destroy(parsed.error);
+            return;
+          }
+          for (const block of parsed.blocks) {
             handleEvent(block, conn);
-            boundary = buffer.indexOf("\n\n");
           }
         });
         res.on("end", () => settle(() => resolveConn()));
         res.on("error", (error) => settle(() => rejectConn(error)));
       },
     );
+    handshakeTimer = setTimeout(() => {
+      const error = new Error(
+        `device link handshake timed out after ${runtime.handshakeTimeoutMs}ms`,
+      );
+      settle(() => rejectConn(error));
+      req.destroy(error);
+    }, runtime.handshakeTimeoutMs);
     req.on("error", (error) => settle(() => rejectConn(error)));
-    connection.signal.addEventListener("abort", () => req.destroy(), {
-      once: true,
-    });
+    connection.signal.addEventListener(
+      "abort",
+      () => {
+        req.destroy();
+        settle(() => resolveConn());
+      },
+      { once: true },
+    );
     req.end();
   });
 }
@@ -149,7 +256,7 @@ function connectOnce(options: DesktopClientOptions): Promise<void> {
 function handleEvent(block: string, conn: Connection): void {
   let event = "message";
   const dataLines: string[] = [];
-  for (const line of block.split("\n")) {
+  for (const line of block.split(/\r?\n/)) {
     if (line.startsWith(":")) continue; // comment line / heartbeat
     if (line.startsWith("event:")) {
       event = line.slice("event:".length).trim();
@@ -267,6 +374,14 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
   if (!envelope.success) return; // no usable id, so nothing to report
   const id = envelope.data.id;
 
+  // Treat every replay of an active id as a duplicate before considering the
+  // rest of its payload. A malformed replay must not post an "invalid" result
+  // that could settle the legitimate call sharing that id.
+  if (conn.inflight.has(id)) {
+    conn.options.onStatus?.(`dropped duplicate active tool call id ${id}`);
+    return;
+  }
+
   const dispatch = ToolDispatchSchema.safeParse(raw);
   if (!dispatch.success) {
     await reportResult(conn, {
@@ -274,6 +389,16 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
       ok: false,
       output: "",
       error: "invalid tool call",
+    });
+    return;
+  }
+
+  if (conn.inflight.size >= conn.maxInflightToolCalls) {
+    await reportResult(conn, {
+      id,
+      ok: false,
+      output: "",
+      error: `too many tool calls in flight (limit ${conn.maxInflightToolCalls})`,
     });
     return;
   }
@@ -292,13 +417,18 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
       { rootDir: conn.options.rootDir },
       signal,
     );
-    await reportResult(conn, {
-      id,
-      ok: outcome.ok,
-      output: outcome.output,
-      ...(outcome.error !== undefined ? { error: outcome.error } : {}),
-      ...(outcome.image !== undefined ? { image: outcome.image } : {}),
-    });
+    if (signal.aborted) return;
+    await reportResult(
+      conn,
+      {
+        id,
+        ok: outcome.ok,
+        output: outcome.output,
+        ...(outcome.error !== undefined ? { error: outcome.error } : {}),
+        ...(outcome.image !== undefined ? { image: outcome.image } : {}),
+      },
+      signal,
+    );
   } finally {
     conn.inflight.delete(id);
   }
@@ -313,7 +443,20 @@ async function reportResult(
     error?: string;
     image?: DeviceImage;
   },
+  signal: AbortSignal = conn.signal,
 ): Promise<void> {
+  // Invalid and over-cap dispatches never enter `inflight`, yet their refusal
+  // results use the same HTTP endpoint as completed tools. Gate every result so
+  // hostile SSE input cannot bypass the tool limit by spawning rejection POSTs.
+  const permit = await acquireResultPostPermit(conn.resultPosts, signal);
+  if (!permit) {
+    if (!signal.aborted) {
+      conn.options.onStatus?.(
+        "dropped a tool result because its queue is full",
+      );
+    }
+    return;
+  }
   try {
     const response = await postJson({
       url: conn.options.credentials.url,
@@ -323,7 +466,7 @@ async function reportResult(
       // A settled link aborts a result POST that would otherwise hang and pin
       // this call's inflight entry. The server's own backstop has already freed
       // the pending call by then, so the result is moot.
-      signal: conn.signal,
+      signal,
     });
     // postJson resolves for any status, so a rejected result (auth lost, the
     // call already freed, a server error) would otherwise pass silently. Surface
@@ -340,11 +483,177 @@ async function reportResult(
     conn.options.onStatus?.(
       `failed to report a tool result: ${errorMessage(error)}`,
     );
+  } finally {
+    permit();
   }
 }
 
-function backoff(attempt: number): number {
-  return Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** attempt);
+function acquireResultPostPermit(
+  gate: ResultPostGate,
+  signal: AbortSignal,
+): Promise<ResultPostPermit | undefined> {
+  if (signal.aborted) return Promise.resolve(undefined);
+  if (gate.active < gate.limit) {
+    gate.active += 1;
+    return Promise.resolve(createResultPostPermit(gate));
+  }
+  if (gate.waiters.length >= gate.pendingLimit) {
+    return Promise.resolve(undefined);
+  }
+
+  return new Promise((resolve) => {
+    const waiter: ResultPostWaiter = {
+      signal,
+      state: "waiting",
+      resolve,
+      onAbort: () => {
+        if (waiter.state !== "waiting") return;
+        waiter.state = "settled";
+        const index = gate.waiters.indexOf(waiter);
+        if (index !== -1) gate.waiters.splice(index, 1);
+        resolve(undefined);
+      },
+    };
+    signal.addEventListener("abort", waiter.onAbort, { once: true });
+    gate.waiters.push(waiter);
+  });
+}
+
+function createResultPostPermit(gate: ResultPostGate): ResultPostPermit {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    gate.active -= 1;
+
+    for (;;) {
+      const waiter = gate.waiters.shift();
+      if (!waiter) return;
+      waiter.signal.removeEventListener("abort", waiter.onAbort);
+      if (waiter.state !== "waiting" || waiter.signal.aborted) {
+        if (waiter.state === "waiting") {
+          waiter.state = "settled";
+          waiter.resolve(undefined);
+        }
+        continue;
+      }
+      waiter.state = "settled";
+      gate.active += 1;
+      waiter.resolve(createResultPostPermit(gate));
+      return;
+    }
+  };
+}
+
+type SseParseResult =
+  | { ok: true; blocks: string[] }
+  | { ok: false; error: Error };
+
+function createSseParser(maxEventChars: number): {
+  push(chunk: string): SseParseResult;
+} {
+  let buffer = "";
+  return {
+    push(chunk: string): SseParseResult {
+      buffer += chunk;
+      const blocks: string[] = [];
+      for (;;) {
+        const boundary = findSseBoundary(buffer);
+        if (!boundary) break;
+        if (boundary.index > maxEventChars) {
+          return {
+            ok: false,
+            error: new Error(
+              `device link SSE event exceeded ${maxEventChars} characters`,
+            ),
+          };
+        }
+        blocks.push(buffer.slice(0, boundary.index));
+        buffer = buffer.slice(boundary.index + boundary.length);
+      }
+      if (buffer.length > maxEventChars) {
+        return {
+          ok: false,
+          error: new Error(
+            `device link SSE event exceeded ${maxEventChars} characters`,
+          ),
+        };
+      }
+      return { ok: true, blocks };
+    },
+  };
+}
+
+function findSseBoundary(
+  buffer: string,
+): { index: number; length: number } | undefined {
+  const lf = buffer.indexOf("\n\n");
+  const crlf = buffer.indexOf("\r\n\r\n");
+  if (lf === -1 && crlf === -1) return undefined;
+  if (lf !== -1 && (crlf === -1 || lf < crlf)) {
+    return { index: lf, length: 2 };
+  }
+  return { index: crlf, length: 4 };
+}
+
+function isEventStreamContentType(
+  value: string | string[] | undefined,
+): boolean {
+  const values = Array.isArray(value) ? value : [value];
+  return values.some(
+    (item) =>
+      item?.split(";", 1)[0]?.trim().toLowerCase() === "text/event-stream",
+  );
+}
+
+function resolveRuntime(
+  options: DesktopClientRuntime,
+): ResolvedDesktopClientRuntime {
+  return {
+    handshakeTimeoutMs: positiveInteger(
+      options.handshakeTimeoutMs,
+      HANDSHAKE_TIMEOUT_MS,
+    ),
+    idleTimeoutMs: positiveInteger(options.idleTimeoutMs, LINK_IDLE_TIMEOUT_MS),
+    maxSseEventChars: positiveInteger(
+      options.maxSseEventChars,
+      MAX_SSE_EVENT_CHARS,
+    ),
+    maxInflightToolCalls: positiveInteger(
+      options.maxInflightToolCalls,
+      MAX_INFLIGHT_TOOL_CALLS,
+    ),
+    maxPendingResultPosts: positiveInteger(
+      options.maxPendingResultPosts,
+      MAX_PENDING_RESULT_POSTS,
+    ),
+    reconnectDelay: options.reconnectDelay ?? desktopReconnectDelay,
+  };
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+  return Math.max(1, Math.floor(value));
+}
+
+export function desktopReconnectDelay(
+  attempt: number,
+  random: () => number = Math.random,
+): number {
+  const normalizedAttempt = Number.isFinite(attempt)
+    ? Math.max(0, Math.floor(attempt))
+    : 0;
+  const ceiling = Math.min(
+    RECONNECT_MAX_MS,
+    RECONNECT_BASE_MS * 2 ** Math.min(normalizedAttempt, 30),
+  );
+  const rawSample = random();
+  const sample = Number.isFinite(rawSample)
+    ? Math.min(1, Math.max(0, rawSample))
+    : 0.5;
+  return Math.round(ceiling * (0.5 + sample / 2));
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

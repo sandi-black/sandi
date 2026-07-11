@@ -11,7 +11,11 @@ import type {
   PlatformId,
 } from "@/lib/conversations/types";
 import { participantLabel } from "@/lib/conversations/types";
-import { findHumanIdentity, HumanIdentityStore } from "@/lib/identity/resolver";
+import { isMissingPathError } from "@/lib/fs-errors";
+import {
+  findHumanIdentityByPlatformId,
+  HumanIdentityStore,
+} from "@/lib/identity/resolver";
 import type { SandiSurfaceContext } from "@/lib/surface-context";
 
 const ENVIRONMENT_HINT_MAX_CHARS = 4_000;
@@ -164,7 +168,9 @@ export class ContextCompiler {
     for (const configDir of this.#configDirs) {
       try {
         return await readFile(join(configDir, relativePath), "utf8");
-      } catch {}
+      } catch (error) {
+        if (!isMissingPathError(error)) throw error;
+      }
     }
     return fallback;
   }
@@ -176,7 +182,9 @@ export class ContextCompiler {
         for (const file of await readdir(join(configDir, relativePath))) {
           files.add(file);
         }
-      } catch {}
+      } catch (error) {
+        if (!isMissingPathError(error)) throw error;
+      }
     }
     return files;
   }
@@ -276,11 +284,10 @@ export class ContextCompiler {
       "Active participant mappings:",
     );
     for (const participant of participants) {
-      const identity = findHumanIdentity({
+      const identity = findHumanIdentityByPlatformId({
         identities,
         platform: participant.platform,
         platformUserId: participant.platformUserId,
-        username: participant.username,
       });
       if (!identity) {
         lines.push(`- ${participantLabel(participant)}: unmapped`);

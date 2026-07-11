@@ -1,13 +1,130 @@
 import { assert, assertEqual } from "@/lib/verification/harness";
 import { BrokerDesktopHands } from "@/surfaces/api/devices/desktop-hands";
-import { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
+import {
+  DeviceRegistry,
+  DeviceUnavailableError,
+} from "@/surfaces/api/devices/device-registry";
+import { ToolDispatchEnvelopeSchema } from "@/surfaces/api/devices/protocol";
 import { ToolBroker } from "@/surfaces/api/devices/tool-broker";
 
 async function verifyDesktopHands(): Promise<void> {
   verifyKeyForIdentity();
   verifyDesktopResolution();
+  await verifyBoundedBackpressure();
+  await verifyAuthorizationRevocation();
   await verifyLeaseForIdentity();
   console.log("desktop hands verification passed");
+}
+
+async function verifyBoundedBackpressure(): Promise<void> {
+  const registry = new DeviceRegistry();
+  const writes: string[] = [];
+  let drain: (() => void) | undefined;
+  const link = registry.connect({
+    key: "key-slow",
+    deviceId: "Grace's slow desktop",
+    identityId: "grace",
+    write: (chunk) => {
+      writes.push(chunk);
+      return false;
+    },
+    end: () => {},
+    onDrain: (listener) => {
+      drain = listener;
+      return () => {};
+    },
+  });
+  try {
+    const first = registry.dispatch({
+      key: "key-slow",
+      call: { tool: "local_read", params: { path: "notes.txt" } },
+    });
+    await assertRejects(
+      registry.dispatch({
+        key: "key-slow",
+        call: { tool: "local_read", params: { path: "more.txt" } },
+      }),
+      DeviceUnavailableError,
+      "a backpressured link rejects new work",
+    );
+    assertEqual(writes.length, 1, "only the accepted event is buffered");
+    const data = writes[0]
+      ?.split("\n")
+      .find((line) => line.startsWith("data: "))
+      ?.slice("data: ".length);
+    const dispatch = ToolDispatchEnvelopeSchema.parse(JSON.parse(data ?? ""));
+    assert(
+      registry.settleResult("key-slow", {
+        id: dispatch.id,
+        ok: true,
+        output: "done",
+      }),
+      "the first backpressured write was accepted and can settle",
+    );
+    await first;
+    drain?.();
+  } finally {
+    link.close();
+  }
+  console.log("ok slow device links stop accepting work until drain");
+}
+
+async function verifyAuthorizationRevocation(): Promise<void> {
+  const registry = new DeviceRegistry();
+  let ended = false;
+  registry.connect({
+    key: "token-hash",
+    deviceId: "Ada's laptop",
+    identityId: "ada",
+    write: () => true,
+    end: () => {
+      ended = true;
+    },
+  });
+  registry.retainAuthorizedTokens([]);
+  assert(ended, "revoking a token closes its established device link");
+  assertEqual(
+    registry.keyForIdentity("ada"),
+    undefined,
+    "a revoked link cannot receive another surface's work",
+  );
+
+  registry.connect({
+    key: "stale-token",
+    deviceId: "Ada's laptop",
+    identityId: "ada",
+    write: () => true,
+    end: () => {},
+    isAuthorized: async () => false,
+  });
+  await assertRejects(
+    registry.dispatch({
+      key: "stale-token",
+      call: { tool: "local_read", params: { path: "notes.txt" } },
+    }),
+    DeviceUnavailableError,
+    "dispatch revalidates authorization before a local side effect",
+  );
+  assertEqual(
+    registry.isConnected("stale-token"),
+    false,
+    "a failed authorization check tears down the stale link",
+  );
+  console.log("ok token revocation invalidates existing desktop authority");
+}
+
+async function assertRejects(
+  promise: Promise<unknown>,
+  errorType: new () => Error,
+  message: string,
+): Promise<void> {
+  try {
+    await promise;
+  } catch (error) {
+    assert(error instanceof errorType, message);
+    return;
+  }
+  throw new Error(message);
 }
 
 function verifyDesktopResolution(): void {

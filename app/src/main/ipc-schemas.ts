@@ -90,34 +90,94 @@ export const PairCodeSchema = z.string().min(1).max(200);
 // The declared image type is trusted rather than magic-byte sniffed: this is
 // the human's own clipboard on their own machine, so sniffing would add cost
 // without answering any threat sandi is not already trusted with.
-const PASTED_IMAGE_PREFIX = /^data:image\/(?:png|jpeg|webp);base64,/;
-const CANONICAL_BASE64 =
-  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const PASTED_IMAGE_PREFIXES: readonly string[] = [
+  "data:image/png;base64,",
+  "data:image/jpeg;base64,",
+  "data:image/webp;base64,",
+];
 const MAX_PASTED_IMAGE_BYTES = 64 * 1024 * 1024;
+const MAX_PASTED_IMAGE_BASE64_CHARS = Math.ceil(MAX_PASTED_IMAGE_BYTES / 3) * 4;
 
-function decodedBase64Bytes(base64: string): number {
-  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-  return (base64.length / 4) * 3 - padding;
+function base64Value(code: number): number {
+  if (code >= 65 && code <= 90) return code - 65;
+  if (code >= 97 && code <= 122) return code - 71;
+  if (code >= 48 && code <= 57) return code + 4;
+  if (code === 43) return 62;
+  if (code === 47) return 63;
+  return -1;
+}
+
+// Returns the exact decoded length only for RFC 4648 canonical base64. The
+// single pass avoids the catastrophic recursion a giant regex can trigger,
+// and checking unused pad bits rejects alternate spellings of the same bytes.
+function decodedCanonicalBase64Bytes(
+  value: string,
+  start: number,
+): number | undefined {
+  const length = value.length - start;
+  if (length === 0 || length % 4 !== 0) return undefined;
+
+  let padding = 0;
+  if (value.charCodeAt(value.length - 1) === 61) padding += 1;
+  if (value.charCodeAt(value.length - 2) === 61) padding += 1;
+  const dataEnd = value.length - padding;
+
+  for (let index = start; index < dataEnd; index += 1) {
+    if (base64Value(value.charCodeAt(index)) < 0) return undefined;
+  }
+  for (let index = dataEnd; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 61) return undefined;
+  }
+
+  if (padding === 2) {
+    const finalValue = base64Value(value.charCodeAt(dataEnd - 1));
+    if ((finalValue & 15) !== 0) return undefined;
+  } else if (padding === 1) {
+    const finalValue = base64Value(value.charCodeAt(dataEnd - 1));
+    if ((finalValue & 3) !== 0) return undefined;
+  }
+
+  return (length / 4) * 3 - padding;
 }
 
 export const StagePasteSchema = z
   .string()
   .min(1)
   .max(96_000_000)
-  .refine(
-    (value) => PASTED_IMAGE_PREFIX.test(value),
-    "must be a supported image data URL",
-  )
-  .refine((value) => {
-    const base64 = value.slice(value.indexOf(",") + 1);
-    return base64.length > 0 && CANONICAL_BASE64.test(base64);
-  }, "image payload must be canonical base64")
-  .refine(
-    (value) =>
-      decodedBase64Bytes(value.slice(value.indexOf(",") + 1)) <=
-      MAX_PASTED_IMAGE_BYTES,
-    "pasted image exceeds the size cap",
-  );
+  .superRefine((value, context) => {
+    const prefix = PASTED_IMAGE_PREFIXES.find((candidate) =>
+      value.startsWith(candidate),
+    );
+    if (!prefix) {
+      context.addIssue({
+        code: "custom",
+        message: "must be a supported image data URL",
+      });
+      return;
+    }
+    if (value.length - prefix.length > MAX_PASTED_IMAGE_BASE64_CHARS) {
+      context.addIssue({
+        code: "custom",
+        message: "pasted image exceeds the size cap",
+      });
+      return;
+    }
+
+    const decodedBytes = decodedCanonicalBase64Bytes(value, prefix.length);
+    if (decodedBytes === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "image payload must be canonical base64",
+      });
+      return;
+    }
+    if (decodedBytes > MAX_PASTED_IMAGE_BYTES) {
+      context.addIssue({
+        code: "custom",
+        message: "pasted image exceeds the size cap",
+      });
+    }
+  });
 
 export const AttachmentIdSchema = z.string().min(1).max(200);
 

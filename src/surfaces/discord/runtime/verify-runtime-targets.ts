@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 
+import "@/surfaces/discord/runtime/verify-discord-io";
+
 import { resolveGuildId } from "@/surfaces/discord/runtime/guild";
 import {
   DeleteMessageInputSchema,

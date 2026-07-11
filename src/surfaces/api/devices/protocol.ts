@@ -76,18 +76,25 @@ export const LocalListMonitorsParamsSchema = z.object({
 export const LocalListWindowsParamsSchema = z.object({
   desktop: z.string().min(1).optional(),
 });
-export const LocalScreenshotParamsSchema = z.object({
-  desktop: z.string().min(1).optional(),
-  // Capture one monitor (by index or device name from local_list_monitors) or
-  // one window (by handle or title from local_list_windows). At most one; with
-  // neither, the primary monitor is captured.
-  monitor: z.string().min(1).optional(),
-  window: z.string().min(1).optional(),
-  // Longest-edge cap in pixels before encoding. The desktop downscales to this
-  // so a 4K screen does not return a multi-megabyte image; defaulted and clamped
-  // on the desktop, not here.
-  maxDimension: z.number().int().positive().optional(),
-});
+export const LocalScreenshotParamsSchema = z
+  .object({
+    desktop: z.string().min(1).optional(),
+    // Capture one monitor (by index or device name from local_list_monitors) or
+    // one window (by handle or title from local_list_windows). At most one; with
+    // neither, the primary monitor is captured.
+    monitor: z.string().min(1).optional(),
+    window: z.string().min(1).optional(),
+    // Longest-edge cap in pixels before encoding. The desktop downscales to this
+    // so a 4K screen does not return a multi-megabyte image; defaulted and clamped
+    // on the desktop, not here.
+    maxDimension: z.number().int().positive().optional(),
+  })
+  .refine(
+    (params) => params.monitor === undefined || params.window === undefined,
+    {
+      message: "monitor and window are mutually exclusive",
+    },
+  );
 
 export type LocalReadParams = z.infer<typeof LocalReadParamsSchema>;
 export type LocalWriteParams = z.infer<typeof LocalWriteParamsSchema>;
@@ -166,11 +173,31 @@ export const ToolDispatchEnvelopeSchema = z.object({ id: z.string().min(1) });
 // fails any of these is rejected at the boundary rather than carried as a typed
 // image that only fails later when mapped to a model image block.
 export const SUPPORTED_IMAGE_MIME_TYPES = ["image/jpeg", "image/png"];
-// Canonical base64: groups of four, with only a final two- or three-char group
-// padded to four. Rejects an impossible length or stray padding that a loose
-// charset pattern would accept.
-export const CANONICAL_BASE64 =
-  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+// V8's regexp engine can overflow its stack on multi-megabyte repeated
+// patterns. Decode and round-trip instead: this stays linear, rejects ignored
+// junk and non-zero pad bits, and proves the text is the unique base64 spelling
+// of the bytes the rest of the boundary validates.
+export function decodeCanonicalBase64(value: string): Buffer | undefined {
+  if (value.length === 0 || value.length % 4 !== 0) return undefined;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    const isAlphabet =
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) ||
+      code === 43 ||
+      code === 47;
+    if (!isAlphabet && code !== 61) return undefined;
+    if (code === 61 && index < value.length - 2) return undefined;
+  }
+  const bytes = Buffer.from(value, "base64");
+  return bytes.toString("base64") === value ? bytes : undefined;
+}
+
+export function isCanonicalBase64(value: string): boolean {
+  return decodeCanonicalBase64(value) !== undefined;
+}
 
 // True when the decoded bytes begin with the magic number for the declared mime
 // type, so a payload labelled image/jpeg is genuinely JPEG and not arbitrary
@@ -179,7 +206,8 @@ export function imageBytesMatchMime(
   mimeType: string,
   dataBase64: string,
 ): boolean {
-  const bytes = Buffer.from(dataBase64, "base64");
+  const bytes = decodeCanonicalBase64(dataBase64);
+  if (!bytes) return false;
   if (mimeType === "image/jpeg") {
     return (
       bytes.length >= 3 &&
@@ -190,11 +218,15 @@ export function imageBytesMatchMime(
   }
   if (mimeType === "image/png") {
     return (
-      bytes.length >= 4 &&
+      bytes.length >= 8 &&
       bytes[0] === 0x89 &&
       bytes[1] === 0x50 &&
       bytes[2] === 0x4e &&
-      bytes[3] === 0x47
+      bytes[3] === 0x47 &&
+      bytes[4] === 0x0d &&
+      bytes[5] === 0x0a &&
+      bytes[6] === 0x1a &&
+      bytes[7] === 0x0a
     );
   }
   return false;
@@ -203,7 +235,9 @@ export function imageBytesMatchMime(
 export const DeviceImageSchema = z
   .object({
     mimeType: z.enum(["image/jpeg", "image/png"]),
-    dataBase64: z.string().regex(CANONICAL_BASE64, "must be canonical base64"),
+    dataBase64: z
+      .string()
+      .refine(isCanonicalBase64, "must be canonical base64"),
   })
   .refine((image) => imageBytesMatchMime(image.mimeType, image.dataBase64), {
     message: "image bytes do not match the declared mime type",

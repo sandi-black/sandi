@@ -1,4 +1,5 @@
-import type { IncomingMessage } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { TextDecoder } from "node:util";
 
 export type JsonBodyResult =
   | { ok: true; value: unknown }
@@ -11,6 +12,8 @@ export type ReadJsonBodyOptions = {
   // Deadline for the whole body to arrive, defeating a slow-body client. This is
   // independent of any longer-running work the handler does afterward.
   timeoutMs: number;
+  response: ServerResponse;
+  signal?: AbortSignal;
 };
 
 // Reads and JSON-parses a request body within a size and time budget. Resolves
@@ -26,34 +29,59 @@ export function readJsonBody(
     let total = 0;
     let settled = false;
 
-    const finish = (result: JsonBodyResult): void => {
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      request.removeListener("data", onData);
+      request.removeListener("end", onEnd);
+      request.removeListener("error", onError);
+      request.removeListener("aborted", onAborted);
+      request.removeListener("close", onClose);
+      options.signal?.removeEventListener("abort", onSignalAbort);
+    };
+
+    const finish = (result: JsonBodyResult, discard = false): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      cleanup();
+      if (discard) {
+        // Send the status before closing the connection, then discard any body
+        // bytes already in flight without retaining them. `Connection: close`
+        // prevents unread bytes from becoming the next keep-alive request.
+        options.response.shouldKeepAlive = false;
+        if (!options.response.headersSent) {
+          options.response.setHeader("connection", "close");
+        }
+        options.response.once("finish", () => {
+          request.socket.end();
+        });
+        request.once("error", () => {});
+        request.resume();
+      }
       resolveBody(result);
     };
 
     const timer = setTimeout(() => {
-      request.destroy();
-      finish({ ok: false, status: 408, error: "request_timeout" });
+      finish({ ok: false, status: 408, error: "request_timeout" }, true);
     }, options.timeoutMs);
 
-    request.on("data", (chunk: Buffer) => {
+    const onData = (chunk: Buffer): void => {
       total += chunk.length;
       if (total > options.maxBytes) {
-        // Stop buffering and deliberately stop reading so the caller can write
-        // the JSON 413 to the still-open response, instead of destroying the
-        // socket out from under the error. The server `requestTimeout` bounds
-        // any remaining unread body.
-        request.pause();
-        request.removeAllListeners("data");
-        finish({ ok: false, status: 413, error: "payload_too_large" });
+        finish({ ok: false, status: 413, error: "payload_too_large" }, true);
         return;
       }
       chunks.push(chunk);
-    });
-    request.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8").trim();
+    };
+    const onEnd = (): void => {
+      let raw: string;
+      try {
+        raw = new TextDecoder("utf-8", { fatal: true })
+          .decode(Buffer.concat(chunks, total))
+          .trim();
+      } catch {
+        finish({ ok: false, status: 400, error: "invalid_encoding" });
+        return;
+      }
       if (!raw) {
         finish({ ok: false, status: 400, error: "empty_body" });
         return;
@@ -63,9 +91,28 @@ export function readJsonBody(
       } catch {
         finish({ ok: false, status: 400, error: "invalid_json" });
       }
-    });
-    request.on("error", () => {
+    };
+    const onError = (): void => {
       finish({ ok: false, status: 400, error: "request_error" });
-    });
+    };
+    const onAborted = (): void => {
+      finish({ ok: false, status: 400, error: "request_aborted" });
+    };
+    const onClose = (): void => {
+      if (!request.complete) onAborted();
+    };
+    const onSignalAbort = (): void => {
+      finish({ ok: false, status: 408, error: "request_aborted" }, true);
+    };
+    request.on("data", onData);
+    request.once("end", onEnd);
+    request.once("error", onError);
+    request.once("aborted", onAborted);
+    request.once("close", onClose);
+    if (options.signal?.aborted) {
+      onSignalAbort();
+    } else {
+      options.signal?.addEventListener("abort", onSignalAbort, { once: true });
+    }
   });
 }

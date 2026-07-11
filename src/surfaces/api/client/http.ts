@@ -9,6 +9,10 @@ export type JsonResponse = {
 // A POST that never returns must not pin a request forever (it would keep the
 // caller's task and any bookkeeping alive). Bound every request by default.
 const DEFAULT_TIMEOUT_MS = 30_000;
+// Control responses are normally tiny; turns can be larger, but no endpoint
+// needs an unbounded body. This ceiling also limits malformed error responses
+// from a misconfigured or compromised server.
+const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 // POSTs JSON to a path resolved against the server base URL and returns the
 // status and parsed body. Resolves for any HTTP status; rejects only on a
@@ -21,6 +25,7 @@ export function postJson(input: {
   body: unknown;
   token?: string;
   timeoutMs?: number;
+  maxResponseBytes?: number;
   signal?: AbortSignal;
 }): Promise<JsonResponse> {
   return new Promise((resolvePost, rejectPost) => {
@@ -36,6 +41,9 @@ export function postJson(input: {
       return;
     }
     const payload = Buffer.from(JSON.stringify(input.body), "utf8");
+    const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const maxResponseBytes =
+      input.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
     const requester = target.protocol === "https:" ? httpsRequest : httpRequest;
     const req = requester(
       target,
@@ -49,7 +57,19 @@ export function postJson(input: {
       },
       (res) => {
         const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        let responseBytes = 0;
+        res.on("data", (chunk: Buffer) => {
+          responseBytes += chunk.length;
+          if (responseBytes > maxResponseBytes) {
+            const error = new Error(
+              `response exceeded ${maxResponseBytes} bytes`,
+            );
+            settle(() => rejectPost(error));
+            res.destroy(error);
+            return;
+          }
+          chunks.push(chunk);
+        });
         res.on("end", () => {
           const text = Buffer.concat(chunks).toString("utf8");
           settle(() =>
@@ -59,22 +79,34 @@ export function postJson(input: {
             }),
           );
         });
+        res.on("aborted", () =>
+          settle(() =>
+            rejectPost(new Error("response aborted before it ended")),
+          ),
+        );
+        res.on("error", (error) => settle(() => rejectPost(error)));
       },
     );
 
     let done = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const onAbort = (): void => {
-      req.destroy(new Error("request aborted"));
+      const error = new Error("request aborted");
+      settle(() => rejectPost(error));
+      req.destroy(error);
     };
     const settle = (run: () => void): void => {
       if (done) return;
       done = true;
+      if (timer) clearTimeout(timer);
       input.signal?.removeEventListener("abort", onAbort);
       run();
     };
-    req.setTimeout(input.timeoutMs ?? DEFAULT_TIMEOUT_MS, () => {
-      req.destroy(new Error("request timed out"));
-    });
+    timer = setTimeout(() => {
+      const error = new Error(`request timed out after ${timeoutMs}ms`);
+      settle(() => rejectPost(error));
+      req.destroy(error);
+    }, timeoutMs);
     req.on("error", (error) => settle(() => rejectPost(error)));
     // The request always emits "close" once it is done, success or failure. A
     // server that aborts the response mid-body can close the socket without a

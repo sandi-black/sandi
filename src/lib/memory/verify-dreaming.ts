@@ -217,124 +217,118 @@ const SESSION_JSONL = [
 }
 
 // 3. Encoding summarizes the transcript into an episodic note on low thinking.
-{
-  await withTempDir("sandi-encode-", async (tempRoot) => {
-    const dataDir = join(tempRoot, "data");
-    const sessionDir = join(dataDir, "pi-sessions");
-    const manifest = manifestFor();
-    const sessionFile = piSessionFilePath(sessionDir, manifest.canonicalId);
-    await mkdir(dirname(sessionFile), { recursive: true });
-    await writeFile(sessionFile, SESSION_JSONL, "utf8");
+await withTempDir("sandi-encode-", async (tempRoot) => {
+  const dataDir = join(tempRoot, "data");
+  const sessionDir = join(dataDir, "pi-sessions");
+  const manifest = manifestFor();
+  const sessionFile = piSessionFilePath(sessionDir, manifest.canonicalId);
+  await mkdir(dirname(sessionFile), { recursive: true });
+  await writeFile(sessionFile, SESSION_JSONL, "utf8");
 
-    const provider = new FakeProvider();
-    const controller = new AbortController();
-    const result = await encodeConversation({
-      provider,
-      dataDir,
-      sessionDir,
-      manifest,
-      now: new Date("2026-06-29T12:00:00Z"),
-      transcriptCharBudget: 10_000,
-      logger,
-      signal: controller.signal,
-    });
-    assert.equal(result.written, true);
-
-    const request = provider.requests[0];
-    assert.ok(request);
-    assert.equal(request.thinking, "low");
-    assert.equal(request.sessionMode, "none");
-    assert.equal(request.instructions, ENCODE_SYSTEM_PROMPT);
-    assert.match(request.input, /vegetable garden/);
-    assert.equal(request.accountRouting?.identityId, "jess-human");
-    // The abort signal is threaded through so a shutdown can cancel the turn.
-    assert.equal(request.signal, controller.signal);
-    // Background turns keep Sandi's full toolset: nothing is disabled or
-    // excluded; the context only wires the runtime.
-    assert.equal(request.surfaceContext?.name, "dreaming");
-    assert.notEqual(request.surfaceContext?.disableBuiltinTools, true);
-    assert.equal(request.surfaceContext?.excludeTools, undefined);
-
-    const notePath = join(dataDir, "memory", NOTE_REF);
-    const written = await readFile(notePath, "utf8");
-    assert.match(written, /summary: Garden planning chat\./);
-    assert.match(written, /raised beds/);
+  const provider = new FakeProvider();
+  const controller = new AbortController();
+  const result = await encodeConversation({
+    provider,
+    dataDir,
+    sessionDir,
+    manifest,
+    now: new Date("2026-06-29T12:00:00Z"),
+    transcriptCharBudget: 10_000,
+    logger,
+    signal: controller.signal,
   });
-}
+  assert.equal(result.written, true);
+
+  const request = provider.requests[0];
+  assert.ok(request);
+  assert.equal(request.thinking, "low");
+  assert.equal(request.sessionMode, "none");
+  assert.equal(request.instructions, ENCODE_SYSTEM_PROMPT);
+  assert.match(request.input, /vegetable garden/);
+  assert.equal(request.accountRouting?.identityId, "jess-human");
+  // The abort signal is threaded through so a shutdown can cancel the turn.
+  assert.equal(request.signal, controller.signal);
+  // Background turns keep Sandi's full toolset: nothing is disabled or
+  // excluded; the context only wires the runtime.
+  assert.equal(request.surfaceContext?.name, "dreaming");
+  assert.notEqual(request.surfaceContext?.disableBuiltinTools, true);
+  assert.equal(request.surfaceContext?.excludeTools, undefined);
+
+  const notePath = join(dataDir, "memory", NOTE_REF);
+  const written = await readFile(notePath, "utf8");
+  assert.match(written, /summary: Garden planning chat\./);
+  assert.match(written, /raised beds/);
+});
 
 // 4. Dreaming consolidates fresh notes on high thinking and surfaces them.
-{
-  await withTempDir("sandi-dream-", async (tempRoot) => {
-    const dataDir = join(tempRoot, "data");
-    const sessionDir = join(dataDir, "pi-sessions");
-    const memoryRoot = join(dataDir, "memory");
-    const manifest = manifestFor();
-    await writeEpisodicNote({
-      memoryRoot,
-      ref: NOTE_REF,
-      summary: "Garden planning chat.",
-      body: "They prefer raised beds and watering in the morning.",
-    });
-
-    const notes = await freshNotesForConversation({
-      memoryRoot,
-      manifest,
-      since: null,
-    });
-    assert.equal(notes.length, 1);
-
-    const provider = new FakeProvider();
-    const result = await runDreamForConversation({
-      provider,
-      dataDir,
-      sessionDir,
-      manifest,
-      notes,
-      transcriptCharBudget: 10_000,
-      logger,
-    });
-    assert.equal(result.dreamed, true);
-
-    const request = provider.requests[0];
-    assert.ok(request);
-    assert.equal(request.thinking, "high");
-    assert.equal(request.sessionMode, "none");
-    assert.equal(request.instructions, DREAM_SYSTEM_PROMPT);
-    assert.match(request.input, /Fresh notes/);
-    assert.match(request.input, /raised beds/);
-    assert.equal(request.accountRouting?.identityId, "jess-human");
-    // Dreaming runs with Sandi's full toolset; nothing is disabled or excluded.
-    assert.equal(request.surfaceContext?.name, "dreaming");
-    assert.notEqual(request.surfaceContext?.disableBuiltinTools, true);
-    assert.equal(request.surfaceContext?.excludeTools, undefined);
+await withTempDir("sandi-dream-", async (tempRoot) => {
+  const dataDir = join(tempRoot, "data");
+  const sessionDir = join(dataDir, "pi-sessions");
+  const memoryRoot = join(dataDir, "memory");
+  const manifest = manifestFor();
+  await writeEpisodicNote({
+    memoryRoot,
+    ref: NOTE_REF,
+    summary: "Garden planning chat.",
+    body: "They prefer raised beds and watering in the morning.",
   });
-}
+
+  const notes = await freshNotesForConversation({
+    memoryRoot,
+    manifest,
+    since: null,
+  });
+  assert.equal(notes.length, 1);
+
+  const provider = new FakeProvider();
+  const result = await runDreamForConversation({
+    provider,
+    dataDir,
+    sessionDir,
+    manifest,
+    notes,
+    transcriptCharBudget: 10_000,
+    logger,
+  });
+  assert.equal(result.dreamed, true);
+
+  const request = provider.requests[0];
+  assert.ok(request);
+  assert.equal(request.thinking, "high");
+  assert.equal(request.sessionMode, "none");
+  assert.equal(request.instructions, DREAM_SYSTEM_PROMPT);
+  assert.match(request.input, /Fresh notes/);
+  assert.match(request.input, /raised beds/);
+  assert.equal(request.accountRouting?.identityId, "jess-human");
+  // Dreaming runs with Sandi's full toolset; nothing is disabled or excluded.
+  assert.equal(request.surfaceContext?.name, "dreaming");
+  assert.notEqual(request.surfaceContext?.disableBuiltinTools, true);
+  assert.equal(request.surfaceContext?.excludeTools, undefined);
+});
 
 // 5. The dream watermark is tracked and advanced per conversation.
-{
-  await withTempDir("sandi-state-", async (tempRoot) => {
-    const store = new DreamStateStore(join(tempRoot, "data"));
-    assert.equal(await store.lastDreamAt("c1"), null);
+await withTempDir("sandi-state-", async (tempRoot) => {
+  const store = new DreamStateStore(join(tempRoot, "data"));
+  assert.equal(await store.lastDreamAt("c1"), null);
 
-    const when = new Date("2026-06-29T04:00:00.000Z");
-    await store.markDreamed("c1", when);
-    const got = await store.lastDreamAt("c1");
-    assert.ok(got);
-    assert.equal(got.toISOString(), when.toISOString());
-    // A second conversation is independent: marking one never advances another.
-    assert.equal(await store.lastDreamAt("c2"), null);
+  const when = new Date("2026-06-29T04:00:00.000Z");
+  await store.markDreamed("c1", when);
+  const got = await store.lastDreamAt("c1");
+  assert.ok(got);
+  assert.equal(got.toISOString(), when.toISOString());
+  // A second conversation is independent: marking one never advances another.
+  assert.equal(await store.lastDreamAt("c2"), null);
 
-    // A loosely parseable but non-ISO timestamp is rejected at the file
-    // boundary rather than coerced into a Date later.
-    const statePath = join(tempRoot, "data", "dreaming", "state.json");
-    await writeFile(
-      statePath,
-      JSON.stringify({ version: 1, conversations: { c3: "June 29, 2026" } }),
-      "utf8",
-    );
-    await assert.rejects(() => store.lastDreamAt("c3"));
-  });
-}
+  // A loosely parseable but non-ISO timestamp is rejected at the file
+  // boundary rather than coerced into a Date later.
+  const statePath = join(tempRoot, "data", "dreaming", "state.json");
+  await writeFile(
+    statePath,
+    JSON.stringify({ version: 1, conversations: { c3: "June 29, 2026" } }),
+    "utf8",
+  );
+  await assert.rejects(() => store.lastDreamAt("c3"));
+});
 
 // 6. Dreaming config strictly validates its env boundary.
 {
@@ -386,75 +380,71 @@ const SESSION_JSONL = [
 }
 
 // 7. A non-missing transcript read error is surfaced, not treated as empty.
-{
-  await withTempDir("sandi-readerr-", async (tempRoot) => {
-    const dataDir = join(tempRoot, "data");
-    const sessionDir = join(dataDir, "pi-sessions");
-    const manifest = manifestFor();
-    // Make the session path a directory so reading it fails with EISDIR rather
-    // than the benign ENOENT.
-    await mkdir(piSessionFilePath(sessionDir, manifest.canonicalId), {
-      recursive: true,
-    });
-
-    const provider = new FakeProvider();
-    await assert.rejects(() =>
-      encodeConversation({
-        provider,
-        dataDir,
-        sessionDir,
-        manifest,
-        now: new Date("2026-06-29T12:00:00Z"),
-        transcriptCharBudget: 10_000,
-        logger,
-      }),
-    );
-    assert.equal(provider.requests.length, 0);
+await withTempDir("sandi-readerr-", async (tempRoot) => {
+  const dataDir = join(tempRoot, "data");
+  const sessionDir = join(dataDir, "pi-sessions");
+  const manifest = manifestFor();
+  // Make the session path a directory so reading it fails with EISDIR rather
+  // than the benign ENOENT.
+  await mkdir(piSessionFilePath(sessionDir, manifest.canonicalId), {
+    recursive: true,
   });
-}
+
+  const provider = new FakeProvider();
+  await assert.rejects(() =>
+    encodeConversation({
+      provider,
+      dataDir,
+      sessionDir,
+      manifest,
+      now: new Date("2026-06-29T12:00:00Z"),
+      transcriptCharBudget: 10_000,
+      logger,
+    }),
+  );
+  assert.equal(provider.requests.length, 0);
+});
 
 // 8. conversationHasUnencodedActivity drives the startup/restart-window encode.
-{
-  await withTempDir("sandi-pending-", async (tempRoot) => {
-    const memoryRoot = join(tempRoot, "memory");
+await withTempDir("sandi-pending-", async (tempRoot) => {
+  const memoryRoot = join(tempRoot, "memory");
 
-    // No recap yet: pending (covers the first run with dreaming enabled).
-    const manifest = manifestFor();
-    manifest.updatedAt = "2020-01-01T00:00:00.000Z";
-    assert.equal(
-      await conversationHasUnencodedActivity({ memoryRoot, manifest }),
-      true,
-    );
+  // No recap yet: pending (covers the first run with dreaming enabled).
+  const manifest = manifestFor();
+  manifest.updatedAt = "2020-01-01T00:00:00.000Z";
+  assert.equal(
+    await conversationHasUnencodedActivity({ memoryRoot, manifest }),
+    true,
+  );
 
-    // A recap written now is newer than that manifest update: not pending.
-    await writeEpisodicNote({
-      memoryRoot,
-      ref: NOTE_REF,
-      summary: "Recap",
-      body: "Recap body.",
-    });
-    assert.equal(
-      await conversationHasUnencodedActivity({ memoryRoot, manifest }),
-      false,
-    );
-
-    // A manifest updated after the newest recap is pending again.
-    const active = manifestFor();
-    active.updatedAt = "2999-01-01T00:00:00.000Z";
-    assert.equal(
-      await conversationHasUnencodedActivity({ memoryRoot, manifest: active }),
-      true,
-    );
-
-    // A conversation with no scope cannot host a recap, so it is never pending.
-    const noScope = manifestFor();
-    noScope.memoryScopes = [];
-    assert.equal(
-      await conversationHasUnencodedActivity({ memoryRoot, manifest: noScope }),
-      false,
-    );
+  // A recap written now is newer than that manifest update: not pending.
+  await writeEpisodicNote({
+    memoryRoot,
+    ref: NOTE_REF,
+    summary: "Recap",
+    body: "Recap body.",
   });
-}
+  assert.equal(
+    await conversationHasUnencodedActivity({ memoryRoot, manifest }),
+    false,
+  );
+
+  // A manifest updated after the newest recap is pending again.
+  const active = manifestFor();
+  active.updatedAt = "2999-01-01T00:00:00.000Z";
+  assert.equal(
+    await conversationHasUnencodedActivity({ memoryRoot, manifest: active }),
+    true,
+  );
+
+  // A conversation with no scope cannot host a recap, so it is never pending.
+  const noScope = manifestFor();
+  noScope.memoryScopes = [];
+  assert.equal(
+    await conversationHasUnencodedActivity({ memoryRoot, manifest: noScope }),
+    false,
+  );
+});
 
 logger.info("dreaming verification passed");
 console.log("dreaming verification passed");

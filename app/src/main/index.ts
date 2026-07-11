@@ -26,6 +26,7 @@ import {
   createIdleFidgetScheduler,
   type IdleFidgetScheduler,
 } from "./idle-fidget-scheduler";
+import { requireIpcOwner } from "./ipc-owner";
 import { ReplyAttachmentSchema } from "./ipc-schemas";
 import { createLinkManager } from "./link-manager";
 import { createPetWindow } from "./pet-window";
@@ -140,6 +141,7 @@ async function main(): Promise<void> {
   // Per-turn accumulation of streamed deltas and reply attachments, so the
   // transcript records the reconciled text even though the renderer also
   // renders it live.
+  const turnConversations = new Map<string, string>();
   const buffers = new Map<string, ResponseBuffer>();
   const replyAttachments = new Map<string, ReplyAttachment[]>();
   const bufferFor = (turnId: string): ResponseBuffer => {
@@ -215,6 +217,11 @@ async function main(): Promise<void> {
         sendToChat(IPC.linkStatus, status);
       },
       onResponseChunk: (chunk) => {
+        const conversationId = turnConversations.get(chunk.turnId);
+        // A late frame from a settled or unknown turn must not create a new
+        // buffer or be attributed to whichever conversation happens to be
+        // visible in the renderer.
+        if (conversationId === undefined) return;
         const accepted = bufferFor(chunk.turnId).accept(chunk);
         if (accepted) {
           setTurnPhase(
@@ -223,12 +230,15 @@ async function main(): Promise<void> {
           );
           sendToChat(IPC.turnDelta, {
             turnId: chunk.turnId,
+            conversationId,
             channel: accepted.channel,
             delta: accepted.delta,
           });
         }
       },
       onResponseAttachment: (attachment) => {
+        const conversationId = turnConversations.get(attachment.turnId);
+        if (conversationId === undefined) return;
         // The tool's contract allows desktop-relative paths; everything
         // app-side (transcript, sandi-asset rendering, save-as) requires
         // absolute, so resolve here against the same root the link's tools
@@ -263,6 +273,7 @@ async function main(): Promise<void> {
         replyAttachments.set(attachment.turnId, list);
         sendToChat(IPC.turnAttachment, {
           turnId: attachment.turnId,
+          conversationId,
           attachment: entry,
         });
       },
@@ -272,18 +283,28 @@ async function main(): Promise<void> {
   const turnManager = createTurnManager({
     sendTurn: createTurnPipeline({ staging }),
     events: {
-      onTurnStarted: ({ turnId }) => {
+      onTurnStarted: ({ conversationId, turnId }) => {
         wanderScheduler.interrupt();
         fidgetScheduler.interrupt();
+        turnConversations.set(turnId, conversationId);
         activeTurns.set(turnId, "waiting");
         refreshPetBackground();
       },
       onTurnSettled: (event) => {
-        persistSettled(event).catch((error: unknown) => {
-          // The turn itself settled; a failed transcript append loses history
-          // but must not crash the app or block the settle event.
-          console.error("failed to persist a settled turn", error);
-        });
+        turnConversations.delete(event.turnId);
+        // The renderer reloads successful turns from disk to pick up thinking
+        // and attachments. Publish settlement only after that append finishes
+        // so the reload cannot race ahead of the authoritative transcript.
+        void persistSettled(event)
+          .catch((error: unknown) => {
+            // The turn itself settled; a failed transcript append loses
+            // history but must not crash the app or hide the live outcome.
+            console.error("failed to persist a settled turn", error);
+          })
+          .then(() => sendToChat(IPC.turnSettled, event))
+          .catch((error: unknown) => {
+            console.error("failed to publish a settled turn", error);
+          });
         activeTurns.delete(event.turnId);
         pet.sendDisplayEvent({
           type: "one-shot",
@@ -295,7 +316,6 @@ async function main(): Promise<void> {
           pet.sendDisplayEvent({ type: "reply-alert", visible: true });
         }
         refreshPetBackground();
-        sendToChat(IPC.turnSettled, event);
       },
       onQueueState: (state) => sendToChat(IPC.queueState, state),
     },
@@ -351,16 +371,31 @@ async function main(): Promise<void> {
     onTitled: notifySessionsChanged,
   });
 
-  registerSessionHandlers({ store, onSessionsChanged: notifySessionsChanged });
-  registerTurnHandlers({ turnManager, store, staging, autoTitler });
-  registerAttachmentHandlers({ staging });
-  registerFileHandlers();
+  const ipcOwner = chat.window.webContents;
+  registerSessionHandlers({
+    owner: ipcOwner,
+    store,
+    onSessionsChanged: notifySessionsChanged,
+  });
+  registerTurnHandlers({
+    owner: ipcOwner,
+    turnManager,
+    store,
+    staging,
+    autoTitler,
+  });
+  registerAttachmentHandlers({ owner: ipcOwner, staging });
+  registerFileHandlers({ owner: ipcOwner });
   registerPairingHandlers({
+    owner: ipcOwner,
     onPaired: async () => {
       await link.restart();
     },
   });
-  ipcMain.handle(IPC.linkStatusGet, () => link.status());
+  ipcMain.handle(IPC.linkStatusGet, (event) => {
+    requireIpcOwner(event, ipcOwner);
+    return link.status();
+  });
 
   // Self-update: the installed app stages new releases in the background and
   // installs on quit (or from the tray); the portable exe can only point at

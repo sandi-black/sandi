@@ -1,8 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
+import { once } from "node:events";
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
-import type { IncomingMessage } from "node:http";
 import { join } from "node:path";
+import type { Readable, Writable } from "node:stream";
+import { finished } from "node:stream/promises";
 
 import { z } from "zod/v4";
 import { isMissingFileError } from "@/lib/fs-errors";
@@ -52,8 +54,21 @@ export type SupportedAttachmentMimeType = z.infer<
 // desktop save-as later rely on. Written with code-point checks rather than a
 // control-char regex literal so the source stays plain ASCII.
 export function isFilesystemSafeName(value: string): boolean {
+  if (Buffer.byteLength(value, "utf8") > 240) return false;
+  if (value.endsWith(".") || value.endsWith(" ")) return false;
+  const windowsStem = value.split(".")[0]?.toUpperCase();
+  if (
+    windowsStem === "CON" ||
+    windowsStem === "PRN" ||
+    windowsStem === "AUX" ||
+    windowsStem === "NUL" ||
+    /^COM[1-9]$/.test(windowsStem ?? "") ||
+    /^LPT[1-9]$/.test(windowsStem ?? "")
+  ) {
+    return false;
+  }
   for (const char of value) {
-    if (char === "/" || char === "\\") return false;
+    if ('/\\<>:"|?*'.includes(char)) return false;
     const code = char.charCodeAt(0);
     if (code <= 31 || code === 127) return false;
   }
@@ -117,14 +132,24 @@ export type AttachmentReadResult = {
   path: string;
 };
 
+type WriterOutcome = { ok: true } | { ok: false; error: unknown };
+
+type AttachmentStoreOptions = {
+  createWriter?: (path: string) => Writable;
+};
+
 // Blobs live at attachments/<first 2 hex chars>/<hash>, sharded by the hash's
 // own prefix so one directory never accumulates every blob the server has ever
 // seen. The sidecar `<hash>.json` sits alongside the blob it describes.
 export class AttachmentStore {
   readonly #root: string;
+  readonly #createWriter: (path: string) => Writable;
 
-  constructor(root: string) {
+  constructor(root: string, options: AttachmentStoreOptions = {}) {
     this.#root = root;
+    this.#createWriter =
+      options.createWriter ??
+      ((path) => createWriteStream(path, { flags: "wx" }));
   }
 
   // Streams a request body into the store, hashing as it goes. The upload lands
@@ -134,7 +159,7 @@ export class AttachmentStore {
   // the sidecar gains the uploader (and fills in name/mime if the stored ones
   // were never set), so re-uploading identical bytes never duplicates storage.
   async upload(input: {
-    body: IncomingMessage;
+    body: Readable;
     mimeType: string;
     name: string;
     identityId: string;
@@ -145,103 +170,126 @@ export class AttachmentStore {
     await mkdir(stagingDir, { recursive: true });
     const tempPath = join(stagingDir, `${randomBytes(16).toString("hex")}.tmp`);
 
-    const hash = createHash("sha256");
-    let size = 0;
-    let overCap = false;
-    const writeStream = createWriteStream(tempPath);
-
     try {
-      await new Promise<void>((resolveUpload, rejectUpload) => {
-        input.body.on("data", (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > cap) {
-            overCap = true;
-            // Stop pulling more of the body and let the caller answer 413; the
-            // write stream is torn down in the outer catch/finally.
-            input.body.pause();
-            input.body.removeAllListeners("data");
-            writeStream.destroy();
-            rejectUpload(new AttachmentTooLargeError());
-            return;
+      const hash = createHash("sha256");
+      let size = 0;
+      const writeStream = this.#createWriter(tempPath);
+      const writerOutcome: Promise<WriterOutcome> = finished(writeStream, {
+        cleanup: true,
+      }).then(
+        () => ({ ok: true }),
+        (error: unknown) => ({ ok: false, error }),
+      );
+      const bodyIterator = input.body.iterator({ destroyOnReturn: false });
+      try {
+        // `iterator({ destroyOnReturn: false })` lets the HTTP route send a 413
+        // before it drains and closes an oversized request. The ordinary
+        // Readable async iterator destroys the request socket when this loop
+        // throws, which would make that response unreachable.
+        while (true) {
+          const selected = await Promise.race([
+            bodyIterator
+              .next()
+              .then((value) => ({ kind: "body", value }) as const),
+            writerOutcome.then((value) => ({ kind: "writer", value }) as const),
+          ]);
+          if (selected.kind === "writer") {
+            throwWriterOutcome(selected.value);
           }
+          if (selected.value.done) break;
+
+          const value = selected.value.value;
+          const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+          size += chunk.length;
+          if (size > cap) throw new AttachmentTooLargeError();
           hash.update(chunk);
-          writeStream.write(chunk);
-        });
-        input.body.on("end", () => {
-          writeStream.end();
-        });
-        input.body.on("error", (error) => {
-          writeStream.destroy();
-          rejectUpload(error);
-        });
-        writeStream.on("finish", () => {
-          if (!overCap) resolveUpload();
-        });
-        writeStream.on("error", (error) => {
-          rejectUpload(error);
-        });
-      });
-    } catch (error) {
-      await rm(tempPath, { force: true });
-      throw error;
-    }
-
-    const digest = hash.digest("hex");
-    const blobPath = this.#blobPath(digest);
-    const metaPath = this.#metadataPath(digest);
-    await mkdir(this.#shardDir(digest), { recursive: true });
-
-    // Two identities (or two turns from the same identity) can upload identical
-    // bytes at once; each is a separate process, so the read-modify-write of the
-    // sidecar runs under the cross-process managed-write lock keyed by its own
-    // path, exactly like every other Sandi-managed state file. The blob rename
-    // itself is a plain filesystem atomic op and idempotent for identical
-    // content, so it does not need the lock.
-    return withManagedWrite(metaPath, async () => {
-      const existing = await this.#readMetadata(digest);
-      if (existing) {
-        // Dedup: the bytes are already stored, so discard the freshly uploaded
-        // temp copy and only extend the sidecar's ownership. But trust the
-        // disk, not the sidecar: a stale sidecar whose blob has gone missing
-        // would otherwise report success for a hash later reads fail on, so
-        // the fresh upload restores the blob instead of being discarded.
-        if (await blobIsPresent(blobPath)) {
-          await rm(tempPath, { force: true });
-        } else {
-          await rename(tempPath, blobPath);
+          if (!writeStream.write(chunk)) {
+            const ready = await Promise.race([
+              once(writeStream, "drain").then(
+                () => ({ kind: "drain" }) as const,
+              ),
+              writerOutcome.then(
+                (outcome) => ({ kind: "writer", outcome }) as const,
+              ),
+            ]);
+            if (ready.kind === "writer") throwWriterOutcome(ready.outcome);
+          }
         }
-        const merged: AttachmentMetadata = {
-          ...existing,
-          name: existing.name || input.name,
-          mimeType: existing.mimeType || input.mimeType,
-          ownerIdentityIds: addOwner(
-            existing.ownerIdentityIds,
-            input.identityId,
-          ),
-        };
-        await this.#writeMetadata(metaPath, merged);
-        return {
-          hash: digest,
-          size: existing.size,
-          mimeType: merged.mimeType,
-          name: merged.name,
-        };
+        writeStream.end();
+        const outcome = await writerOutcome;
+        if (!outcome.ok) throw outcome.error;
+      } catch (error) {
+        const iteratorReturn = bodyIterator.return?.();
+        void iteratorReturn?.catch(() => {});
+        writeStream.destroy();
+        await writerOutcome;
+        throw error;
       }
 
-      // Rename into place before writing the sidecar, so a reader can never see
-      // a metadata file whose blob is not yet present.
-      await rename(tempPath, blobPath);
-      const metadata: AttachmentMetadata = {
-        hash: digest,
-        size,
-        mimeType: input.mimeType,
-        name: input.name,
-        ownerIdentityIds: [input.identityId],
-        createdAt: new Date().toISOString(),
-      };
-      await this.#writeMetadata(metaPath, metadata);
-      return { hash: digest, size, mimeType: input.mimeType, name: input.name };
-    });
+      const digest = hash.digest("hex");
+      const blobPath = this.#blobPath(digest);
+      const metaPath = this.#metadataPath(digest);
+      await mkdir(this.#shardDir(digest), { recursive: true });
+
+      // Two identities (or two turns from the same identity) can upload identical
+      // bytes at once; each is a separate process, so the read-modify-write of the
+      // sidecar runs under the cross-process managed-write lock keyed by its own
+      // path, exactly like every other Sandi-managed state file. The blob rename
+      // itself is a plain filesystem atomic op and idempotent for identical
+      // content, so it does not need the lock.
+      return await withManagedWrite(metaPath, async () => {
+        const existing = await this.#readMetadata(digest);
+        if (existing) {
+          // Dedup: the bytes are already stored, so discard the freshly uploaded
+          // temp copy and only extend the sidecar's ownership. But trust the
+          // disk, not the sidecar: a stale sidecar whose blob has gone missing
+          // would otherwise report success for a hash later reads fail on, so
+          // the fresh upload restores the blob instead of being discarded.
+          if (await blobIsPresent(blobPath)) {
+            await rm(tempPath, { force: true });
+          } else {
+            await rename(tempPath, blobPath);
+          }
+          const merged: AttachmentMetadata = {
+            ...existing,
+            name: existing.name || input.name,
+            mimeType: existing.mimeType || input.mimeType,
+            ownerIdentityIds: addOwner(
+              existing.ownerIdentityIds,
+              input.identityId,
+            ),
+          };
+          await this.#writeMetadata(metaPath, merged);
+          return {
+            hash: digest,
+            size: existing.size,
+            mimeType: merged.mimeType,
+            name: merged.name,
+          };
+        }
+
+        // Rename into place before writing the sidecar, so a reader can never see
+        // a metadata file whose blob is not yet present.
+        await rename(tempPath, blobPath);
+        const metadata: AttachmentMetadata = {
+          hash: digest,
+          size,
+          mimeType: input.mimeType,
+          name: input.name,
+          ownerIdentityIds: [input.identityId],
+          createdAt: new Date().toISOString(),
+        };
+        await this.#writeMetadata(metaPath, metadata);
+        return {
+          hash: digest,
+          size,
+          mimeType: input.mimeType,
+          name: input.name,
+        };
+      });
+    } finally {
+      await rm(tempPath, { force: true });
+    }
   }
 
   // Reads a blob back, scoped to the requesting identity: an attachment that
@@ -255,7 +303,9 @@ export class AttachmentStore {
     const metadata = await this.#readMetadata(hash);
     if (!metadata) return undefined;
     if (!metadata.ownerIdentityIds.includes(identityId)) return undefined;
-    return { metadata, path: this.#blobPath(hash) };
+    const path = this.#blobPath(hash);
+    if (!(await blobIsPresent(path))) return undefined;
+    return { metadata, path };
   }
 
   #shardDir(hash: string): string {
@@ -289,6 +339,11 @@ export class AttachmentStore {
     // only needs the atomic temp-then-rename primitive, not the lock itself.
     await atomicWriteInPlace(path, `${JSON.stringify(metadata, null, 2)}\n`);
   }
+}
+
+function throwWriterOutcome(outcome: WriterOutcome): never {
+  if (!outcome.ok) throw outcome.error;
+  throw new Error("attachment staging writer closed before the upload ended");
 }
 
 async function blobIsPresent(blobPath: string): Promise<boolean> {

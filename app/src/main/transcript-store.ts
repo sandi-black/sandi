@@ -345,7 +345,7 @@ async function loadIndex(indexPath: string): Promise<SessionSummary[]> {
 // themselves are untouched, so the sessions' content survives even though
 // the sidebar starts empty.
 async function quarantineIndex(indexPath: string): Promise<SessionSummary[]> {
-  const backupPath = `${indexPath}.corrupt`;
+  const backupPath = `${indexPath}.corrupt-${randomUUID()}`;
   await rename(indexPath, backupPath);
   console.error(
     `transcript index was corrupt; moved it to ${backupPath} and starting empty`,

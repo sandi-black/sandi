@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFile, rm, stat } from "node:fs/promises";
+import { readdir, readFile, rm, stat } from "node:fs/promises";
 import {
   createServer,
   request as httpRequest,
@@ -7,8 +7,13 @@ import {
   type Server,
 } from "node:http";
 import { join } from "node:path";
+import { Readable, Writable } from "node:stream";
 
-import { AttachmentStore, AttachmentTooLargeError } from "./store";
+import {
+  AttachmentNameSchema,
+  AttachmentStore,
+  AttachmentTooLargeError,
+} from "./store";
 import { assertEqual, isRecord, withTempDir } from "@/lib/verification/harness";
 
 // Exercises the content-addressed store directly (hashing, dedup, identity
@@ -43,9 +48,11 @@ async function verifyAttachmentStore(): Promise<void> {
       await verifyIdentityScopedRead(store, port, uploads);
       await verifyDedup(store, port, uploads);
       await verifyDedupRestoresMissingBlob(store, root, port, uploads);
-      await verifySizeCapAborts(store, port, uploads);
+      await verifySizeCapAborts(store, root, port, uploads);
+      await verifyWriterFailureInterruptsSlowUpload(root);
       await verifyAtomicLayout(store, root, port, uploads);
       await verifyUnknownHashIsUndefined(store);
+      verifyPortableNames();
 
       console.log("attachment store verification passed");
     } finally {
@@ -261,6 +268,11 @@ async function verifyDedupRestoresMissingBlob(
   });
   const blobPath = join(root, first.hash.slice(0, 2), first.hash);
   await rm(blobPath, { force: true });
+  assertEqual(
+    await store.get(first.hash, "hopper"),
+    undefined,
+    "a sidecar whose blob vanished is treated as missing",
+  );
 
   const second = await uploadBytes(store, port, uploads, {
     bytes,
@@ -284,6 +296,7 @@ async function verifyDedupRestoresMissingBlob(
 
 async function verifySizeCapAborts(
   store: AttachmentStore,
+  root: string,
   port: number,
   uploads: { body: IncomingMessage; done: () => void }[],
 ): Promise<void> {
@@ -301,9 +314,87 @@ async function verifySizeCapAborts(
     threw = error instanceof AttachmentTooLargeError;
   }
   assertEqual(threw, true, "exceeding the cap throws AttachmentTooLargeError");
+  assertEqual(
+    (await readdir(join(root, "_staging"))).length,
+    0,
+    "a rejected upload leaves no staging file behind",
+  );
   console.log(
     "ok an upload over the size cap aborts with AttachmentTooLargeError",
   );
+}
+
+async function verifyWriterFailureInterruptsSlowUpload(
+  root: string,
+): Promise<void> {
+  const store = new AttachmentStore(join(root, "failing-writer"), {
+    createWriter: () =>
+      new Writable({
+        write(_chunk, _encoding, callback) {
+          setImmediate(() => callback(new Error("simulated staging failure")));
+        },
+      }),
+  });
+  let sent = false;
+  const body = new Readable({
+    read() {
+      if (sent) return;
+      sent = true;
+      this.push(Buffer.from("first chunk"));
+    },
+  });
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const upload = store.upload({
+      body,
+      mimeType: "application/octet-stream",
+      name: "disk-error.bin",
+      identityId: "grace",
+    });
+    const outcome = await Promise.race([
+      upload.then(
+        () => ({ kind: "resolved" }) as const,
+        (error: unknown) => ({ kind: "rejected", error }) as const,
+      ),
+      new Promise<{ kind: "timeout" }>((resolveTimeout) => {
+        deadline = setTimeout(() => resolveTimeout({ kind: "timeout" }), 1_000);
+      }),
+    ]);
+    assertEqual(
+      outcome.kind,
+      "rejected",
+      "a staging writer error rejects without waiting for the request body to end",
+    );
+    assertEqual(
+      outcome.kind === "rejected" && outcome.error instanceof Error
+        ? outcome.error.message
+        : undefined,
+      "simulated staging failure",
+      "the staging writer error is preserved",
+    );
+  } finally {
+    if (deadline) clearTimeout(deadline);
+    body.destroy();
+  }
+
+  console.log("ok staging write errors interrupt a slow upload safely");
+}
+
+function verifyPortableNames(): void {
+  for (const name of ["CON", "report?.txt", "trailing. ", "界".repeat(121)]) {
+    assertEqual(
+      AttachmentNameSchema.safeParse(name).success,
+      false,
+      `non-portable attachment name is rejected: ${name}`,
+    );
+  }
+  assertEqual(
+    AttachmentNameSchema.safeParse("Grace Hopper notes.txt").success,
+    true,
+    "a portable attachment name is accepted",
+  );
+  console.log("ok attachment names are portable across supported filesystems");
 }
 
 async function verifyAtomicLayout(

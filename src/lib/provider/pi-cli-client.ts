@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   access,
   mkdir,
+  open,
   readFile,
   rename,
   rm,
@@ -24,13 +25,21 @@ import {
   DELIVERY_SIDE_EFFECT_FILE_ENV,
   deliverySideEffectFileHasEntries,
 } from "@/lib/provider/side-effects";
-import { spawnCommandWithPipeStdin } from "@/lib/provider/spawn-command";
+import {
+  spawnCommandWithPipeStdin,
+  terminateCommandProcess,
+} from "@/lib/provider/spawn-command";
 import type { SandiSurfaceContext } from "@/lib/surface-context";
 import { isRecord } from "@/lib/type-guards";
 
 const log = createLogger("provider");
 const SYSTEM_PROMPT_FILE_NOTICE =
-  "The authoritative Sandi system instructions are appended from a content-addressed file. Follow the appended instructions exactly.";
+  "The authoritative Sandi system instructions are appended from a private turn-scoped file. Follow the appended instructions exactly.";
+const SESSION_HEADER_MAX_BYTES = 64 * 1024;
+const PI_STDOUT_MAX_BYTES = 16 * 1024 * 1024;
+const PI_STDERR_MAX_BYTES = 2 * 1024 * 1024;
+const COOPERATIVE_ABORT_GRACE_MS = 2_000;
+const TERMINATE_GRACE_MS = 3_000;
 
 // Coordinates for a per-turn loopback tool broker. When present, the turn's pi
 // child receives them in its environment and routes its proxy tool calls there.
@@ -229,12 +238,6 @@ export class PiCliClient implements ModelProviderClient {
       args.push("--extension", extensionPath);
     }
     await mkdir(this.#sessionDir, { recursive: true });
-    const systemPromptFile = await writeSystemPromptPayload(
-      this.#sessionDir,
-      request.instructions,
-    );
-    args.push("--system-prompt", SYSTEM_PROMPT_FILE_NOTICE);
-    args.push("--append-system-prompt", systemPromptFile);
     if (request.sessionMode === "none") {
       args.push("--no-session");
     } else {
@@ -286,12 +289,18 @@ export class PiCliClient implements ModelProviderClient {
     const deliverySideEffectFile = join(
       this.#sessionDir,
       "turn-side-effects",
-      `${safeSessionName(request.conversationId)}-${turnId}.jsonl`,
+      `${conversationFileKey(request.conversationId)}-${turnId}.jsonl`,
     );
     const stopFile = stopFilePath(this.#sessionDir, request.conversationId);
     await mkdir(dirname(deliverySideEffectFile), { recursive: true });
     await mkdir(dirname(stopFile), { recursive: true });
     await rm(stopFile, { force: true });
+    const systemPromptFile = await writeSystemPromptPayload(
+      this.#sessionDir,
+      request.instructions,
+    );
+    args.push("--system-prompt", SYSTEM_PROMPT_FILE_NOTICE);
+    args.push("--append-system-prompt", systemPromptFile);
 
     try {
       const result = await this.#run({
@@ -368,8 +377,11 @@ export class PiCliClient implements ModelProviderClient {
         },
       };
     } finally {
-      await rm(deliverySideEffectFile, { force: true });
-      await rm(stopFile, { force: true });
+      await cleanupTurnFiles([
+        deliverySideEffectFile,
+        stopFile,
+        systemPromptFile,
+      ]);
     }
   }
 
@@ -396,58 +408,143 @@ export class PiCliClient implements ModelProviderClient {
         // Close reports the real failure if the child exits before reading stdin.
       });
       child.stdin.end(stdin ?? "", "utf8");
-      const stdout: string[] = [];
-      const stderr: string[] = [];
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      let outputLimitError: string | undefined;
+      let settled = false;
       let timedOut = false;
       let aborted = false;
+      let terminateTimeout: ReturnType<typeof setTimeout> | undefined;
       let forceKillTimeout: ReturnType<typeof setTimeout> | undefined;
+      let terminating = false;
+      const terminateChild = (): void => {
+        if (terminating) return;
+        terminating = true;
+        terminateCommandProcess(child);
+        forceKillTimeout = setTimeout(() => {
+          terminateCommandProcess(child, true);
+        }, TERMINATE_GRACE_MS);
+      };
       const abortChild = (): void => {
         aborted = true;
         if (stopFile) {
-          void writeFile(stopFile, `${new Date().toISOString()}\n`, "utf8");
+          void writeFile(
+            stopFile,
+            `${new Date().toISOString()}\n`,
+            "utf8",
+          ).catch((error: unknown) => {
+            log.warn("failed to write provider stop sentinel", {
+              stopFile,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            terminateChild();
+          });
         }
-        forceKillTimeout = setTimeout(() => {
-          child.kill("SIGTERM");
-        }, 30_000);
+        terminateTimeout = setTimeout(
+          terminateChild,
+          COOPERATIVE_ABORT_GRACE_MS,
+        );
       };
       signal?.addEventListener("abort", abortChild, { once: true });
       const timeout = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
+        if (terminateTimeout) clearTimeout(terminateTimeout);
+        terminateChild();
       }, timeoutMs);
 
-      child.stdout.on("data", (chunk: Buffer) => {
-        stdout.push(chunk.toString("utf8"));
-      });
-      child.stderr.on("data", (chunk: Buffer) => {
-        stderr.push(chunk.toString("utf8"));
-      });
-      child.on("error", (error) => {
+      const cleanup = (): void => {
         clearTimeout(timeout);
+        if (terminateTimeout) clearTimeout(terminateTimeout);
         if (forceKillTimeout) clearTimeout(forceKillTimeout);
         signal?.removeEventListener("abort", abortChild);
-        resolve({
+      };
+
+      const finish = (result: CommandResult): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(result);
+      };
+
+      const collect = (
+        sink: Buffer[],
+        currentBytes: number,
+        limitBytes: number,
+        chunk: Buffer,
+        stream: "stdout" | "stderr",
+      ): number => {
+        const remaining = Math.max(0, limitBytes - currentBytes);
+        if (remaining > 0) sink.push(Buffer.from(chunk.subarray(0, remaining)));
+        if (chunk.length > remaining && outputLimitError === undefined) {
+          outputLimitError = `pi ${stream} exceeded the ${limitBytes} byte limit`;
+          terminateChild();
+        }
+        return currentBytes + Math.min(chunk.length, remaining);
+      };
+
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdoutBytes = collect(
+          stdout,
+          stdoutBytes,
+          PI_STDOUT_MAX_BYTES,
+          chunk,
+          "stdout",
+        );
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        stderrBytes = collect(
+          stderr,
+          stderrBytes,
+          PI_STDERR_MAX_BYTES,
+          chunk,
+          "stderr",
+        );
+      });
+      child.on("error", (error) => {
+        finish({
           ok: false,
           exitCode: null,
-          stdout: stdout.join(""),
-          stderr: aborted ? "aborted" : error.message,
+          stdout: Buffer.concat(stdout, stdoutBytes).toString("utf8"),
+          stderr: aborted ? "aborted" : (outputLimitError ?? error.message),
           timedOut,
           aborted,
         });
       });
       child.on("close", (exitCode) => {
-        clearTimeout(timeout);
-        if (forceKillTimeout) clearTimeout(forceKillTimeout);
-        signal?.removeEventListener("abort", abortChild);
-        resolve({
-          ok: exitCode === 0 && !aborted,
+        finish({
+          ok:
+            exitCode === 0 &&
+            !aborted &&
+            !timedOut &&
+            outputLimitError === undefined,
           exitCode,
-          stdout: stdout.join(""),
-          stderr: aborted ? "aborted" : stderr.join(""),
+          stdout: Buffer.concat(stdout, stdoutBytes).toString("utf8"),
+          stderr: aborted
+            ? "aborted"
+            : (outputLimitError ??
+              Buffer.concat(stderr, stderrBytes).toString("utf8")),
           timedOut,
           aborted,
         });
       });
+    });
+  }
+}
+
+async function cleanupTurnFiles(paths: readonly string[]): Promise<void> {
+  const results = await Promise.allSettled(
+    paths.map((path) => rm(path, { force: true })),
+  );
+  for (const [index, result] of results.entries()) {
+    if (result.status === "fulfilled") continue;
+    log.warn("failed to clean up provider turn file", {
+      path: paths[index] ?? "unknown",
+      error:
+        result.reason instanceof Error
+          ? result.reason.message
+          : String(result.reason),
     });
   }
 }
@@ -564,12 +661,12 @@ function firstMeaningfulLine(value: string): string | undefined {
     .find((line) => line.length > 0);
 }
 
-function safeSessionName(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_-]/g, "_");
+function conversationFileKey(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 function sessionPath(sessionDir: string, conversationId: string): string {
-  return join(sessionDir, `${safeSessionName(conversationId)}.jsonl`);
+  return join(sessionDir, `${conversationFileKey(conversationId)}.jsonl`);
 }
 
 /**
@@ -588,7 +685,7 @@ function stopFilePath(sessionDir: string, conversationId: string): string {
   return join(
     sessionDir,
     "turn-stops",
-    `${safeSessionName(conversationId)}.stop`,
+    `${conversationFileKey(conversationId)}.stop`,
   );
 }
 
@@ -596,10 +693,14 @@ async function writeSystemPromptPayload(
   sessionDir: string,
   instructions: string,
 ): Promise<string> {
-  const hash = createHash("sha256").update(instructions).digest("hex");
-  const path = join(sessionDir, "payloads", "system-prompt", `${hash}.txt`);
+  const path = join(
+    sessionDir,
+    "payloads",
+    "system-prompt",
+    `${randomUUID()}.txt`,
+  );
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, instructions, "utf8");
+  await writeFile(path, instructions, { encoding: "utf8", mode: 0o600 });
   return path;
 }
 
@@ -607,17 +708,8 @@ async function repairMissingSessionCwd(
   persistentSessionPath: string,
   currentCwd: string,
 ): Promise<void> {
-  let text: string;
-  try {
-    text = await readFile(persistentSessionPath, "utf8");
-  } catch (error) {
-    if (isMissingPathError(error)) return;
-    throw error;
-  }
-
-  const newlineIndex = text.indexOf("\n");
-  const firstLine = newlineIndex === -1 ? text : text.slice(0, newlineIndex);
-  const rest = newlineIndex === -1 ? "" : text.slice(newlineIndex);
+  const firstLine = await readSessionHeader(persistentSessionPath);
+  if (firstLine === undefined) return;
   let firstEntry: unknown;
   try {
     firstEntry = JSON.parse(firstLine);
@@ -631,6 +723,15 @@ async function repairMissingSessionCwd(
   if (await pathExists(storedCwd)) return;
   if (!(await pathExists(currentCwd))) return;
 
+  // Rewriting is rare and only happens for a missing stored cwd. Re-read the
+  // full session at that point, then confirm its header did not change between
+  // the bounded probe and this write.
+  const text = await readFile(persistentSessionPath, "utf8");
+  const newlineIndex = text.indexOf("\n");
+  const currentFirstLine =
+    newlineIndex === -1 ? text : text.slice(0, newlineIndex);
+  if (currentFirstLine !== firstLine) return;
+  const rest = newlineIndex === -1 ? "" : text.slice(newlineIndex);
   firstEntry["cwd"] = currentCwd;
   const tempPath = `${persistentSessionPath}.${process.pid}.tmp`;
   await writeFile(tempPath, `${JSON.stringify(firstEntry)}${rest}`, "utf8");
@@ -640,6 +741,36 @@ async function repairMissingSessionCwd(
     previousCwd: storedCwd,
     currentCwd,
   });
+}
+
+async function readSessionHeader(path: string): Promise<string | undefined> {
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(path, "r");
+  } catch (error) {
+    if (isMissingPathError(error)) return undefined;
+    throw error;
+  }
+  try {
+    const buffer = Buffer.alloc(SESSION_HEADER_MAX_BYTES);
+    const { bytesRead } = await handle.read(
+      buffer,
+      0,
+      SESSION_HEADER_MAX_BYTES,
+      0,
+    );
+    const content = buffer.subarray(0, bytesRead);
+    const newline = content.indexOf(10);
+    if (newline === -1 && bytesRead === SESSION_HEADER_MAX_BYTES) {
+      log.warn("persistent Pi session header exceeded repair limit", { path });
+      return undefined;
+    }
+    return content
+      .subarray(0, newline === -1 ? bytesRead : newline)
+      .toString("utf8");
+  } finally {
+    await handle.close();
+  }
 }
 
 async function pathExists(path: string): Promise<boolean> {

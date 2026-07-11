@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { createConnection } from "node:net";
 import { join } from "node:path";
 
 import { ContextCompiler } from "@/lib/context/context-compiler";
@@ -11,7 +13,13 @@ import type {
   ProviderTurnRequest,
   ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
-import { assertEqual, isRecord, withTempDir } from "@/lib/verification/harness";
+import { ThreadQueue } from "@/lib/turns/turn-queue";
+import {
+  assert,
+  assertEqual,
+  isRecord,
+  withTempDir,
+} from "@/lib/verification/harness";
 import { apiConversationStorageId } from "@/surfaces/api/api/conversations";
 import {
   ApiTokenStore,
@@ -23,6 +31,8 @@ import { ApiBot } from "@/surfaces/api/bot/api-bot";
 import type { ApiAppConfig } from "@/surfaces/api/config";
 import { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
 import { ToolBroker } from "@/surfaces/api/devices/tool-broker";
+import { readJsonBody } from "@/surfaces/api/http/read-json-body";
+import { sendJson } from "@/surfaces/api/http/respond";
 import { API_SURFACE_CONTEXT } from "@/surfaces/api/runtime/context";
 
 const RAW_TOKEN =
@@ -35,6 +45,8 @@ const DEVICE_ID = "device-1";
 const CONVERSATION_ID = "session-1";
 
 async function verifyApiBot(): Promise<void> {
+  await verifyQueuedWorkCanBeCanceled();
+  await verifyJsonBodyLimits();
   await withTempDir("sandi-api-bot-", async (dataDir) => {
     const provider = new RecordingProvider();
     const config = testConfig(dataDir);
@@ -74,13 +86,167 @@ async function verifyApiBot(): Promise<void> {
       await verifySecondTurnDoesNotDuplicateParticipant(base);
       await verifyManifestPersisted(dataDir);
       await verifyTokenRevocationAndEnrollment(dataDir);
-      await verifyDeviceRoutes(base);
+      await verifyDeviceRoutes(base, config, devices);
       await verifyPairing(base, config);
     } finally {
       bot.stop();
       devices.closeAll();
       broker.stop();
     }
+  });
+}
+
+async function verifyQueuedWorkCanBeCanceled(): Promise<void> {
+  const queue = new ThreadQueue();
+  let markActive: (() => void) | undefined;
+  let releaseActive: (() => void) | undefined;
+  const active = new Promise<void>((resolve) => {
+    markActive = resolve;
+  });
+  const release = new Promise<void>((resolve) => {
+    releaseActive = resolve;
+  });
+  queue.enqueue("conversation", "active", async () => {
+    markActive?.();
+    await release;
+  });
+  let canceledRan = false;
+  const waiting = queue.enqueue("conversation", "waiting", async () => {
+    canceledRan = true;
+  });
+  await active;
+  assert(waiting.cancel(), "a waiting queue entry can be canceled");
+
+  const drained = new Promise<void>((resolve) => {
+    queue.enqueue("conversation", "sentinel", async () => resolve());
+  });
+  releaseActive?.();
+  await drained;
+  assert(!canceledRan, "canceled queued work never starts");
+  console.log("ok disconnected callers can remove waiting queue work");
+}
+
+async function verifyJsonBodyLimits(): Promise<void> {
+  const server = createServer((request, response) => {
+    void readJsonBody(request, {
+      maxBytes: 16,
+      timeoutMs: 50,
+      response,
+    }).then((body) => {
+      sendJson(response, body.ok ? 200 : body.status, {
+        ok: body.ok,
+        ...(!body.ok ? { error: body.error } : {}),
+      });
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("body-limit verifier did not get a TCP address");
+    }
+    assertEqual(
+      await rawPartialRequestStatus(address.port, Buffer.from("{"), 100),
+      408,
+      "a slow partial JSON body receives a 408 before socket close",
+    );
+    assertEqual(
+      await rawPartialRequestStatus(
+        address.port,
+        Buffer.from("x".repeat(17)),
+        100,
+      ),
+      413,
+      "an incomplete oversized body receives a 413 and closes",
+    );
+    assertEqual(
+      await rawPartialRequestStatus(address.port, Buffer.from([0xff]), 1),
+      400,
+      "invalid UTF-8 JSON fails at the boundary",
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+  console.log("ok JSON body reads return bounded timeout and size failures");
+}
+
+function rawPartialRequestStatus(
+  port: number,
+  body: Buffer,
+  contentLength: number,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    const chunks: Buffer[] = [];
+    let settled = false;
+    const timer = setTimeout(() => {
+      finish(
+        new Error(
+          `timed out waiting for raw HTTP response: ${Buffer.concat(chunks).toString("latin1")}`,
+        ),
+      );
+    }, 2_000);
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      if (error) {
+        reject(error);
+        return;
+      }
+      const text = Buffer.concat(chunks).toString("latin1");
+      if (
+        body.length < contentLength &&
+        !/\r\nconnection: close\r\n/i.test(text)
+      ) {
+        reject(
+          new Error(`incomplete request response stayed reusable: ${text}`),
+        );
+        return;
+      }
+      const match = /^HTTP\/1\.1 (\d{3}) /.exec(text);
+      if (!match?.[1]) {
+        reject(new Error(`raw HTTP response had no status: ${text}`));
+        return;
+      }
+      resolve(Number(match[1]));
+    };
+    socket.on("connect", () => {
+      socket.write(
+        Buffer.concat([
+          Buffer.from(
+            `POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ${contentLength}\r\n\r\n`,
+            "ascii",
+          ),
+          body,
+        ]),
+      );
+    });
+    socket.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+      const response = Buffer.concat(chunks);
+      const headerEnd = response.indexOf("\r\n\r\n");
+      if (headerEnd < 0) return;
+      const headers = response.subarray(0, headerEnd).toString("latin1");
+      const lengthMatch = /\r\ncontent-length: (\d+)/i.exec(headers);
+      const length = Number(lengthMatch?.[1] ?? Number.NaN);
+      if (
+        Number.isFinite(length) &&
+        response.length >= headerEnd + 4 + length
+      ) {
+        finish();
+      }
+    });
+    socket.on("end", () => finish());
+    socket.on("close", () => finish());
+    socket.on("error", (error) => {
+      if (chunks.length > 0) finish();
+      else finish(error);
+    });
   });
 }
 
@@ -460,16 +626,76 @@ async function verifyTokenRevocationAndEnrollment(
   // Enroll: the freshly added token now authenticates.
   const enrolled = await store.verify(newToken);
   assertEqual(enrolled?.deviceId, "device-2", "newly enrolled token accepted");
+
+  let now = 0;
+  const failClosedStore = new ApiTokenStore(path, 5_000, () => now);
+  await failClosedStore.verify(newToken);
+  await writeFile(path, "{", "utf8");
+  now = 6_000;
+  assertEqual(
+    await tokenVerifyThrows(failClosedStore, newToken),
+    true,
+    "malformed token reload fails closed",
+  );
+  now = 6_001;
+  assertEqual(
+    await tokenVerifyThrows(failClosedStore, newToken),
+    true,
+    "failed token reload does not refresh the stale-cache TTL",
+  );
+
+  await writeFile(
+    path,
+    JSON.stringify({
+      version: 1,
+      tokens: [
+        {
+          tokenSha256: hashApiToken(liveToken),
+          identityId: IDENTITY_ID,
+          deviceId: DEVICE_ID,
+          label: "first",
+        },
+        {
+          tokenSha256: hashApiToken(liveToken),
+          identityId: "other-human",
+          deviceId: "other-device",
+          label: "duplicate",
+        },
+      ],
+    }),
+    "utf8",
+  );
+  assertEqual(
+    await tokenVerifyThrows(new ApiTokenStore(path, 0), liveToken),
+    true,
+    "duplicate token hashes fail closed instead of selecting array order",
+  );
   console.log(
     "ok token store honors revocation and enrollment without restart",
   );
+}
+
+async function tokenVerifyThrows(
+  store: ApiTokenStore,
+  token: string,
+): Promise<boolean> {
+  try {
+    await store.verify(token);
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 // Exercises the device link and result routes over HTTP: both require a valid
 // bearer token, the link opens an SSE stream, and a result for an unknown call
 // fails closed. The full dispatch round-trip (broker to device and back) is
 // covered at the unit level in verify-tool-broker.
-async function verifyDeviceRoutes(base: string): Promise<void> {
+async function verifyDeviceRoutes(
+  base: string,
+  config: ApiAppConfig,
+  devices: DeviceRegistry,
+): Promise<void> {
   const linkUrl = `${base}/v1/devices/link`;
   const resultUrl = `${base}/v1/devices/result`;
 
@@ -526,10 +752,44 @@ async function verifyDeviceRoutes(base: string): Promise<void> {
         console.error("device link: expected an initial ': linked' comment");
         process.exit(1);
       }
-      await reader.cancel();
+      await writeTokensFile(config.api.tokensPath, [
+        {
+          token: UNMAPPED_TOKEN,
+          identityId: UNMAPPED_IDENTITY_ID,
+          deviceId: DEVICE_ID,
+        },
+      ]);
+      const revokedRequest = await fetch(resultUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${RAW_TOKEN}`,
+        },
+        body: JSON.stringify({ id: "revoked", ok: true, output: "" }),
+      });
+      assertEqual(
+        revokedRequest.status,
+        401,
+        "a revoked token fails the next authentication check",
+      );
+      const closed = await reader.read();
+      assertEqual(closed.done, true, "revocation closes the existing SSE link");
+      assertEqual(
+        devices.keyForIdentity(IDENTITY_ID),
+        undefined,
+        "a revoked desktop cannot receive cross-surface work",
+      );
     }
   } finally {
     controller.abort();
+    await writeTokensFile(config.api.tokensPath, [
+      { token: RAW_TOKEN, identityId: IDENTITY_ID, deviceId: DEVICE_ID },
+      {
+        token: UNMAPPED_TOKEN,
+        identityId: UNMAPPED_IDENTITY_ID,
+        deviceId: DEVICE_ID,
+      },
+    ]);
   }
   console.log(
     "ok device routes require auth, open an SSE stream, and fail closed on unknown results",

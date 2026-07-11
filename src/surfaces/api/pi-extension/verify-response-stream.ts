@@ -1,6 +1,6 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 
-import { assertEqual } from "../../../lib/verification/harness";
+import { assertEqual, isRecord } from "../../../lib/verification/harness";
 import {
   classifyAssistantEvent,
   createChunkRelay,
@@ -129,7 +129,82 @@ async function verifyChunkRelay(): Promise<void> {
   await throwing.drain();
   assertEqual(throwing.stopped, true, "a transport error stops the stream");
 
-  console.log("ok createChunkRelay serializes, seqs, and stops on failure");
+  // While one POST is stalled, adjacent deltas on the same channel collapse
+  // into one bounded pending chunk instead of one retained promise per token.
+  const coalesced: unknown[] = [];
+  let releaseFirst: (() => void) | undefined;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const merging = createChunkRelay(target, async (_t, chunk) => {
+    coalesced.push(chunk);
+    if (coalesced.length === 1) await firstGate;
+    return 202;
+  });
+  merging.relay({ type: "delta", channel: "text", delta: "a" });
+  for (let index = 0; index < 10_000; index += 1) {
+    merging.relay({ type: "delta", channel: "text", delta: "b" });
+  }
+  assertEqual(
+    coalesced.length,
+    1,
+    "a stalled first POST leaves one in-flight send",
+  );
+  releaseFirst?.();
+  await merging.drain();
+  assertEqual(
+    coalesced.length,
+    2,
+    "ten thousand adjacent pending deltas coalesce into one follow-up POST",
+  );
+  assertEqual(
+    isRecord(coalesced[1]) && coalesced[1]["delta"],
+    "b".repeat(10_000),
+    "coalescing preserves every pending delta in order",
+  );
+  assertEqual(
+    isRecord(coalesced[1]) && coalesced[1]["seq"],
+    1,
+    "the coalesced chunk receives the next contiguous sequence number",
+  );
+
+  // Alternating channels cannot be coalesced. Once the fixed queue ceiling is
+  // reached, abandon live preview and retain nothing else; the final turn body
+  // remains authoritative.
+  const bounded: unknown[] = [];
+  let releaseBlocked: (() => void) | undefined;
+  const blockedGate = new Promise<void>((resolve) => {
+    releaseBlocked = resolve;
+  });
+  const overflowing = createChunkRelay(target, async (_t, chunk) => {
+    bounded.push(chunk);
+    if (bounded.length === 1) await blockedGate;
+    return 202;
+  });
+  overflowing.relay({ type: "delta", channel: "text", delta: "first" });
+  for (let index = 0; index < 100; index += 1) {
+    overflowing.relay({
+      type: "delta",
+      channel: index % 2 === 0 ? "text" : "thinking",
+      delta: "x",
+    });
+  }
+  assertEqual(
+    overflowing.stopped,
+    true,
+    "an uncoalescible stalled backlog stops at its fixed queue ceiling",
+  );
+  releaseBlocked?.();
+  await overflowing.drain();
+  assertEqual(
+    bounded.length,
+    1,
+    "no queued chunks remain after backlog overflow",
+  );
+
+  console.log(
+    "ok createChunkRelay serializes, coalesces, bounds backlog, seqs, and stops on failure",
+  );
 }
 
 function verifyClassify(): void {
@@ -229,6 +304,7 @@ async function verifyPostChunk(): Promise<void> {
   let lastAuth: string | undefined;
   let lastPath: string | undefined;
   let status = 202;
+  let responseMode: "complete" | "partial-close" | "oversized" = "complete";
   const server = createServer((request, response) => {
     lastAuth = request.headers.authorization;
     lastPath = request.url;
@@ -236,7 +312,19 @@ async function verifyPostChunk(): Promise<void> {
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
     request.on("end", () => {
       lastBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      respond(response, status, { ok: status === 202 });
+      if (responseMode === "partial-close") {
+        response.writeHead(status, { "content-length": "100" });
+        response.flushHeaders();
+        response.write("{");
+        setImmediate(() => response.destroy());
+      } else if (responseMode === "oversized") {
+        response.writeHead(status, {
+          "content-length": String(64 * 1024 + 1),
+        });
+        response.flushHeaders();
+      } else {
+        respond(response, status, { ok: status === 202 });
+      }
     });
   });
   const url = await listen(server);
@@ -262,7 +350,38 @@ async function verifyPostChunk(): Promise<void> {
     status = 503;
     const gone = await postChunk(target, chunk);
     assertEqual(gone, 503, "a vanished device surfaces as 503");
-    console.log("ok postChunk relays a delta and reports the broker status");
+
+    responseMode = "partial-close";
+    await assertThrows(
+      () =>
+        withDeadline(
+          postChunk(target, chunk),
+          "partial stream response did not settle",
+        ),
+      "before completion",
+      "a partial stream response rejects promptly",
+    );
+
+    responseMode = "oversized";
+    await assertThrows(
+      () => postChunk(target, chunk),
+      "exceeded 64 KiB",
+      "an oversized stream response is rejected from its declared length",
+    );
+
+    responseMode = "complete";
+    await assertThrows(
+      () =>
+        postChunk(target, {
+          type: "delta",
+          delta: "x".repeat(1024 * 1024),
+        }),
+      "exceeded 1 MiB",
+      "an oversized stream request is rejected before sending",
+    );
+    console.log(
+      "ok postChunk relays statuses and rejects partial or oversized traffic",
+    );
   } finally {
     server.close();
   }
@@ -293,6 +412,39 @@ function restoreEnv(key: string, value: string | undefined): void {
   } else {
     process.env[key] = value;
   }
+}
+
+async function assertThrows(
+  run: () => Promise<unknown>,
+  needle: string,
+  label: string,
+): Promise<void> {
+  try {
+    await run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes(needle)) return;
+    console.error(`${label}: error "${message}" did not include "${needle}"`);
+    process.exit(1);
+  }
+  console.error(`${label}: expected a throw but none happened`);
+  process.exit(1);
+}
+
+function withDeadline<T>(promise: Promise<T>, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), 2_000);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 await verifyResponseStream();

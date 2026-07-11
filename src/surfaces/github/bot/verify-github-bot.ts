@@ -16,7 +16,12 @@ import {
   type ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
 import { assertEqual, withTempDir } from "@/lib/verification/harness";
-import { GitHubBot, type GitHubBotApi } from "@/surfaces/github/bot/github-bot";
+import {
+  GitHubBot,
+  type GitHubBotApi,
+  type GitHubClaimLeaseRuntime,
+  type GitHubClaimLeaseScheduler,
+} from "@/surfaces/github/bot/github-bot";
 import type { GitHubAppConfig } from "@/surfaces/github/config";
 import type {
   GitHubNotification,
@@ -28,7 +33,11 @@ import type {
   PullRequest,
   ReviewComment,
 } from "@/surfaces/github/github/api";
-import { GitHubNotificationState } from "@/surfaces/github/github/state";
+import {
+  GitHubNotificationState,
+  type ProcessedTrigger,
+  type TriggerClaim,
+} from "@/surfaces/github/github/state";
 import { GITHUB_SURFACE_CONTEXT } from "@/surfaces/github/runtime/context";
 
 async function verifyProviderSideEffectFailureIsCheckpointed(): Promise<void> {
@@ -139,6 +148,149 @@ async function verifyUnmappedActorRunsWithoutDesktopHands(): Promise<void> {
   });
 }
 
+async function verifyUsernameCannotImpersonateMappedActor(): Promise<void> {
+  await withBotFixture(async ({ bot, state, api, config }) => {
+    await seedGitHubIdentity(config, {
+      identityId: "jess-human",
+      login: "jess",
+      id: "123",
+    });
+    api.notification = mentionNotification();
+    api.issueComment = issueComment(
+      "hey @sandi-witch please check this",
+      githubUser("jess", 999),
+    );
+    let leaseCalls = 0;
+    bot.desktopHands = {
+      leaseForIdentity(): DesktopHandsLease | undefined {
+        leaseCalls += 1;
+        return undefined;
+      },
+    };
+
+    await bot.instance.pollOnce();
+    await waitFor("username impersonation turn processed", () =>
+      state.hasProcessed("github:mention:issue-comment:9001"),
+    );
+    assertEqual(
+      leaseCalls,
+      0,
+      "a matching username with the wrong immutable id remains unmapped",
+    );
+  });
+}
+
+async function verifyClaimRenewalFailureRetriesPromptly(): Promise<void> {
+  await withBotFixture(async ({ bot, api, config }) => {
+    const scheduler = new ManualClaimLeaseScheduler();
+    const state = new ScriptedRenewalState(config.paths.dataDir, scheduler, [
+      "error",
+      "renewed",
+    ]);
+    const provider = new BlockingProvider(() => scheduler.now());
+    bot.state = state;
+    bot.claimLease = testClaimLeaseRuntime(scheduler);
+    bot.provider = provider;
+    api.notification = mentionNotification();
+    api.issueComment = issueComment("hey @sandi-witch please check this");
+
+    await bot.instance.pollOnce();
+    await provider.started.promise;
+
+    await scheduler.advanceBy(100);
+    assertEqual(state.renewalAttempts, 1, "first renewal attempt");
+    await scheduler.advanceBy(19);
+    assertEqual(state.renewalAttempts, 1, "a failed renewal does not spin");
+    await scheduler.advanceBy(1);
+    assertEqual(
+      state.renewalAttempts,
+      2,
+      "a failed renewal retries without waiting for the normal interval",
+    );
+
+    provider.complete("renewed");
+    await state.marked.promise;
+    await settleMicrotasks();
+    assertEqual(api.createdIssueComments.length, 1, "delivered comments");
+    assertEqual(scheduler.pendingCount(), 0, "claim timers after completion");
+  });
+}
+
+async function verifyRenewalFailuresAbortBeforeClaimExpiry(): Promise<void> {
+  await withBotFixture(async ({ bot, api, config }) => {
+    const scheduler = new ManualClaimLeaseScheduler();
+    const state = new ScriptedRenewalState(
+      config.paths.dataDir,
+      scheduler,
+      ["error"],
+      "error",
+    );
+    const provider = new BlockingProvider(() => scheduler.now());
+    bot.state = state;
+    bot.claimLease = {
+      scheduler,
+      staleMs: 1_000,
+      renewalMs: 100,
+      retryMs: 300,
+      expirySafetyMs: 100,
+    };
+    bot.provider = provider;
+    api.notification = mentionNotification();
+    api.issueComment = issueComment("hey @sandi-witch please check this");
+
+    await bot.instance.pollOnce();
+    await provider.started.promise;
+    await scheduler.advanceBy(899);
+    await provider.aborted.promise;
+    await state.released.promise;
+
+    const abortedAt = provider.abortedAt;
+    if (abortedAt === undefined) throw new Error("provider was not aborted");
+    assertEqual(abortedAt, 899, "provider abort time");
+    assertEqual(
+      abortedAt < 1_000,
+      true,
+      "provider aborts before the persisted claim can become stale",
+    );
+    assertEqual(
+      api.createdIssueComments.length,
+      0,
+      "comments after lease abort",
+    );
+    assertEqual(
+      await state.hasProcessed("github:mention:issue-comment:9001"),
+      false,
+      "aborted trigger checkpoint",
+    );
+    assertEqual(scheduler.pendingCount(), 0, "claim timers after lease abort");
+  });
+}
+
+async function verifyOwnershipLossStillAbortsImmediately(): Promise<void> {
+  await withBotFixture(async ({ bot, api, config }) => {
+    const scheduler = new ManualClaimLeaseScheduler();
+    const state = new ScriptedRenewalState(config.paths.dataDir, scheduler, [
+      "lost",
+    ]);
+    const provider = new BlockingProvider(() => scheduler.now());
+    bot.state = state;
+    bot.claimLease = testClaimLeaseRuntime(scheduler);
+    bot.provider = provider;
+    api.notification = mentionNotification();
+    api.issueComment = issueComment("hey @sandi-witch please check this");
+
+    await bot.instance.pollOnce();
+    await provider.started.promise;
+    await scheduler.advanceBy(100);
+    await provider.aborted.promise;
+    await state.released.promise;
+
+    assertEqual(provider.abortedAt, 100, "ownership-loss abort time");
+    assertEqual(api.createdIssueComments.length, 0, "ownership-loss comments");
+    assertEqual(scheduler.pendingCount(), 0, "ownership-loss timers");
+  });
+}
+
 async function seedGitHubIdentity(
   config: GitHubAppConfig,
   input: { identityId: string; login: string; id: string },
@@ -193,6 +345,8 @@ async function withBotFixture(
     const fixture: MutableBotFixture = {
       provider: providerReturningText("ok"),
       desktopHands: undefined,
+      state,
+      claimLease: undefined,
       get instance() {
         return new GitHubBot({
           config,
@@ -204,8 +358,9 @@ async function withBotFixture(
             GITHUB_SURFACE_CONTEXT,
           ),
           provider: this.provider,
-          state,
+          state: this.state,
           ...(this.desktopHands ? { desktopHands: this.desktopHands } : {}),
+          ...(this.claimLease ? { claimLease: this.claimLease } : {}),
         });
       },
     };
@@ -216,8 +371,198 @@ async function withBotFixture(
 type MutableBotFixture = {
   provider: ModelProviderClient;
   desktopHands: DesktopHands | undefined;
+  state: GitHubNotificationState;
+  claimLease: GitHubClaimLeaseRuntime | undefined;
   readonly instance: GitHubBot;
 };
+
+type RenewalOutcome = "error" | "renewed" | "lost";
+
+class ScriptedRenewalState extends GitHubNotificationState {
+  readonly marked = new AsyncSignal();
+  readonly released = new AsyncSignal();
+  readonly #outcomes: RenewalOutcome[];
+  readonly #fallback: RenewalOutcome;
+  renewalAttempts = 0;
+
+  constructor(
+    dataDir: string,
+    scheduler: GitHubClaimLeaseScheduler,
+    outcomes: RenewalOutcome[],
+    fallback: RenewalOutcome = "renewed",
+  ) {
+    super(dataDir, () => scheduler.now());
+    this.#outcomes = [...outcomes];
+    this.#fallback = fallback;
+  }
+
+  override async renewClaim(_claim: TriggerClaim): Promise<boolean> {
+    this.renewalAttempts += 1;
+    const outcome = this.#outcomes.shift() ?? this.#fallback;
+    if (outcome === "error") {
+      throw new Error("simulated renewal I/O failure");
+    }
+    return outcome === "renewed";
+  }
+
+  override async markProcessed(
+    input: Omit<ProcessedTrigger, "processedAt">,
+    claim?: TriggerClaim,
+  ): Promise<boolean> {
+    const marked = await super.markProcessed(input, claim);
+    this.marked.resolve();
+    return marked;
+  }
+
+  override async releaseClaim(claim: TriggerClaim): Promise<boolean> {
+    const released = await super.releaseClaim(claim);
+    this.released.resolve();
+    return released;
+  }
+}
+
+type ManualScheduledTask = {
+  id: number;
+  dueAt: number;
+  task: () => Promise<void>;
+  canceled: boolean;
+};
+
+class ManualClaimLeaseScheduler implements GitHubClaimLeaseScheduler {
+  readonly #tasks: ManualScheduledTask[] = [];
+  #now = 0;
+  #nextId = 1;
+
+  now(): number {
+    return this.#now;
+  }
+
+  schedule(delayMs: number, task: () => Promise<void>): { cancel(): void } {
+    const scheduled: ManualScheduledTask = {
+      id: this.#nextId,
+      dueAt: this.#now + delayMs,
+      task,
+      canceled: false,
+    };
+    this.#nextId += 1;
+    this.#tasks.push(scheduled);
+    return {
+      cancel: () => {
+        scheduled.canceled = true;
+      },
+    };
+  }
+
+  async advanceBy(delayMs: number): Promise<void> {
+    const target = this.#now + delayMs;
+    while (true) {
+      const next = this.#nextDueTask(target);
+      if (!next) break;
+      next.canceled = true;
+      this.#now = next.dueAt;
+      await next.task();
+    }
+    this.#now = target;
+  }
+
+  pendingCount(): number {
+    return this.#tasks.filter((task) => !task.canceled).length;
+  }
+
+  #nextDueTask(target: number): ManualScheduledTask | undefined {
+    let next: ManualScheduledTask | undefined;
+    for (const task of this.#tasks) {
+      if (task.canceled || task.dueAt > target) continue;
+      if (
+        !next ||
+        task.dueAt < next.dueAt ||
+        (task.dueAt === next.dueAt && task.id < next.id)
+      ) {
+        next = task;
+      }
+    }
+    return next;
+  }
+}
+
+class AsyncSignal {
+  readonly promise: Promise<void>;
+  #resolve: (() => void) | undefined;
+
+  constructor() {
+    this.promise = new Promise((resolve) => {
+      this.#resolve = () => resolve();
+    });
+  }
+
+  resolve(): void {
+    const resolve = this.#resolve;
+    if (!resolve) return;
+    this.#resolve = undefined;
+    resolve();
+  }
+}
+
+class BlockingProvider implements ModelProviderClient {
+  readonly started = new AsyncSignal();
+  readonly aborted = new AsyncSignal();
+  readonly #now: () => number;
+  #complete: ((text: string) => void) | undefined;
+  abortedAt: number | undefined;
+
+  constructor(now: () => number) {
+    this.#now = now;
+  }
+
+  async probe(): Promise<ProviderProbe> {
+    return passingProbe();
+  }
+
+  generateTurn(request: ProviderTurnRequest): Promise<ProviderTurnResponse> {
+    const signal = request.signal;
+    if (!signal) {
+      return Promise.reject(new Error("expected provider abort signal"));
+    }
+    this.started.resolve();
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        this.#complete = undefined;
+        this.abortedAt = this.#now();
+        this.aborted.resolve();
+        reject(
+          signal.reason instanceof Error
+            ? signal.reason
+            : new Error("provider aborted"),
+        );
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.#complete = (text) => {
+        signal.removeEventListener("abort", onAbort);
+        this.#complete = undefined;
+        resolve({ text, deliverySideEffects: false, raw: null });
+      };
+      if (signal.aborted) onAbort();
+    });
+  }
+
+  complete(text: string): void {
+    const complete = this.#complete;
+    if (!complete) throw new Error("provider turn is not active");
+    complete(text);
+  }
+}
+
+function testClaimLeaseRuntime(
+  scheduler: GitHubClaimLeaseScheduler,
+): GitHubClaimLeaseRuntime {
+  return {
+    scheduler,
+    staleMs: 1_000,
+    renewalMs: 100,
+    retryMs: 20,
+    expirySafetyMs: 100,
+  };
+}
 
 class FakeGitHubApi implements GitHubBotApi {
   notification: GitHubNotification | undefined;
@@ -451,6 +796,10 @@ await verifyProviderSideEffectFailureIsCheckpointed();
 await verifyPartialAutoDeliveryIsCheckpointed();
 await verifyMappedActorLeasesDesktopHands();
 await verifyUnmappedActorRunsWithoutDesktopHands();
+await verifyUsernameCannotImpersonateMappedActor();
+await verifyClaimRenewalFailureRetriesPromptly();
+await verifyRenewalFailuresAbortBeforeClaimExpiry();
+await verifyOwnershipLossStillAbortsImmediately();
 
 console.log("GitHub bot verification passed");
 
@@ -469,4 +818,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => {
     setTimeout(resolveSleep, ms);
   });
+}
+
+async function settleMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }

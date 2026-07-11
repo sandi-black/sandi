@@ -4,6 +4,10 @@ import {
   listWindows,
   screenshot,
 } from "@/surfaces/api/client/desktop-state";
+import {
+  DeviceImageSchema,
+  LocalScreenshotParamsSchema,
+} from "@/surfaces/api/devices/protocol";
 
 // The desktop state tools are Windows-only and reach the real display, so this
 // check is platform-aware: on Windows it exercises the live enumeration and
@@ -11,12 +15,57 @@ import {
 // message rather than guessing at a capture.
 
 async function verifyDesktopState(): Promise<void> {
+  verifyImageBoundary();
   if (process.platform === "win32") {
     await verifyOnWindows();
   } else {
     await verifyOnOtherPlatform();
   }
   console.log("desktop state verification passed");
+}
+
+function verifyImageBoundary(): void {
+  assert(
+    !LocalScreenshotParamsSchema.safeParse({ monitor: "0", window: "42" })
+      .success,
+    "the wire schema rejects mutually exclusive screenshot targets",
+  );
+
+  const pngBytes = Buffer.alloc(4_500_000);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(pngBytes);
+  const large = pngBytes.toString("base64");
+  assertEqual(
+    large.length,
+    6_000_000,
+    "large fixture exercises the body limit",
+  );
+  assert(
+    DeviceImageSchema.safeParse({ mimeType: "image/png", dataBase64: large })
+      .success,
+    "multi-megabyte image validation stays stack-safe",
+  );
+  assert(
+    !DeviceImageSchema.safeParse({
+      mimeType: "image/png",
+      dataBase64: `${large.slice(0, -1)}!`,
+    }).success,
+    "invalid large base64 returns a validation failure",
+  );
+  assert(
+    !DeviceImageSchema.safeParse({
+      mimeType: "image/png",
+      dataBase64: "iVBORw0KGgp=",
+    }).success,
+    "noncanonical base64 pad bits are rejected",
+  );
+  assert(
+    !DeviceImageSchema.safeParse({
+      mimeType: "image/png",
+      dataBase64: "iVBORw==",
+    }).success,
+    "a truncated PNG signature is rejected",
+  );
+  console.log("ok image protocol validation is linear, canonical, and precise");
 }
 
 async function verifyOnOtherPlatform(): Promise<void> {

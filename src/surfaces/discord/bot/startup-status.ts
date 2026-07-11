@@ -23,6 +23,9 @@ import {
 import type { DiscordConfig } from "@/surfaces/discord/config";
 
 const log = createLogger("startup-status");
+const GIT_PROBE_TIMEOUT_MS = 3_000;
+const GIT_PROBE_MAX_OUTPUT_BYTES = 16 * 1024;
+const GIT_STATUS_PROBE_BYTES = 256;
 
 export async function postStartupStatus(
   client: Client,
@@ -79,7 +82,7 @@ function asStatusChannel(channel: Channel | null): TextChannel | undefined {
 
 async function startupStatusMessage(): Promise<string> {
   const gitStatus = await readGitStatus();
-  return `🧹 Sandi restarted — ${formatGitStatus(gitStatus)}`;
+  return `🧹 Sandi restarted: ${formatGitStatus(gitStatus)}`;
 }
 
 export async function botStatusMessage(input: {
@@ -95,7 +98,7 @@ export async function botStatusMessage(input: {
   const gitStatus = await readGitStatus();
   const accounts = statusAccounts(input.accounts);
   const usage = await readOpenAIUsageLimits(accounts);
-  const lines = [`🧹 Sandi status — ${formatGitStatus(gitStatus)}`];
+  const lines = [`🧹 Sandi status: ${formatGitStatus(gitStatus)}`];
   lines.push(`Queue: ${formatQueueStatus(input)}`);
   lines.push(`Runtime: ${formatRuntimeStatus()}`);
   lines.push(`Pi: ${formatPiStatus(input)}`);
@@ -119,7 +122,7 @@ export async function botStatusMessage(input: {
 type GitStatus = {
   branch: string;
   shortSha: string;
-  cleanState: "clean" | "dirty";
+  cleanState: "clean" | "dirty" | "unknown";
 };
 
 function formatGitStatus(status: GitStatus): string {
@@ -182,40 +185,115 @@ function formatShortNumber(value: number): string {
 }
 
 async function readGitStatus(): Promise<GitStatus> {
-  const shortSha = (await git(["rev-parse", "--short", "HEAD"])) || "unknown";
+  const [shortShaResult, branchResult, fallbackBranchResult, statusResult] =
+    await Promise.all([
+      git(["rev-parse", "--short", "HEAD"]),
+      git(["branch", "--show-current"]),
+      git(["rev-parse", "--abbrev-ref", "HEAD"]),
+      git(["status", "--porcelain"], GIT_STATUS_PROBE_BYTES),
+    ]);
+  const shortSha = successfulOutput(shortShaResult) || "unknown";
   const branch =
-    (await git(["branch", "--show-current"])) ||
-    (await git(["rev-parse", "--abbrev-ref", "HEAD"])) ||
+    successfulOutput(branchResult) ||
+    successfulOutput(fallbackBranchResult) ||
     "unknown";
-  const porcelain = await git(["status", "--porcelain"]);
+  const cleanState = statusResult.output
+    ? "dirty"
+    : statusResult.succeeded
+      ? "clean"
+      : "unknown";
 
   return {
     branch,
     shortSha,
-    cleanState: porcelain.length === 0 ? "clean" : "dirty",
+    cleanState,
   };
 }
 
-function git(args: readonly string[]): Promise<string> {
+function successfulOutput(result: BoundedCommandResult): string {
+  return result.succeeded ? result.output : "";
+}
+
+function git(
+  args: readonly string[],
+  maxOutputBytes = GIT_PROBE_MAX_OUTPUT_BYTES,
+): Promise<BoundedCommandResult> {
+  return runBoundedCommand("git", args, {
+    cwd: process.cwd(),
+    timeoutMs: GIT_PROBE_TIMEOUT_MS,
+    maxOutputBytes,
+  });
+}
+
+export type BoundedCommandResult = {
+  output: string;
+  succeeded: boolean;
+};
+
+export function runBoundedCommand(
+  executable: string,
+  args: readonly string[],
+  options: {
+    cwd?: string;
+    timeoutMs: number;
+    maxOutputBytes: number;
+  },
+): Promise<BoundedCommandResult> {
+  if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0) {
+    throw new Error("Command timeout must be a positive integer.");
+  }
+  if (
+    !Number.isSafeInteger(options.maxOutputBytes) ||
+    options.maxOutputBytes <= 0
+  ) {
+    throw new Error("Command output limit must be a positive integer.");
+  }
+
   return new Promise((resolve) => {
-    const child = spawn("git", args, {
-      cwd: process.cwd(),
+    const child = spawn(executable, args, {
+      cwd: options.cwd,
       stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
     });
 
     const chunks: Buffer[] = [];
+    let outputBytes = 0;
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+
+    const finish = (succeeded: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      resolve({
+        output: Buffer.concat(chunks, outputBytes).toString("utf8").trim(),
+        succeeded,
+      });
+    };
+
     child.stdout.on("data", (chunk: Buffer) => {
-      chunks.push(chunk);
+      if (settled) return;
+      const remaining = options.maxOutputBytes - outputBytes;
+      if (remaining > 0) {
+        const kept = chunk.subarray(0, remaining);
+        chunks.push(kept);
+        outputBytes += kept.byteLength;
+      }
+      if (chunk.byteLength > remaining) {
+        finish(false);
+        child.kill("SIGKILL");
+      }
     });
     child.on("error", () => {
-      resolve("");
+      finish(false);
     });
     child.on("close", (code) => {
-      if (code !== 0) {
-        resolve("");
-        return;
-      }
-      resolve(Buffer.concat(chunks).toString("utf8").trim());
+      finish(code === 0);
     });
+    timeout = setTimeout(() => {
+      finish(false);
+      child.kill("SIGKILL");
+    }, options.timeoutMs);
+    timeout.unref();
   });
 }

@@ -60,6 +60,9 @@ export class JsonFileStore<T> {
     return withManagedWrite(this.#path, async () => {
       const current = await this.read(defaultValue);
       const next = await mutator(current);
+      // Returning the current object is the mutator's no-change result. Avoid
+      // rewriting shared state for duplicate notifications and empty drains.
+      if (next === current) return current;
       const parsed = this.#schema.parse(next);
       await this.#writeParsed(parsed);
       return parsed;

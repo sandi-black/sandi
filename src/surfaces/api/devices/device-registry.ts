@@ -27,6 +27,7 @@ const DISPATCH_BACKSTOP_MS = 10 * 60_000;
 // and surfaces a half-open socket: once the peer is gone the write throws and the
 // connection is torn down.
 const HEARTBEAT_MS = 30_000;
+const MAX_PENDING_CALLS_PER_DEVICE = 16;
 
 export class DeviceUnavailableError extends Error {
   constructor() {
@@ -51,13 +52,14 @@ type ConnectionState = {
   key: string;
   deviceId: string;
   identityId: string;
-  // Returns Node's write backpressure signal: false when the socket buffer is
-  // full. Tool calls and cancels ignore it (they are infrequent and must not be
-  // dropped); the response stream uses it to shed load.
   write: (chunk: string) => boolean;
   end: () => void;
+  isAuthorized?: () => Promise<boolean>;
+  removeDrainListener?: () => void;
   pending: Map<string, PendingCall>;
   heartbeat: ReturnType<typeof setInterval>;
+  backpressured: boolean;
+  authorization: Promise<boolean> | undefined;
   closed: boolean;
 };
 
@@ -80,6 +82,9 @@ export class DeviceRegistry {
     identityId: string;
     write: (chunk: string) => boolean;
     end: () => void;
+    onDrain?: (listener: () => void) => () => void;
+    initialBackpressured?: boolean;
+    isAuthorized?: () => Promise<boolean>;
   }): DeviceConnectionHandle {
     const existing = this.#connections.get(input.key);
     if (existing) {
@@ -92,12 +97,20 @@ export class DeviceRegistry {
       identityId: input.identityId,
       write: input.write,
       end: input.end,
+      ...(input.isAuthorized ? { isAuthorized: input.isAuthorized } : {}),
       pending: new Map(),
       heartbeat: setInterval(() => {
-        this.#heartbeat(state);
+        void this.#heartbeat(state);
       }, HEARTBEAT_MS),
+      backpressured: input.initialBackpressured ?? false,
+      authorization: undefined,
       closed: false,
     };
+    if (input.onDrain) {
+      state.removeDrainListener = input.onDrain(() => {
+        state.backpressured = false;
+      });
+    }
     this.#connections.set(input.key, state);
     log.info("device link connected", {
       deviceId: input.deviceId,
@@ -158,18 +171,48 @@ export class DeviceRegistry {
     return desktops;
   }
 
+  retainAuthorizedTokens(
+    entries: readonly {
+      tokenSha256: string;
+      identityId: string;
+      deviceId: string;
+    }[],
+  ): void {
+    for (const state of [...this.#connections.values()]) {
+      const authorized = entries.some(
+        (entry) =>
+          entry.tokenSha256 === state.key &&
+          entry.identityId === state.identityId &&
+          entry.deviceId === state.deviceId,
+      );
+      if (!authorized) this.#teardown(state, "device token revoked");
+    }
+  }
+
   // Pushes a tool call to the keyed device's stream and resolves with the
   // outcome the device POSTs back. Rejects with DeviceUnavailableError if no link
   // is present or the stream is dead, and rejects if the turn aborts or the
   // backstop fires.
-  dispatch(input: {
+  async dispatch(input: {
     key: string;
     call: BrokerCall;
     signal?: AbortSignal;
   }): Promise<ToolCallOutcome> {
     const state = this.#connections.get(input.key);
     if (!state || state.closed) {
-      return Promise.reject(new DeviceUnavailableError());
+      throw new DeviceUnavailableError();
+    }
+    if (!(await this.#authorized(state))) {
+      this.#teardown(state, "device token no longer authorized");
+      throw new DeviceUnavailableError();
+    }
+    if (
+      state.closed ||
+      this.#connections.get(input.key) !== state ||
+      state.backpressured ||
+      state.pending.size >= MAX_PENDING_CALLS_PER_DEVICE
+    ) {
+      throw new DeviceUnavailableError();
     }
 
     return new Promise<ToolCallOutcome>((resolve, reject) => {
@@ -211,9 +254,8 @@ export class DeviceRegistry {
 
       const dispatch: ToolDispatch = { id, ...input.call };
       try {
-        state.write(
-          `event: ${TOOL_CALL_EVENT}\ndata: ${JSON.stringify(dispatch)}\n\n`,
-        );
+        const accepted = this.#writeEvent(state, TOOL_CALL_EVENT, dispatch);
+        if (!accepted) throw new DeviceUnavailableError();
       } catch {
         state.pending.delete(id);
         clearTimeout(timer);
@@ -258,14 +300,7 @@ export class DeviceRegistry {
   ): boolean {
     const state = this.#connections.get(key);
     if (!state || state.closed) return false;
-    try {
-      return state.write(
-        `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`,
-      );
-    } catch {
-      this.#teardown(state, "device link write failed");
-      return false;
-    }
+    return this.#writeEvent(state, event, payload);
   }
 
   // Resolves the pending call named by the result. Returns false when the key or
@@ -301,21 +336,62 @@ export class DeviceRegistry {
   #cancel(state: ConnectionState, id: string): void {
     if (state.closed) return;
     const cancel: ToolCancel = { id };
-    try {
-      state.write(
-        `event: ${TOOL_CANCEL_EVENT}\ndata: ${JSON.stringify(cancel)}\n\n`,
-      );
-    } catch {
-      this.#teardown(state, "device link write failed");
+    if (!this.#writeEvent(state, TOOL_CANCEL_EVENT, cancel)) {
+      // Closing the link aborts the desktop's connection-scoped controller. It
+      // is the only reliable cancellation channel once a slow socket is full.
+      this.#teardown(state, "unable to deliver tool cancellation");
     }
   }
 
-  #heartbeat(state: ConnectionState): void {
+  async #heartbeat(state: ConnectionState): Promise<void> {
     if (state.closed) return;
+    if (!(await this.#authorized(state))) {
+      this.#teardown(state, "device token no longer authorized");
+      return;
+    }
+    if (state.backpressured) {
+      this.#teardown(state, "device link remained backpressured");
+      return;
+    }
     try {
-      state.write(": ping\n\n");
+      if (!state.write(": ping\n\n")) state.backpressured = true;
     } catch {
       this.#teardown(state, "heartbeat write failed");
+    }
+  }
+
+  async #authorized(state: ConnectionState): Promise<boolean> {
+    if (!state.isAuthorized) return true;
+    if (state.authorization) return state.authorization;
+    const authorization = state.isAuthorized().catch(() => false);
+    state.authorization = authorization;
+    try {
+      return await authorization;
+    } finally {
+      if (state.authorization === authorization) {
+        state.authorization = undefined;
+      }
+    }
+  }
+
+  #writeEvent(
+    state: ConnectionState,
+    event: string,
+    payload: ToolDispatch | ToolCancel | ResponseChunk | ResponseAttachment,
+  ): boolean {
+    if (state.closed || state.backpressured) return false;
+    try {
+      const writable = state.write(
+        `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`,
+      );
+      // A false return means this event was accepted into Node's buffer. Mark
+      // the link blocked for subsequent writes, but report this event accepted
+      // so callers never retry a side effect or attachment that will arrive.
+      if (!writable) state.backpressured = true;
+      return true;
+    } catch {
+      this.#teardown(state, "device link write failed");
+      return false;
     }
   }
 
@@ -323,6 +399,7 @@ export class DeviceRegistry {
     if (state.closed) return;
     state.closed = true;
     clearInterval(state.heartbeat);
+    state.removeDrainListener?.();
     if (this.#connections.get(state.key) === state) {
       this.#connections.delete(state.key);
     }

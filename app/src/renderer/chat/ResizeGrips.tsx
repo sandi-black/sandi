@@ -14,7 +14,6 @@ export function ResizeGrips(): JSX.Element {
   return (
     <>
       {EDGES.map((edge) => (
-        // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only resize grips, no keyboard equivalent by design
         <div
           key={edge}
           className={`resize-grip ${edge}`}

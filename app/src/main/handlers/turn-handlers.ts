@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
 
 import { IPC } from "@shared/ipc-contract";
-import { ipcMain } from "electron";
+import { ipcMain, type WebContents } from "electron";
 
 import type { AttachmentStaging } from "../attachment-staging";
 import type { AutoTitler } from "../auto-titler";
-import { SubmitTurnSchema, TurnIdSchema } from "../ipc-schemas";
+import { requireIpcOwner } from "../ipc-owner";
+import {
+  ConversationIdSchema,
+  SubmitTurnSchema,
+  TurnIdSchema,
+} from "../ipc-schemas";
 import type { TranscriptStore } from "../transcript-store";
 import type { TurnManager } from "../turn-manager";
 
@@ -14,6 +19,7 @@ import type { TurnManager } from "../turn-manager";
 // the queue; the assistant's side lands when the turn settles.
 
 export function registerTurnHandlers(input: {
+  owner: WebContents;
   turnManager: TurnManager;
   store: TranscriptStore;
   staging: AttachmentStaging;
@@ -21,7 +27,8 @@ export function registerTurnHandlers(input: {
 }): void {
   const { turnManager, store, staging, autoTitler } = input;
 
-  ipcMain.handle(IPC.turnSubmit, async (_event, payload: unknown) => {
+  ipcMain.handle(IPC.turnSubmit, async (event, payload: unknown) => {
+    requireIpcOwner(event, input.owner);
     const parsed = SubmitTurnSchema.parse(payload);
     const turnId = randomUUID();
     const attached = staging.peek(parsed.attachmentIds);
@@ -62,11 +69,18 @@ export function registerTurnHandlers(input: {
     return { turnId };
   });
 
-  ipcMain.handle(IPC.turnStop, (_event, turnId: unknown) => {
+  ipcMain.handle(IPC.turnStop, (event, turnId: unknown) => {
+    requireIpcOwner(event, input.owner);
     turnManager.stop(TurnIdSchema.parse(turnId));
   });
 
-  ipcMain.handle(IPC.turnCancelQueued, (_event, turnId: unknown) => {
+  ipcMain.handle(IPC.turnCancelQueued, (event, turnId: unknown) => {
+    requireIpcOwner(event, input.owner);
     turnManager.cancelQueued(TurnIdSchema.parse(turnId));
+  });
+
+  ipcMain.handle(IPC.queueStateGet, (event, conversationId: unknown) => {
+    requireIpcOwner(event, input.owner);
+    return turnManager.queueState(ConversationIdSchema.parse(conversationId));
   });
 }

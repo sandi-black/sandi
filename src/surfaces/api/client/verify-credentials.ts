@@ -1,4 +1,4 @@
-import { stat, writeFile } from "node:fs/promises";
+import { chmod, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -78,6 +78,20 @@ async function verifyCredentials(): Promise<void> {
     }
     assert(rejected, "a malformed token is rejected at load");
     console.log("ok a malformed token is rejected at load");
+
+    if (process.platform !== "win32") {
+      const exposedPath = join(dir, "exposed.json");
+      await saveDesktopCredentials(exposedPath, credentials);
+      await chmod(exposedPath, 0o644);
+      let exposedRejected = false;
+      try {
+        await loadDesktopCredentials(exposedPath);
+      } catch {
+        exposedRejected = true;
+      }
+      assert(exposedRejected, "a group-readable credential file is rejected");
+      console.log("ok credential loads reject unsafe Unix permissions");
+    }
 
     // A non-http url is rejected the same way: the server origin is parsed at
     // the boundary, so a relative or non-http value never reaches a request.
@@ -211,6 +225,7 @@ async function verifyLegacyMigration(dir: string): Promise<void> {
     identityId: "tester",
   };
   await saveDesktopCredentials(legacy, credentials);
+  if (process.platform !== "win32") await chmod(legacy, 0o644);
 
   const moved = await migrateLegacyDesktopConfig({ legacy, target });
   assert(moved === target, "the legacy config is moved to the target path");

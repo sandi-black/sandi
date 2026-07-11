@@ -17,6 +17,34 @@ type Pending = {
 };
 
 function main(): void {
+  const synchronousFailures: TurnSettledEvent[] = [];
+  const synchronousThrowManager = createTurnManager({
+    sendTurn: () => {
+      throw new Error("transport setup failed");
+    },
+    events: {
+      onTurnStarted: () => undefined,
+      onTurnSettled: (event) => synchronousFailures.push(event),
+      onQueueState: () => undefined,
+    },
+  });
+  synchronousThrowManager.submit({
+    conversationId: "sync-failure",
+    text: "hello",
+    turnId: "sync-t1",
+    attachmentIds: [],
+  });
+  assert.equal(
+    synchronousFailures[0]?.error,
+    "transport setup failed",
+    "a synchronous transport failure settles instead of wedging the queue",
+  );
+  assert.deepEqual(
+    synchronousThrowManager.queueState("sync-failure").pending,
+    [],
+    "the failed conversation queue is released",
+  );
+
   const inFlight: Pending[] = [];
   const started: string[] = [];
   const settled: TurnSettledEvent[] = [];

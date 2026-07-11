@@ -19,6 +19,9 @@ import {
 
 const TOOL_BROKER_URL_ENV = "SANDI_TOOL_BROKER_URL";
 const TOOL_BROKER_TOKEN_ENV = "SANDI_TOOL_BROKER_TOKEN";
+// This extension is loaded outside the app module graph, so mirror the wire
+// schema's limit here and verify it through the extension registration checks.
+const MAX_LOCAL_GREP_PATTERN_CHARS = 16_384;
 
 // A loopback call may carry a long shell command; stay just past the broker's
 // own backstop so the broker, not the socket, decides a stalled call's fate.
@@ -118,7 +121,9 @@ const TOOL_SPECS = [
     parameters: Type.Object({
       desktop: desktopParam,
       pattern: Type.String({
-        description: "Regular expression to search for.",
+        description:
+          "RE2 regular expression to search for. Backreferences and lookaround are unsupported.",
+        maxLength: MAX_LOCAL_GREP_PATTERN_CHARS,
       }),
       path: Type.Optional(
         Type.String({ description: "File or directory to search." }),
@@ -164,7 +169,7 @@ const TOOL_SPECS = [
   {
     name: "local_list_windows",
     label: "List Desktop Windows",
-    description: `List the visible top-level windows open on a connected desktop, with their titles, owning process, and positions. ${DESKTOP_HINT}`,
+    description: `List visible top-level windows as JSON with windows, warnings, and complete fields. Individual disappearing or inaccessible windows produce warnings and complete=false while usable windows remain available. ${DESKTOP_HINT}`,
     parameters: Type.Object({
       desktop: desktopParam,
     }),

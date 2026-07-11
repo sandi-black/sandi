@@ -3,7 +3,9 @@ import {
   listMonitors,
   listWindows,
   screenshot,
+  WindowEnumerationResultSchema,
 } from "@/surfaces/api/client/desktop-state";
+import { verifyWindowEnumerationBoundary } from "@/surfaces/api/client/verify-window-enumeration";
 import {
   DeviceImageSchema,
   LocalScreenshotParamsSchema,
@@ -15,6 +17,7 @@ import {
 // message rather than guessing at a capture.
 
 async function verifyDesktopState(): Promise<void> {
+  verifyWindowEnumerationBoundary();
   verifyImageBoundary();
   if (process.platform === "win32") {
     await verifyOnWindows();
@@ -95,9 +98,12 @@ async function verifyOnWindows(): Promise<void> {
 
   const windows = await listWindows();
   assert(windows.ok, `list windows should succeed: ${windows.error ?? ""}`);
+  const parsedWindows = WindowEnumerationResultSchema.safeParse(
+    JSON.parse(windows.output),
+  );
   assert(
-    windows.output.includes("windows") || windows.output.includes("window"),
-    "the window listing returns a window summary",
+    parsedWindows.success,
+    "the window listing returns its structured completeness envelope",
   );
   console.log("ok list windows enumerates the open windows");
 

@@ -6,12 +6,14 @@ import {
   type ExecutorContext,
   executeLocalTool,
 } from "@/surfaces/api/client/executors";
+import { verifyBoundedRegex } from "@/surfaces/api/client/verify-bounded-regex";
 
 // executeLocalTool takes a validated BrokerCall (the wire boundary parses tool
 // and params together), so these cases build typed calls directly. Malformed
 // params are a boundary concern, covered by verify-desktop-client, not here.
 
 async function verifyExecutors(): Promise<void> {
+  verifyBoundedRegex();
   await withTempDir("sandi-executors-", async (dir) => {
     const context: ExecutorContext = { rootDir: dir };
     await verifyWriteAndRead(context);
@@ -340,7 +342,26 @@ async function verifyGrep(context: ExecutorContext): Promise<void> {
     !filtered.output.includes("a.txt"),
     "grep glob filter excludes other files",
   );
-  console.log("ok local_grep matches, filters, and skips binaries");
+
+  const unsupported = await executeLocalTool(
+    {
+      tool: "local_grep",
+      params: {
+        pattern: "(Ada)\\1",
+        path: "directory-that-does-not-exist",
+      },
+    },
+    context,
+  );
+  assert(
+    !unsupported.ok &&
+      (unsupported.error ?? "").includes("backreferences") &&
+      !(unsupported.error ?? "").includes("does not exist"),
+    "grep rejects unsupported syntax before traversing the filesystem",
+  );
+  console.log(
+    "ok local_grep matches, filters, skips binaries, and validates before traversal",
+  );
 }
 
 async function verifyBash(context: ExecutorContext): Promise<void> {

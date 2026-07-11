@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { MAX_LOCAL_GREP_PATTERN_CHARS } from "@/surfaces/api/devices/search-limits";
 
 // The hands-local wire protocol. An api-surface turn runs server-side, but its
 // file and shell tools execute on the human's own desktop. Three hops carry one
@@ -53,7 +54,7 @@ export const LocalGlobParamsSchema = z.object({
 });
 export const LocalGrepParamsSchema = z.object({
   desktop: z.string().min(1).optional(),
-  pattern: z.string().min(1),
+  pattern: z.string().min(1).max(MAX_LOCAL_GREP_PATTERN_CHARS),
   path: z.string().min(1).optional(),
   glob: z.string().min(1).optional(),
   ignoreCase: z.boolean().optional(),

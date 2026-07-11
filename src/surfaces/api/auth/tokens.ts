@@ -219,6 +219,9 @@ export class ApiTokenStore {
     // revocation immediate in tests and is a safe (if slower) production
     // setting. With a positive TTL we serve the cache until it expires, then
     // re-stat and only re-read when mtime or size changed.
+    if (this.#ttlMs <= 0) {
+      return this.#reload(await this.#statKey(), now);
+    }
     if (this.#ttlMs > 0 && this.#cacheKey !== undefined) {
       if (now - this.#checkedAt < this.#ttlMs) return this.#cache;
       const key = await this.#statKey();
@@ -228,12 +231,7 @@ export class ApiTokenStore {
       }
       return this.#reload(key, now);
     }
-    const key = await this.#statKey();
-    if (key === this.#cacheKey) {
-      this.#checkedAt = now;
-      return this.#cache;
-    }
-    return this.#reload(key, now);
+    return this.#reload(await this.#statKey(), now);
   }
 
   async #reload(key: string, now: number): Promise<ApiTokensFile> {

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { createWriteStream } from "node:fs";
-import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { finished } from "node:stream/promises";
@@ -12,6 +12,7 @@ import {
   atomicWriteInPlace,
   withManagedWrite,
 } from "@/lib/state/managed-write";
+import { DEFAULT_ATTACHMENT_QUOTA_BYTES } from "@/surfaces/api/attachments/policy";
 
 // Content-addressed storage for attachments a caller uploads or a turn
 // references. A blob is named by its own sha256, so two identities uploading
@@ -94,7 +95,7 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
 // size is bounded by the upload cap it was enforced against.
 const MIME_TOKEN_PAIR = /^[a-z0-9!#$&^_.+-]{1,100}\/[a-z0-9!#$&^_.+-]{1,100}$/;
 
-const AttachmentMetadataSchema = z.object({
+export const AttachmentMetadataSchema = z.object({
   hash: z.string().regex(SHA256_HEX, "hash must be 64 lowercase hex chars"),
   size: z.number().int().nonnegative().max(MAX_ATTACHMENT_BYTES),
   mimeType: z
@@ -109,7 +110,9 @@ const AttachmentMetadataSchema = z.object({
       "name must be a filesystem-safe single filename",
     ),
   ownerIdentityIds: z.array(z.string().min(1)),
+  pinnedByIdentityIds: z.array(z.string().min(1)).optional(),
   createdAt: z.iso.datetime(),
+  unreferencedSince: z.iso.datetime().optional(),
 });
 export type AttachmentMetadata = z.infer<typeof AttachmentMetadataSchema>;
 
@@ -117,6 +120,16 @@ export class AttachmentTooLargeError extends Error {
   constructor() {
     super(`attachment exceeds the ${MAX_ATTACHMENT_BYTES} byte cap`);
     this.name = "AttachmentTooLargeError";
+  }
+}
+
+export class AttachmentQuotaExceededError extends Error {
+  readonly quotaBytes: number;
+
+  constructor(quotaBytes: number) {
+    super(`attachment storage quota exceeded (${quotaBytes} bytes)`);
+    this.name = "AttachmentQuotaExceededError";
+    this.quotaBytes = quotaBytes;
   }
 }
 
@@ -136,6 +149,7 @@ type WriterOutcome = { ok: true } | { ok: false; error: unknown };
 
 type AttachmentStoreOptions = {
   createWriter?: (path: string) => Writable;
+  quotaBytes?: number;
 };
 
 // Blobs live at attachments/<first 2 hex chars>/<hash>, sharded by the hash's
@@ -144,12 +158,17 @@ type AttachmentStoreOptions = {
 export class AttachmentStore {
   readonly #root: string;
   readonly #createWriter: (path: string) => Writable;
+  readonly #quotaBytes: number;
 
   constructor(root: string, options: AttachmentStoreOptions = {}) {
     this.#root = root;
     this.#createWriter =
       options.createWriter ??
       ((path) => createWriteStream(path, { flags: "wx" }));
+    this.#quotaBytes = options.quotaBytes ?? DEFAULT_ATTACHMENT_QUOTA_BYTES;
+    if (!Number.isSafeInteger(this.#quotaBytes) || this.#quotaBytes < 1) {
+      throw new Error("attachment quota must be a positive safe integer");
+    }
   }
 
   // Streams a request body into the store, hashing as it goes. The upload lands
@@ -237,56 +256,75 @@ export class AttachmentStore {
       // path, exactly like every other Sandi-managed state file. The blob rename
       // itself is a plain filesystem atomic op and idempotent for identical
       // content, so it does not need the lock.
-      return await withManagedWrite(metaPath, async () => {
-        const existing = await this.#readMetadata(digest);
-        if (existing) {
-          // Dedup: the bytes are already stored, so discard the freshly uploaded
-          // temp copy and only extend the sidecar's ownership. But trust the
-          // disk, not the sidecar: a stale sidecar whose blob has gone missing
-          // would otherwise report success for a hash later reads fail on, so
-          // the fresh upload restores the blob instead of being discarded.
-          if (await blobIsPresent(blobPath)) {
-            await rm(tempPath, { force: true });
-          } else {
-            await rename(tempPath, blobPath);
-          }
-          const merged: AttachmentMetadata = {
-            ...existing,
-            name: existing.name || input.name,
-            mimeType: existing.mimeType || input.mimeType,
-            ownerIdentityIds: addOwner(
-              existing.ownerIdentityIds,
-              input.identityId,
-            ),
-          };
-          await this.#writeMetadata(metaPath, merged);
-          return {
-            hash: digest,
-            size: existing.size,
-            mimeType: merged.mimeType,
-            name: merged.name,
-          };
-        }
+      return await withManagedWrite(
+        join(this.#root, "_maintenance.json"),
+        async () => {
+          return withManagedWrite(
+            this.#quotaPath(input.identityId),
+            async () => {
+              const usedBytes = await this.#identityUsage(input.identityId);
+              return withManagedWrite(metaPath, async () => {
+                const existing = await this.#readMetadata(digest);
+                const additionalBytes = existing?.ownerIdentityIds.includes(
+                  input.identityId,
+                )
+                  ? 0
+                  : (existing?.size ?? size);
+                if (usedBytes + additionalBytes > this.#quotaBytes) {
+                  throw new AttachmentQuotaExceededError(this.#quotaBytes);
+                }
+                if (existing) {
+                  // Dedup: the bytes are already stored, so discard the freshly uploaded
+                  // temp copy and only extend the sidecar's ownership. But trust the
+                  // disk, not the sidecar: a stale sidecar whose blob has gone missing
+                  // would otherwise report success for a hash later reads fail on, so
+                  // the fresh upload restores the blob instead of being discarded.
+                  if (await blobIsPresent(blobPath)) {
+                    await rm(tempPath, { force: true });
+                  } else {
+                    await rename(tempPath, blobPath);
+                  }
+                  const merged: AttachmentMetadata = {
+                    ...existing,
+                    name: existing.name || input.name,
+                    mimeType: existing.mimeType || input.mimeType,
+                    ownerIdentityIds: addOwner(
+                      existing.ownerIdentityIds,
+                      input.identityId,
+                    ),
+                  };
+                  await this.#writeMetadata(metaPath, merged);
+                  return {
+                    hash: digest,
+                    size: existing.size,
+                    mimeType: merged.mimeType,
+                    name: merged.name,
+                  };
+                }
 
-        // Rename into place before writing the sidecar, so a reader can never see
-        // a metadata file whose blob is not yet present.
-        await rename(tempPath, blobPath);
-        const metadata: AttachmentMetadata = {
-          hash: digest,
-          size,
-          mimeType: input.mimeType,
-          name: input.name,
-          ownerIdentityIds: [input.identityId],
-          createdAt: new Date().toISOString(),
-        };
-        await this.#writeMetadata(metaPath, metadata);
-        return {
-          hash: digest,
-          size,
-          mimeType: input.mimeType,
-          name: input.name,
-        };
-      });
+                // Rename into place before writing the sidecar, so a reader can never see
+                // a metadata file whose blob is not yet present.
+                await rename(tempPath, blobPath);
+                const metadata: AttachmentMetadata = {
+                  hash: digest,
+                  size,
+                  mimeType: input.mimeType,
+                  name: input.name,
+                  ownerIdentityIds: [input.identityId],
+                  createdAt: new Date().toISOString(),
+                };
+                await this.#writeMetadata(metaPath, metadata);
+                return {
+                  hash: digest,
+                  size,
+                  mimeType: input.mimeType,
+                  name: input.name,
+                };
+              });
+            },
+          );
+        },
+      );
     } finally {
       await rm(tempPath, { force: true });
     }
@@ -300,12 +338,43 @@ export class AttachmentStore {
     identityId: string,
   ): Promise<AttachmentReadResult | undefined> {
     if (!SHA256_HEX.test(hash)) return undefined;
-    const metadata = await this.#readMetadata(hash);
-    if (!metadata) return undefined;
-    if (!metadata.ownerIdentityIds.includes(identityId)) return undefined;
-    const path = this.#blobPath(hash);
-    if (!(await blobIsPresent(path))) return undefined;
-    return { metadata, path };
+    const metaPath = this.#metadataPath(hash);
+    return withManagedWrite(join(this.#root, "_maintenance.json"), () =>
+      withManagedWrite(metaPath, async () => {
+        const metadata = await this.#readMetadata(hash);
+        if (!metadata?.ownerIdentityIds.includes(identityId)) return undefined;
+        const path = this.#blobPath(hash);
+        if (!(await blobIsPresent(path))) return undefined;
+        if (!metadata.unreferencedSince) return { metadata, path };
+        const referenced = { ...metadata };
+        delete referenced.unreferencedSince;
+        await this.#writeMetadata(metaPath, referenced);
+        return { metadata: referenced, path };
+      }),
+    );
+  }
+
+  async setPinned(
+    hash: string,
+    identityId: string,
+    pinned: boolean,
+  ): Promise<boolean> {
+    if (!SHA256_HEX.test(hash)) return false;
+    const metaPath = this.#metadataPath(hash);
+    return withManagedWrite(join(this.#root, "_maintenance.json"), () =>
+      withManagedWrite(metaPath, async () => {
+        const metadata = await this.#readMetadata(hash);
+        if (!metadata?.ownerIdentityIds.includes(identityId)) return false;
+        const pins = new Set(metadata.pinnedByIdentityIds ?? []);
+        if (pinned) pins.add(identityId);
+        else pins.delete(identityId);
+        await this.#writeMetadata(metaPath, {
+          ...metadata,
+          pinnedByIdentityIds: [...pins],
+        });
+        return true;
+      }),
+    );
   }
 
   #shardDir(hash: string): string {
@@ -318,6 +387,39 @@ export class AttachmentStore {
 
   #metadataPath(hash: string): string {
     return join(this.#shardDir(hash), `${hash}.json`);
+  }
+
+  #quotaPath(identityId: string): string {
+    const key = createHash("sha256").update(identityId).digest("hex");
+    return join(this.#root, "_quota", `${key}.json`);
+  }
+
+  async #identityUsage(identityId: string): Promise<number> {
+    let total = 0;
+    let shards: import("node:fs").Dirent[];
+    try {
+      shards = await readdir(this.#root, { withFileTypes: true });
+    } catch (error) {
+      if (isMissingFileError(error)) return 0;
+      throw error;
+    }
+    for (const shard of shards) {
+      if (!shard.isDirectory() || !/^[0-9a-f]{2}$/.test(shard.name)) continue;
+      const entries = await readdir(join(this.#root, shard.name), {
+        withFileTypes: true,
+      });
+      for (const entry of entries) {
+        if (!entry.isFile() || !/^[0-9a-f]{64}\.json$/.test(entry.name)) {
+          continue;
+        }
+        const hash = entry.name.slice(0, -".json".length);
+        const metadata = await this.#readMetadata(hash);
+        if (metadata?.ownerIdentityIds.includes(identityId)) {
+          total += metadata.size;
+        }
+      }
+    }
+    return total;
   }
 
   async #readMetadata(hash: string): Promise<AttachmentMetadata | undefined> {

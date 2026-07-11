@@ -448,15 +448,16 @@ uploads by guessing a hash.
   The `content-type` header is the mime type; a custom `x-sandi-name` header
   carries the filename (non-empty, capped at 200 characters, no path
   separator). On success: `200 { "hash", "size", "mimeType", "name" }`. Errors:
-  `400 invalid_mime` or `invalid_name`, `413 too_large`, plus the usual
-  `401`/`403` from the shared bearer auth.
+  `400 invalid_mime` or `invalid_name`, `413 too_large` or `quota_exceeded`,
+  plus the usual `401`/`403` from the shared bearer auth.
 - `GET /v1/attachments/:hash` streams the blob back with its stored content
   type and a `content-disposition` filename. `404 unknown_attachment` covers
   both a hash the server has never seen and one the caller does not own.
-- A turn body may carry `attachments?: [{ hash, name? }]`, at most 16 refs,
-  each hash the store's own canonical shape (64 lowercase hex). Before the turn
-  is queued, every ref is resolved against the store for the requesting
-  identity; an unowned or unknown hash answers `400 { "error":
+- A turn body may carry `attachments?: [{ hash, name? }]`, at most 16 refs and
+  128 MiB of aggregate attachment data. Each hash uses the store's canonical
+  shape (64 lowercase hex). Before the turn is queued, every ref is resolved
+  against the store for the requesting identity; an unowned or unknown hash
+  answers `400 { "error":
 "invalid_attachment", "hash" }` (naming only the hash the caller already
   supplied, nothing else about the attachment) without leasing a queue slot or
   spawning a provider turn. Resolved refs are copied into a temp directory
@@ -464,6 +465,18 @@ uploads by guessing a hash.
   (a ref's own `name` overrides the stored one; a collision between two refs is
   suffixed rather than overwritten), and the directory is removed in the turn's
   `finally` regardless of how the turn ends.
+
+Each identity has a persistent attachment quota, 2 GiB by default. Content
+deduplication stores one blob, while quota accounting charges each owner once
+for that hash. Upload admission is serialized per identity and returns
+`quota_exceeded` instead of evicting existing data. Conversation manifests keep
+the hashes used by retained turns. A daily mark-and-sweep pass preserves those
+hashes and explicitly pinned sidecars, gives newly unreferenced records a
+30-day grace period, and removes expired blobs, orphan sidecars, and interrupted
+staging files. Cleanup logs reclaimed bytes, deleted blobs, skipped records, and
+malformed metadata. Configure these policies with
+`SANDI_ATTACHMENT_QUOTA_BYTES`, `SANDI_ATTACHMENT_RETENTION_DAYS`, and
+`SANDI_ATTACHMENT_CLEANUP_INTERVAL_HOURS`.
 
 The materialized paths reach the provider as `ProviderTurnRequest.attachmentPaths`.
 `pi-cli-client.ts` passes each as an `@<path>` argv token alongside the turn's

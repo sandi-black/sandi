@@ -2,6 +2,11 @@ import { join, resolve } from "node:path";
 
 import { type CoreConfig, loadCoreConfig, readEnv } from "@/lib/config/env";
 import { defaultApiPairingsPath } from "@/lib/pairing/pairing-store";
+import {
+  DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_HOURS,
+  DEFAULT_ATTACHMENT_QUOTA_BYTES,
+  DEFAULT_ATTACHMENT_RETENTION_DAYS,
+} from "@/surfaces/api/attachments/policy";
 
 const DEFAULT_API_HOST = "127.0.0.1";
 const DEFAULT_API_PORT = 8787;
@@ -11,6 +16,9 @@ export type ApiConfig = {
   port: number;
   tokensPath: string;
   pairingsPath: string;
+  attachmentQuotaBytes: number;
+  attachmentRetentionMs: number;
+  attachmentCleanupIntervalMs: number;
 };
 
 export type ApiAppConfig = CoreConfig & {
@@ -25,6 +33,21 @@ export function loadApiConfig(dataDir: string): ApiConfig {
       readEnv(["SANDI_API_TOKENS_PATH"]) ??
       join(dataDir, "config", "api-tokens.json"),
     pairingsPath: defaultApiPairingsPath(dataDir),
+    attachmentQuotaBytes: readPositiveIntegerEnv(
+      "SANDI_ATTACHMENT_QUOTA_BYTES",
+      DEFAULT_ATTACHMENT_QUOTA_BYTES,
+    ),
+    attachmentRetentionMs: readPositiveDurationEnv(
+      "SANDI_ATTACHMENT_RETENTION_DAYS",
+      DEFAULT_ATTACHMENT_RETENTION_DAYS,
+      24 * 60 * 60 * 1_000,
+    ),
+    attachmentCleanupIntervalMs: readPositiveDurationEnv(
+      "SANDI_ATTACHMENT_CLEANUP_INTERVAL_HOURS",
+      DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_HOURS,
+      60 * 60 * 1_000,
+      2_147_483_647,
+    ),
   };
 }
 
@@ -92,4 +115,31 @@ function readPortEnv(names: readonly string[], defaultValue: number): number {
     throw new Error(`${names[0]} must be a port between 0 and 65535`);
   }
   return parsed;
+}
+
+function readPositiveIntegerEnv(name: string, defaultValue: number): number {
+  const value = readEnv([name]);
+  if (!value) return defaultValue;
+  if (!/^\d+$/.test(value.trim())) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive safe integer`);
+  }
+  return parsed;
+}
+
+function readPositiveDurationEnv(
+  name: string,
+  defaultValue: number,
+  unitMs: number,
+  maxMs: number = Number.MAX_SAFE_INTEGER,
+): number {
+  const units = readPositiveIntegerEnv(name, defaultValue);
+  const milliseconds = units * unitMs;
+  if (!Number.isSafeInteger(milliseconds) || milliseconds > maxMs) {
+    throw new Error(`${name} is too large`);
+  }
+  return milliseconds;
 }

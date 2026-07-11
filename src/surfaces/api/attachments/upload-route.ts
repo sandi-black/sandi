@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
   AttachmentNameSchema,
+  AttachmentQuotaExceededError,
   type AttachmentStore,
   AttachmentTooLargeError,
   MAX_ATTACHMENT_BYTES,
@@ -61,6 +62,10 @@ export async function handleAttachmentUpload(
     });
     sendJson(response, 200, result);
   } catch (error) {
+    if (error instanceof AttachmentQuotaExceededError) {
+      sendAndDiscard(request, response, 413, "quota_exceeded");
+      return;
+    }
     if (error instanceof AttachmentTooLargeError) {
       sendAndDiscard(request, response, 413, "too_large");
       return;

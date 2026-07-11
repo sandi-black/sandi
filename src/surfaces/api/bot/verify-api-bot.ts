@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createConnection } from "node:net";
 import { join } from "node:path";
+import "@/surfaces/api/verify-attachment-config";
 
 import { ContextCompiler } from "@/lib/context/context-compiler";
 import { ConversationStore } from "@/lib/conversations/store";
@@ -1078,6 +1079,9 @@ function testConfig(dataDir: string): ApiAppConfig {
       port: 0,
       tokensPath: join(dataDir, "config", "api-tokens.json"),
       pairingsPath: join(dataDir, "config", "api-pairings.json"),
+      attachmentQuotaBytes: 2 * 1024 * 1024 * 1024,
+      attachmentRetentionMs: 30 * 24 * 60 * 60 * 1_000,
+      attachmentCleanupIntervalMs: 24 * 60 * 60 * 1_000,
     },
   };
 }

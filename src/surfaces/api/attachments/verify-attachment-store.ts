@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import "@/surfaces/api/attachments/verify-attachment-cleanup";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import {
   createServer,

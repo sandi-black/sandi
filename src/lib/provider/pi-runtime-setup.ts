@@ -99,6 +99,12 @@ export type PiRuntimeSetupResult = {
   codexConversionConfigs: CodexConversionConfigSyncResult[];
 };
 
+const EXTENSION_PREFLIGHT_PROVIDER = "__sandi_extension_load_probe__";
+const EXTENSION_PREFLIGHT_PROVIDER_ERROR = new RegExp(
+  `Unknown provider ["']${EXTENSION_PREFLIGHT_PROVIDER}["']`,
+  "u",
+);
+
 export async function loadPiPackageManifest(
   path: string,
 ): Promise<PiPackageManifest> {
@@ -192,6 +198,8 @@ export async function ensurePiRuntimeSetup(
     );
   }
 
+  await preflightPiExtensions(config, { runner, timeoutMs });
+
   await verifyModelListing({
     config,
     runner,
@@ -210,6 +218,53 @@ export async function ensurePiRuntimeSetup(
   });
 
   return aggregate;
+}
+
+/**
+ * Loads the configured extension graph before a surface can accept work. The
+ * deliberately invalid provider stops Pi after extension initialization, so
+ * startup proves the graph without opening a session or spending model quota.
+ */
+export async function preflightPiExtensions(
+  config: PiConfig,
+  options?: {
+    runner?: PiSetupRunner;
+    timeoutMs?: number;
+  },
+): Promise<void> {
+  if (config.extensionPaths.length === 0) return;
+
+  const runner = options?.runner ?? runSetupCommand;
+  const timeoutMs = options?.timeoutMs ?? 10 * 60 * 1000;
+  const args = ["--print", "--no-session"];
+  for (const extensionPath of config.extensionPaths) {
+    args.push("--extension", extensionPath);
+  }
+  args.push(
+    "--provider",
+    EXTENSION_PREFLIGHT_PROVIDER,
+    "--model",
+    EXTENSION_PREFLIGHT_PROVIDER,
+    "probe extension loading only",
+  );
+
+  for (const agentDir of setupAgentDirs(config)) {
+    const result = await runner({
+      command: config.command,
+      args,
+      env: buildPiSetupEnv(config, agentDir),
+      timeoutMs,
+    });
+    const output = `${result.stdout}\n${result.stderr}`;
+    if (!result.ok && EXTENSION_PREFLIGHT_PROVIDER_ERROR.test(output)) {
+      continue;
+    }
+    throw new Error(
+      `Pi extension preflight failed with exit code ${
+        result.exitCode ?? "unknown"
+      }: ${result.stderr || result.stdout || "Pi exited without output"}`,
+    );
+  }
 }
 
 export async function syncCodexConversionConfig(

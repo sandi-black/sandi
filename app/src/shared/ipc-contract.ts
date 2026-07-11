@@ -120,6 +120,8 @@ export type PairOutcomeSummary =
 
 export type SaveAsOutcome = { ok: true; path: string } | { ok: false };
 
+export type SessionDeleteOutcome = { ok: true } | { ok: false; reason: "busy" };
+
 // Which edge or corner of the chat window a resize grip grabbed. Windows
 // gives transparent windows no native resize frame, so the renderer's grips
 // drive resizing manually (see ResizeGrips.tsx and chat-window.ts).
@@ -143,7 +145,7 @@ export type SandiChatBridge = {
   createSession(title?: string): Promise<SessionSummary>;
   selectSession(conversationId: string): Promise<TranscriptEntry[]>;
   renameSession(conversationId: string, title: string): Promise<void>;
-  deleteSession(conversationId: string): Promise<void>;
+  deleteSession(conversationId: string): Promise<SessionDeleteOutcome>;
 
   submitTurn(input: {
     conversationId: string;

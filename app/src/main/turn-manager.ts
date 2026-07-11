@@ -23,7 +23,7 @@ export type SendTurnFn = (input: {
 export type TurnManagerEvents = {
   // Fired when a queued turn actually starts sending (its deltas may follow).
   onTurnStarted(event: { conversationId: string; turnId: string }): void;
-  onTurnSettled(event: TurnSettledEvent): void;
+  onTurnSettled(event: TurnSettledEvent): void | Promise<void>;
   onQueueState(state: QueueState): void;
 };
 
@@ -50,6 +50,7 @@ export type TurnManager = {
   // Removes a not-yet-started turn from the queue.
   cancelQueued(turnId: string): void;
   queueState(conversationId: string): QueueState;
+  hasWork(conversationId: string): boolean;
 };
 
 export function createTurnManager(input: {
@@ -84,23 +85,30 @@ export function createTurnManager(input: {
     queue.inflight = { turnId: next.turnId, controller };
     emitQueueState(conversationId);
     input.events.onTurnStarted({ conversationId, turnId: next.turnId });
-    const settle = (turnId: string, outcome: TurnOutcome): void => {
-      delete queue.inflight;
-      if (outcome.ok) {
-        input.events.onTurnSettled({
-          turnId,
-          conversationId,
-          ok: true,
-          text: outcome.text,
-        });
-      } else {
-        input.events.onTurnSettled({
-          turnId,
-          conversationId,
-          ok: false,
-          error: controller.signal.aborted ? "stopped" : outcome.error,
-        });
+    const settle = async (
+      turnId: string,
+      outcome: TurnOutcome,
+    ): Promise<void> => {
+      const event: TurnSettledEvent = outcome.ok
+        ? {
+            turnId,
+            conversationId,
+            ok: true,
+            text: outcome.text,
+          }
+        : {
+            turnId,
+            conversationId,
+            ok: false,
+            error: controller.signal.aborted ? "stopped" : outcome.error,
+          };
+      try {
+        const persistence = input.events.onTurnSettled(event);
+        if (persistence) await persistence;
+      } catch (error) {
+        console.error("turn settlement handler failed", error);
       }
+      delete queue.inflight;
       drain(conversationId);
     };
 
@@ -116,7 +124,7 @@ export function createTurnManager(input: {
     } catch (error) {
       // A transport is expected to return a rejected promise, but a
       // synchronous throw must not wedge every later turn in the queue.
-      settle(next.turnId, {
+      void settle(next.turnId, {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -124,10 +132,10 @@ export function createTurnManager(input: {
     }
     void pending
       .then((outcome) => {
-        settle(next.turnId, outcome);
+        void settle(next.turnId, outcome);
       })
       .catch((error: unknown) => {
-        settle(next.turnId, {
+        void settle(next.turnId, {
           ok: false,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -168,6 +176,10 @@ export function createTurnManager(input: {
     },
     queueState(conversationId) {
       return stateOf(conversationId, queues);
+    },
+    hasWork(conversationId) {
+      const queue = queues.get(conversationId);
+      return Boolean(queue?.inflight || queue?.pending.length);
     },
   };
 }

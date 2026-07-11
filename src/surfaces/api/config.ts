@@ -36,15 +36,15 @@ export function loadApiAppConfig(): ApiAppConfig {
       ...core.pi,
       // The api surface runs hands-local: load the proxy tools that route file
       // and shell work to the caller's desktop, the response-stream extension
-      // that pushes the answer back token by token, and attach_to_reply for
-      // outbound attachments. Loaded only here, so other surfaces never carry
-      // them. Each self-disables (or, for attach_to_reply, answers a graceful
-      // refusal) on any turn that did not lease a tool broker.
+      // that pushes the answer back token by token, and the surface-specific
+      // outbound attachment tools. The composed host shares this config across
+      // surfaces; each extension gates itself from the turn environment.
       extensionPaths: [
         ...core.pi.extensionPaths,
         apiLocalExecExtensionPath(),
         apiResponseStreamExtensionPath(),
         apiAttachToReplyExtensionPath(),
+        apiAttachDesktopFileToDiscordExtensionPath(),
       ],
     },
     api: loadApiConfig(core.paths.dataDir),
@@ -69,6 +69,13 @@ function apiAttachToReplyExtensionPath(): string {
   return resolve(
     readEnv(["SANDI_PI_ATTACH_TO_REPLY_EXTENSION"]) ??
       "src/surfaces/api/pi-extension/attach-to-reply-tool.ts",
+  );
+}
+
+function apiAttachDesktopFileToDiscordExtensionPath(): string {
+  return resolve(
+    readEnv(["SANDI_PI_DISCORD_DESKTOP_FILE_EXTENSION"]) ??
+      "src/surfaces/api/pi-extension/attach-desktop-file-to-discord.ts",
   );
 }
 

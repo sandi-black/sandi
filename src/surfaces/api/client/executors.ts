@@ -18,6 +18,7 @@ import { TextDecoder } from "node:util";
 import { errorMessage } from "@/lib/errors";
 import { isMissingPathError } from "@/lib/fs-errors";
 import { compileBoundedRegex } from "@/surfaces/api/client/bounded-regex";
+import { transferDesktopFile } from "@/surfaces/api/client/desktop-file-transfer";
 import {
   listMonitors,
   listWindows,
@@ -107,6 +108,8 @@ export async function executeLocalTool(
         return await listWindows(signal);
       case "local_screenshot":
         return await screenshot(call.params, signal);
+      case "local_transfer_file":
+        return await transferDesktopFile(call.params, context.rootDir, signal);
     }
   } catch (error) {
     return refused(errorMessage(error));

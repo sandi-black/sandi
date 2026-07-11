@@ -1,5 +1,15 @@
 import type { LocalToolBroker } from "@/lib/provider/pi-cli-client";
 
+export type DesktopFileDelivery = {
+  attachment: {
+    name: string;
+    mimeType: string;
+    size: number;
+    dataBase64: string;
+  };
+  content?: string;
+};
+
 // A per-turn handle on a human's connected desktop. `ticket` is the loopback
 // broker coordinate the pi child uses to route file and shell tool calls to that
 // desktop; `revoke` drops it once the turn ends so the token never outlives the
@@ -23,6 +33,7 @@ export interface DesktopHands {
     identityId: string;
     signal: AbortSignal;
     turnId?: string;
+    deliverFile?: (delivery: DesktopFileDelivery) => Promise<void>;
   }): DesktopHandsLease | undefined;
 }
 
@@ -36,10 +47,14 @@ export function leaseDesktopHands(input: {
   hands: DesktopHands | undefined;
   identityId: string | undefined;
   signal?: AbortSignal | undefined;
+  deliverFile?: (delivery: DesktopFileDelivery) => Promise<void>;
 }): DesktopHandsLease | undefined {
   if (!input.identityId || !input.hands) return undefined;
   return input.hands.leaseForIdentity({
     identityId: input.identityId,
     signal: input.signal ?? new AbortController().signal,
+    ...(input.deliverFile !== undefined
+      ? { deliverFile: input.deliverFile }
+      : {}),
   });
 }

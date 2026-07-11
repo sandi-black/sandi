@@ -9,6 +9,8 @@ import {
 import type { z } from "zod/v4";
 import { errorMessage } from "@/lib/errors";
 import { createLogger } from "@/lib/logging";
+import type { DesktopFileDelivery } from "@/lib/provider/desktop-hands";
+import { DiscordDesktopFileRequestSchema } from "@/surfaces/api/devices/desktop-file-transfer";
 import {
   type DeviceRegistry,
   DeviceUnavailableError,
@@ -32,6 +34,7 @@ const LOOPBACK_HOST = "127.0.0.1";
 const CALL_PATH = "/call";
 const STREAM_PATH = "/stream";
 const ATTACHMENT_PATH = "/attachment";
+const DISCORD_FILE_PATH = "/discord-file";
 
 // File writes carry their content in the call body, so the cap is generous;
 // reads and shell output are capped on the desktop before they return.
@@ -39,6 +42,7 @@ const BROKER_MAX_BODY_BYTES = 8 * 1024 * 1024;
 // A streamed response delta is one slice of generated text, far smaller than a
 // file write, so its body is capped tighter.
 const STREAM_MAX_BODY_BYTES = 1 * 1024 * 1024;
+const DISCORD_FILE_REQUEST_MAX_BODY_BYTES = 16 * 1024;
 const BROKER_BODY_TIMEOUT_MS = 30_000;
 const BROKER_HEADERS_TIMEOUT_MS = 10_000;
 
@@ -71,6 +75,10 @@ type TurnBinding = {
   // connected desktop if there is only one, but refuses and asks the model to
   // pick when several are connected, rather than guessing.
   originDevice?: boolean;
+  // Present only for a Discord-originated turn. The broker invokes this after
+  // the bound desktop returns a validated file payload; other surfaces cannot
+  // turn a broker token into a Discord upload.
+  deliverFile?: (delivery: DesktopFileDelivery) => Promise<void>;
 };
 
 export type TurnBrokerTicket = {
@@ -183,6 +191,7 @@ export class ToolBroker {
     // identity (Discord, GitHub), which then ask the model to pick when the
     // human has several desktops connected rather than guessing one.
     originDevice?: boolean;
+    deliverFile?: (delivery: DesktopFileDelivery) => Promise<void>;
   }): TurnBrokerLease {
     const url = this.#url;
     if (!url) throw new Error("tool broker is not started");
@@ -199,6 +208,9 @@ export class ToolBroker {
       ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
       ...(identityId !== undefined ? { identityId } : {}),
       ...(input.originDevice === true ? { originDevice: true } : {}),
+      ...(input.deliverFile !== undefined
+        ? { deliverFile: input.deliverFile }
+        : {}),
     });
     return {
       ticket: { url, token },
@@ -287,6 +299,20 @@ export class ToolBroker {
     };
   }
 
+  #targetDesktop(
+    binding: TurnBinding,
+    selector: string | undefined,
+  ): { ok: true; key: string } | { ok: false; error: string } {
+    if (selector === undefined) return this.#defaultDesktop(binding);
+    const key = this.#resolveDesktop(binding, selector);
+    return key
+      ? { ok: true, key }
+      : {
+          ok: false,
+          error: unknownDesktopMessage(this.#registry, binding, selector),
+        };
+  }
+
   async #handle(
     request: IncomingMessage,
     response: ServerResponse,
@@ -295,7 +321,10 @@ export class ToolBroker {
       const method = request.method ?? "GET";
       const path = (request.url ?? "/").split("?")[0] ?? "/";
       const knownPath =
-        path === CALL_PATH || path === STREAM_PATH || path === ATTACHMENT_PATH;
+        path === CALL_PATH ||
+        path === STREAM_PATH ||
+        path === ATTACHMENT_PATH ||
+        path === DISCORD_FILE_PATH;
       if (method !== "POST" || !knownPath) {
         sendJson(response, 404, { error: "not_found" });
         return;
@@ -333,6 +362,11 @@ export class ToolBroker {
         return;
       }
 
+      if (path === DISCORD_FILE_PATH) {
+        await this.#handleDiscordFile(request, response, scopedBinding);
+        return;
+      }
+
       const body = await readJsonBody(request, {
         maxBytes: BROKER_MAX_BODY_BYTES,
         timeoutMs: BROKER_BODY_TIMEOUT_MS,
@@ -354,6 +388,11 @@ export class ToolBroker {
       }
       const call = parsed.data;
 
+      if (call.tool === "local_transfer_file") {
+        sendJson(response, 400, { error: "private_call" });
+        return;
+      }
+
       // The discovery call never reaches a desktop: the broker answers it from
       // the registry, naming the desktops this identity has connected so Sandi
       // can pick one to target.
@@ -369,39 +408,19 @@ export class ToolBroker {
       // selector, pick the default: the originating desktop, or, for a turn that
       // did not originate on a desktop, the sole connected one, refusing when the
       // human has several so the model names one rather than the broker guessing.
-      const selector = desktopSelector(call);
-      let targetKey: string;
-      if (selector !== undefined) {
-        const resolved = this.#resolveDesktop(scopedBinding, selector);
-        if (!resolved) {
-          sendJson(response, 200, {
-            ok: false,
-            output: "",
-            error: unknownDesktopMessage(
-              this.#registry,
-              scopedBinding,
-              selector,
-            ),
-          });
-          return;
-        }
-        targetKey = resolved;
-      } else {
-        const fallback = this.#defaultDesktop(scopedBinding);
-        if (!fallback.ok) {
-          sendJson(response, 200, {
-            ok: false,
-            output: "",
-            error: fallback.error,
-          });
-          return;
-        }
-        targetKey = fallback.key;
+      const target = this.#targetDesktop(scopedBinding, desktopSelector(call));
+      if (!target.ok) {
+        sendJson(response, 200, {
+          ok: false,
+          output: "",
+          error: target.error,
+        });
+        return;
       }
 
       try {
         const outcome = await this.#registry.dispatch({
-          key: targetKey,
+          key: target.key,
           call,
           signal: scopedBinding.signal,
         });
@@ -423,6 +442,100 @@ export class ToolBroker {
       if (!response.headersSent) {
         sendJson(response, 500, { error: "internal_error" });
       }
+    }
+  }
+
+  /**
+   * Transfers one bounded file from the leased identity's desktop directly to
+   * the Discord callback that created this broker lease. The pi child supplies
+   * only metadata; validated bytes arrive from the authenticated device result
+   * and never become model-visible tool output.
+   */
+  async #handleDiscordFile(
+    request: IncomingMessage,
+    response: ServerResponse,
+    binding: TurnBinding,
+  ): Promise<void> {
+    if (!binding.deliverFile) {
+      sendJson(response, 409, { error: "discord_delivery_unavailable" });
+      return;
+    }
+    const body = await readJsonBody(request, {
+      maxBytes: DISCORD_FILE_REQUEST_MAX_BODY_BYTES,
+      timeoutMs: BROKER_BODY_TIMEOUT_MS,
+      response,
+      signal: binding.signal,
+    });
+    if (!body.ok) {
+      sendJson(response, body.status, { error: body.error });
+      return;
+    }
+    if (binding.signal.aborted) {
+      sendJson(response, 401, { error: "unauthorized" });
+      return;
+    }
+    const parsed = DiscordDesktopFileRequestSchema.safeParse(body.value);
+    if (!parsed.success) {
+      sendJson(response, 400, { error: "invalid_discord_file" });
+      return;
+    }
+    const target = this.#targetDesktop(binding, parsed.data.desktop);
+    if (!target.ok) {
+      sendJson(response, 422, { error: target.error });
+      return;
+    }
+    let outcome: ToolCallOutcome;
+    try {
+      outcome = await this.#registry.dispatch({
+        key: target.key,
+        call: {
+          tool: "local_transfer_file",
+          params: {
+            path: parsed.data.path,
+            ...(parsed.data.name !== undefined
+              ? { name: parsed.data.name }
+              : {}),
+            ...(parsed.data.mimeType !== undefined
+              ? { mimeType: parsed.data.mimeType }
+              : {}),
+          },
+        },
+        signal: binding.signal,
+      });
+    } catch (error) {
+      if (error instanceof DeviceUnavailableError) {
+        sendJson(response, 503, { error: "device_unavailable" });
+        return;
+      }
+      sendJson(response, binding.signal.aborted ? 499 : 504, {
+        error: binding.signal.aborted ? "cancelled" : "desktop_transfer_failed",
+      });
+      return;
+    }
+    if (!outcome.ok || !outcome.attachment) {
+      sendJson(response, 422, {
+        error: outcome.error ?? "desktop did not return a file",
+      });
+      return;
+    }
+    try {
+      await binding.deliverFile({
+        attachment: outcome.attachment,
+        ...(parsed.data.content !== undefined
+          ? { content: parsed.data.content }
+          : {}),
+      });
+      sendJson(response, 200, {
+        ok: true,
+        name: outcome.attachment.name,
+        mimeType: outcome.attachment.mimeType,
+        size: outcome.attachment.size,
+      });
+    } catch (error) {
+      log.warn("desktop file delivery to Discord failed", {
+        error: errorMessage(error),
+      });
+      sendJson(response, 502, { error: "discord_upload_failed" });
     }
   }
 

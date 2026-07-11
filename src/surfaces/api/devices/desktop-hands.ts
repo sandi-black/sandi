@@ -1,4 +1,5 @@
 import type {
+  DesktopFileDelivery,
   DesktopHands,
   DesktopHandsLease,
 } from "@/lib/provider/desktop-hands";
@@ -24,6 +25,7 @@ export class BrokerDesktopHands implements DesktopHands {
     identityId: string;
     signal: AbortSignal;
     turnId?: string;
+    deliverFile?: (delivery: DesktopFileDelivery) => Promise<void>;
   }): DesktopHandsLease | undefined {
     const key = this.#devices.keyForIdentity(input.identityId);
     if (!key) return undefined;
@@ -31,6 +33,9 @@ export class BrokerDesktopHands implements DesktopHands {
       key,
       signal: input.signal,
       ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+      ...(input.deliverFile !== undefined
+        ? { deliverFile: input.deliverFile }
+        : {}),
     });
     return { ticket: lease.ticket, revoke: lease.revoke };
   }

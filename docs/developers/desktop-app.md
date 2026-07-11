@@ -130,11 +130,14 @@ documented in [`api-surface.md`](api-surface.md)):
   Non-image files are not uploaded because they already live on the machine
   where Sandi's hands-local tools run, so the message just lists their paths
   and she reads them herself.
-- Sandi to user: her `attach_to_reply` tool relays hands-local paths through
+- Sandi to desktop-chat user: her `attach_to_reply` tool relays hands-local paths through
   the device link as `response_attachment` events. The app collects them per
   turn, persists them in the transcript, renders images inline (through the
   `sandi-asset://` protocol, which serves any absolute local path; Sandi is
   unsandboxed by design), and offers save-as.
+- Sandi to Discord: `attach_desktop_file_to_discord` reads a bounded file on the
+  leased desktop and uploads its bytes to the originating Discord conversation.
+  This path does not create a desktop-chat transcript attachment.
 
 ## Dev loop
 

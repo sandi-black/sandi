@@ -1,4 +1,9 @@
 import { z } from "zod/v4";
+import {
+  type DesktopFileAttachment,
+  DesktopFileAttachmentSchema,
+  DesktopFileTransferParamsSchema,
+} from "@/surfaces/api/devices/desktop-file-transfer";
 import { MAX_LOCAL_GREP_PATTERN_CHARS } from "@/surfaces/api/devices/search-limits";
 
 // The hands-local wire protocol. An api-surface turn runs server-side, but its
@@ -145,6 +150,10 @@ export const BrokerCallSchema = z.discriminatedUnion("tool", [
     tool: z.literal("local_screenshot"),
     params: LocalScreenshotParamsSchema,
   }),
+  z.object({
+    tool: z.literal("local_transfer_file"),
+    params: DesktopFileTransferParamsSchema,
+  }),
 ]);
 export type BrokerCall = z.infer<typeof BrokerCallSchema>;
 
@@ -163,10 +172,11 @@ export type ToolDispatch = z.infer<typeof ToolDispatchSchema>;
 export const ToolDispatchEnvelopeSchema = z.object({ id: z.string().min(1) });
 
 // A binary artifact a tool produces alongside its text, carried base64-encoded
-// so it survives the JSON hops back to the model. A screenshot is the only such
-// artifact today; `output` still carries the textual summary that accompanies
-// it. The desktop caps the encoded size (it downscales before encoding) so an
-// image stays well within the result body limit.
+// so it survives the JSON hops. A screenshot is the model-visible artifact;
+// `output` carries its textual summary. A private desktop-to-Discord call can
+// instead carry `attachment`, whose bytes the broker sends to its surface
+// callback without exposing them to the model. Both payloads stay below the
+// result body limit.
 //
 // The image is parsed precisely, not accepted as a base64-looking string: the
 // mime type is one the model can render, the payload is canonical base64, and
@@ -251,13 +261,15 @@ export type DeviceImage = z.infer<typeof DeviceImageSchema>;
 // code in `output`); `ok: false` is reserved for a call the desktop refused or
 // could not attempt (bad params, missing file, disallowed path). `output` is the
 // textual evidence handed to the model; `image` rides along when a tool produced
-// one (a screenshot), and the proxy maps it to an image block in the result.
+// one (a screenshot), and the proxy maps it to an image block. `attachment` is
+// reserved for the private Discord transfer call and rejected by public /call.
 export const DeviceResultSchema = z.object({
   id: z.string().min(1),
   ok: z.boolean(),
   output: z.string(),
   error: z.string().optional(),
   image: DeviceImageSchema.optional(),
+  attachment: DesktopFileAttachmentSchema.optional(),
 });
 export type DeviceResult = z.infer<typeof DeviceResultSchema>;
 
@@ -268,6 +280,7 @@ export type ToolCallOutcome = {
   output: string;
   error?: string;
   image?: DeviceImage;
+  attachment?: DesktopFileAttachment;
 };
 
 // SSE event name for a dispatched tool call. Heartbeats are sent as SSE comment

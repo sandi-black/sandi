@@ -475,9 +475,9 @@ attachment rides into the model's context without changing how `input` itself
 is delivered. `verify:pi-harness` covers this against a fake pi command that
 records its argv and stdin.
 
-### Outbound: attaching a file to a reply
+### Outbound desktop files
 
-Sandi can also hand a file back. The `attach_to_reply` extension tool
+Desktop chat uses the `attach_to_reply` extension tool
 (`pi-extension/attach-to-reply-tool.ts`, loaded alongside the other api-surface
 extensions) takes `{ path, name? }`, where `path` is a file already on the
 caller's desktop (typically one Sandi just wrote there with a `local_*` tool).
@@ -488,9 +488,8 @@ does not match the lease (`409`), and relays it to the device's SSE link as a
 `response_attachment` event (`DeviceRegistry.streamResponseAttachment`), mirroring
 how `/stream` relays a response delta. A vanished device answers `503`, which
 the tool surfaces to the model as a plain error rather than a silent drop. On a
-surface with no desktop link (no broker env on the child), the tool answers a
-clear "no desktop link on this surface" result instead of failing the turn, so
-the model can recover, for example by describing the file in text instead.
+non-desktop-chat turn, the tool directs the model to the matching
+surface-specific delivery tool.
 
 `ResponseAttachmentSchema` (`{ turnId, seq, path, name?, mimeType? }`) is its
 own schema, separate from `ResponseChunk`: an attachment is a one-shot notice,
@@ -499,6 +498,21 @@ independently of the response-chunk stream's own. `desktop-client.ts` parses
 the event and surfaces it through an optional `onResponseAttachment` callback
 on `DesktopClientOptions`; the reference `chat` REPL prints a one-line
 `[attached: <name or path>]` note when one arrives for the turn in progress.
+
+Discord uses `attach_desktop_file_to_discord` instead. Its request names a
+desktop path, optional safe filename and MIME type, optional content, and an
+optional desktop selector. The broker token must belong to a Discord turn whose
+lease carries a delivery callback. The broker resolves the selector only among
+that identity's connected desktops, dispatches the private
+`local_transfer_file` call, validates the returned bytes and metadata, then
+invokes the callback for the originating Discord channel. The 4,500,000-byte
+file cap leaves room for base64 and the result envelope under the 8 MiB device
+result limit. File bytes never appear in model-visible tool output.
+
+Revoked leases and cancelled turns reject the request. A disconnected desktop,
+invalid path or metadata, oversized file, incomplete transfer, and Discord
+upload failure return explicit errors. A successful upload records a Discord
+delivery side effect so the automatic final-text post does not duplicate it.
 
 ## Files
 
@@ -534,11 +548,12 @@ src/surfaces/api/
     turn-materialize.ts         turn-body attachment refs: schema, per-turn temp-dir materialize + cleanup
     verify-attachment-routes.ts end-to-end verify against a real ApiBot: upload/download, caps, turn refs
   devices/
-    protocol.ts                 hands-local + streaming wire protocol (tools, cancel, image result, response_chunk, response_attachment)
+    protocol.ts                 hands-local + streaming wire protocol (tools, cancel, binary results, response_chunk, response_attachment)
+    desktop-file-transfer.ts    bounded file-transfer schemas and Discord delivery envelope
     device-registry.ts          tracks desktop SSE links; dispatches, cancels, settles, streams, resolves identity desktops
     device-routes.ts            HTTP edge: SSE link and result POST controllers
-    tool-broker.ts              loopback broker: per-turn token, /call relay, desktop selection, /stream + /attachment ingress
-    verify-tool-broker.ts       broker + registry round-trip, unavailable, abort + cancel, desktop selection, image relay, stream relay, attachment relay
+    tool-broker.ts              loopback broker: per-turn token, tool relay, desktop selection, streaming and delivery ingress
+    verify-tool-broker.ts       broker + registry round-trip, authorization, cancellation, selection, and delivery relays
   http/
     respond.ts                  shared sendJson and bearer-token parsing
     read-json-body.ts           shared bounded JSON body reader
@@ -548,12 +563,14 @@ src/surfaces/api/
     response-stream.ts          api-only extension: relays response deltas to the broker
     verify-response-stream.ts   event classification, env parsing, delta POST
     attach-to-reply-tool.ts     api-only extension: attach_to_reply tool, relays an outbound attachment to the broker
+    attach-desktop-file-to-discord.ts  Discord tool: transfers a leased desktop file to the current conversation
     verify-attach-to-reply.ts   env parsing, broker relay (happy/mismatch/unavailable/error), tool result shapes
   client/
     index.ts                    reference client CLI (pair | login | run | chat)
     desktop-client.ts           SSE link loop: tool dispatch, cancel, response deltas, response attachments, reconnect
     verify-desktop-client.ts    end-to-end link verify: dispatch, cancel, result-report, stream, response_attachment
     executors.ts                local file and shell implementations + state-tool routing
+    desktop-file-transfer.ts    private bounded desktop file reader for Discord delivery
     verify-executors.ts         per-tool executor verify against a temp dir
     desktop-state.ts            Windows monitor/window enumeration and screenshot capture
     verify-desktop-state.ts     platform-aware state-tool verify (live on Windows, refusal elsewhere)

@@ -49,6 +49,7 @@ import {
 } from "@/lib/provider/pi-cli-client";
 import { ThreadQueue } from "@/lib/turns/turn-queue";
 import { isRecord } from "@/lib/type-guards";
+import { deliverDesktopFileToDiscord } from "@/surfaces/discord/bot/desktop-file-delivery";
 import { issueDeviceCode } from "@/surfaces/discord/bot/device-auth";
 import {
   appendIgnoredConversationChannel,
@@ -1187,11 +1188,19 @@ export class SandiBot {
   #leaseDesktopHands(
     author: ConversationParticipant,
     signal: AbortSignal | undefined,
+    channel: FailureNoticeChannel,
+    replyToMessageId?: string,
   ): DesktopHandsLease | undefined {
     return leaseDesktopHands({
       hands: this.#desktopHands,
       identityId: author.identityId,
       signal,
+      deliverFile: (delivery) =>
+        deliverDesktopFileToDiscord({
+          channel,
+          delivery,
+          ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
+        }),
     });
   }
 
@@ -1232,7 +1241,12 @@ export class SandiBot {
         conversationId: input.conversation.canonicalId,
         messageId: input.messageId,
       });
-      const lease = this.#leaseDesktopHands(input.author, input.signal);
+      const lease = this.#leaseDesktopHands(
+        input.author,
+        input.signal,
+        input.channel,
+        input.replyToMessageId,
+      );
       let response: ProviderTurnResponse;
       try {
         const providerRequest = {
@@ -1434,7 +1448,12 @@ export class SandiBot {
         conversationId: `oneoff:${message.id}`,
         messageId: message.id,
       });
-      const lease = this.#leaseDesktopHands(author, signal);
+      const lease = this.#leaseDesktopHands(
+        author,
+        signal,
+        channel,
+        message.id,
+      );
       let response: ProviderTurnResponse;
       try {
         const providerRequest = {

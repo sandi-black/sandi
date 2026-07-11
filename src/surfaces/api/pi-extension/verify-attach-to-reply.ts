@@ -8,6 +8,7 @@ import {
   postAttachment,
   readAttachTarget,
 } from "./attach-to-reply-tool";
+import { verifyDiscordDesktopFileTool } from "./verify-discord-desktop-file-tool";
 
 // Exercises the extension's network helpers against a stand-in broker (the
 // happy relay, a turn-mismatch-shaped 409, a gone-device 503, and an
@@ -158,7 +159,7 @@ function verifyToolResultShapes(): void {
       content: [
         {
           type: "text",
-          text: "no desktop link on this surface: attach_to_reply is only available on a turn with a connected desktop",
+          text: "attach_to_reply delivers files only to desktop chat turns; for Discord, use attach_desktop_file_to_discord",
         },
       ],
       details: { tool: "attach_to_reply", ok: false },
@@ -343,3 +344,4 @@ function restoreEnv(key: string, value: string | undefined): void {
 }
 
 await verifyAttachToReply();
+await verifyDiscordDesktopFileTool();

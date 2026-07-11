@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import "@/surfaces/discord/shared/verify-todo-core";
 
 import {
   addItem,

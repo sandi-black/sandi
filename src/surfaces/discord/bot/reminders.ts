@@ -66,6 +66,7 @@ export class ReminderManager {
   readonly #remindersRoot: string;
   readonly #watcher: ReminderWatcher;
   readonly #onReminderDone: ReminderDoneHandler | undefined;
+  readonly #firing = new Map<string, Promise<void>>();
 
   constructor(input: {
     client: Client;
@@ -76,7 +77,7 @@ export class ReminderManager {
     this.#remindersRoot = input.remindersRoot;
     this.#onReminderDone = input.onReminderDone;
     this.#watcher = new ReminderWatcher(input.remindersRoot, (trigger) => {
-      void this.#fireReminder(trigger);
+      this.#triggerReminder(trigger);
     });
   }
 
@@ -86,6 +87,23 @@ export class ReminderManager {
 
   stop(): void {
     this.#watcher.stop();
+  }
+
+  #triggerReminder(trigger: ReminderTrigger): void {
+    if (this.#firing.has(trigger.id)) return;
+    const firing = this.#fireReminder(trigger)
+      .catch((error: unknown) => {
+        log.error("failed to fire reminder", {
+          id: trigger.id,
+          error: errorMessage(error),
+        });
+      })
+      .finally(() => {
+        if (this.#firing.get(trigger.id) === firing) {
+          this.#firing.delete(trigger.id);
+        }
+      });
+    this.#firing.set(trigger.id, firing);
   }
 
   async handleInteraction(interaction: Interaction): Promise<boolean> {

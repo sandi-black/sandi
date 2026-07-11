@@ -22,8 +22,13 @@
     "format:check": "node ../node_modules/@biomejs/biome/bin/biome check --linter-enabled=false src scripts",
     "verify:pet-state-machine": "tsx --tsconfig tsconfig.main.json src/shared/verify-pet-state-machine.ts",
     "verify:response-buffer": "tsx --tsconfig tsconfig.main.json src/shared/verify-response-buffer.ts",
+    "verify:chat-store": "tsx --tsconfig tsconfig.renderer.json src/renderer/chat/verify-store.ts",
     "verify:anchor-position": "tsx --tsconfig tsconfig.main.json src/main/verify-anchor-position.ts",
     "verify:renderer-url": "tsx --tsconfig tsconfig.main.json src/main/verify-renderer-url.ts",
+    "verify:window-navigation": "tsx --tsconfig tsconfig.main.json src/main/verify-window-navigation.ts",
+    "verify:ipc-schemas": "tsx --tsconfig tsconfig.main.json src/main/verify-ipc-schemas.ts",
+    "verify:attachment-staging": "tsx --tsconfig tsconfig.main.json src/main/verify-attachment-staging.ts",
+    "verify:link-manager": "tsx --tsconfig tsconfig.main.json src/main/verify-link-manager.ts",
     "verify:transcript-store": "tsx --tsconfig tsconfig.main.json src/main/verify-transcript-store.ts",
     "verify:turn-manager-queue": "tsx --tsconfig tsconfig.main.json src/main/verify-turn-manager-queue.ts",
     "verify:wander-scheduler": "tsx --tsconfig tsconfig.main.json src/main/verify-wander-scheduler.ts",
@@ -31,7 +36,7 @@
     "verify:turn-pipeline": "tsx --tsconfig tsconfig.main.json src/main/verify-turn-pipeline.ts",
     "verify:auto-titler": "tsx --tsconfig tsconfig.main.json src/main/verify-auto-titler.ts",
     "verify:update-state": "tsx --tsconfig tsconfig.main.json src/main/verify-update-state.ts",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run verify:pet-state-machine && npm run verify:response-buffer && npm run verify:anchor-position && npm run verify:renderer-url && npm run verify:transcript-store && npm run verify:turn-manager-queue && npm run verify:wander-scheduler && npm run verify:idle-fidget-scheduler && npm run verify:turn-pipeline && npm run verify:auto-titler && npm run verify:update-state"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run verify:pet-state-machine && npm run verify:response-buffer && npm run verify:chat-store && npm run verify:anchor-position && npm run verify:renderer-url && npm run verify:window-navigation && npm run verify:ipc-schemas && npm run verify:attachment-staging && npm run verify:link-manager && npm run verify:transcript-store && npm run verify:turn-manager-queue && npm run verify:wander-scheduler && npm run verify:idle-fidget-scheduler && npm run verify:turn-pipeline && npm run verify:auto-titler && npm run verify:update-state"
   },
   "dependencies": {
     "motion": "^12.42.2",

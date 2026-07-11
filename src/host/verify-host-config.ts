@@ -13,6 +13,7 @@ const GATING_ENV = [
   "SANDI_API_ENABLED",
   "SANDI_GITHUB_ENABLED",
   "SANDI_ENABLE_GITHUB",
+  "SANDI_PI_TIMEOUT_MS",
 ];
 
 function verifyHostConfig(): void {
@@ -21,8 +22,21 @@ function verifyHostConfig(): void {
   verifyGithubGatedOnFlag();
   verifyApiCanBeDisabled();
   verifyAllSurfacesDisabledThrows();
+  verifyNumericConfigRejectsTrailingJunk();
   verifyEverySurfaceSharesOnePiConfig();
   console.log("host config verification passed");
+}
+
+function verifyNumericConfigRejectsTrailingJunk(): void {
+  withEnv({ SANDI_PI_TIMEOUT_MS: "1000junk" }, () => {
+    let threw = false;
+    try {
+      loadHostConfig();
+    } catch {
+      threw = true;
+    }
+    assertEqual(threw, true, "numeric config rejects trailing junk");
+  });
 }
 
 function verifyApiOnByDefault(): void {

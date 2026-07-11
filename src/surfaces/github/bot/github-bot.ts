@@ -8,10 +8,9 @@ import type {
 } from "@/lib/conversations/types";
 import { errorMessage } from "@/lib/errors";
 import {
-  findHumanIdentity,
-  loadHumanIdentities,
+  findHumanIdentityByPlatformId,
+  HumanIdentityStore,
 } from "@/lib/identity/resolver";
-import type { HumanIdentityConfig } from "@/lib/identity/types";
 import { createLogger } from "@/lib/logging";
 import type {
   DesktopHands,
@@ -46,7 +45,12 @@ import {
   githubPlatformContext,
   isBeforeOrAt,
 } from "@/surfaces/github/github/notifications";
-import { GitHubNotificationState } from "@/surfaces/github/github/state";
+import {
+  CLAIM_RENEWAL_MS,
+  CLAIM_STALE_MS,
+  GitHubNotificationState,
+  type TriggerClaim,
+} from "@/surfaces/github/github/state";
 import { GITHUB_SURFACE_CONTEXT } from "@/surfaces/github/runtime/context";
 
 const log = createLogger("github-bot");
@@ -55,6 +59,20 @@ const MAX_GITHUB_COMMENT_CHARS = 60_000;
 // 100 notifications mapped without a cap would burst-spawn enough concurrent
 // processes to trip GitHub's secondary rate limiting.
 const MAX_CONCURRENT_TRIGGER_COLLECTIONS = 6;
+const CLAIM_RENEWAL_RETRY_MS = 30_000;
+
+export type GitHubClaimLeaseScheduler = {
+  now(): number;
+  schedule(delayMs: number, task: () => Promise<void>): { cancel(): void };
+};
+
+export type GitHubClaimLeaseRuntime = {
+  scheduler: GitHubClaimLeaseScheduler;
+  staleMs: number;
+  renewalMs: number;
+  retryMs: number;
+  expirySafetyMs: number;
+};
 
 export type GitHubBotInput = {
   config: GitHubAppConfig;
@@ -67,6 +85,7 @@ export type GitHubBotInput = {
   // can reach that desktop. Absent in a standalone GitHub process.
   desktopHands?: DesktopHands;
   state?: GitHubNotificationState;
+  claimLease?: GitHubClaimLeaseRuntime;
 };
 
 export type GitHubBotApi = GitHubNotificationApi & {
@@ -101,11 +120,14 @@ export class GitHubBot {
   readonly #state: GitHubNotificationState;
   readonly #queue = new ThreadQueue();
   readonly #pendingTriggerKeys = new Set<string>();
-  #identities: Promise<HumanIdentityConfig> | undefined;
+  readonly #identities: HumanIdentityStore;
+  readonly #claimLease: GitHubClaimLeaseRuntime;
   #pollTimer: ReturnType<typeof setInterval> | undefined;
   #polling = false;
   #botUser: GitHubUser | undefined;
   #ignoreNotificationsBefore: string | undefined;
+  #startPromise: Promise<void> | undefined;
+  #stopped = false;
 
   constructor(input: GitHubBotInput) {
     this.#config = input.config;
@@ -114,22 +136,34 @@ export class GitHubBot {
     this.#contextCompiler = input.contextCompiler;
     this.#provider = input.provider;
     this.#desktopHands = input.desktopHands;
+    this.#identities = new HumanIdentityStore(input.config.paths.configDirs, 0);
     this.#state =
       input.state ?? new GitHubNotificationState(input.config.paths.dataDir);
+    this.#claimLease = validateClaimLeaseRuntime(
+      input.claimLease ?? defaultClaimLeaseRuntime(),
+    );
   }
 
-  async start(): Promise<void> {
+  start(): Promise<void> {
+    if (this.#startPromise) return this.#startPromise;
+    this.#stopped = false;
+    const startPromise = this.#startOnce();
+    this.#startPromise = startPromise;
+    return startPromise;
+  }
+
+  async #startOnce(): Promise<void> {
     const currentUser = await this.#api.currentUser();
+    if (this.#stopped) throw new Error("GitHub bot stopped while starting");
     this.#botUser = currentUser;
     const configuredLogin = this.#config.github.login;
     if (
       configuredLogin &&
       configuredLogin.toLowerCase() !== currentUser.login.toLowerCase()
     ) {
-      log.warn("configured GitHub login differs from authenticated gh user", {
-        configuredLogin,
-        authenticatedLogin: currentUser.login,
-      });
+      throw new Error(
+        `configured GitHub login ${configuredLogin} does not match authenticated gh user ${currentUser.login}`,
+      );
     }
     log.info("GitHub surface starting", {
       login: configuredLogin ?? currentUser.login,
@@ -146,18 +180,20 @@ export class GitHubBot {
       });
     }
     await this.pollOnce();
+    if (this.#stopped) throw new Error("GitHub bot stopped while starting");
     this.#pollTimer = setInterval(() => {
       void this.pollOnce();
     }, this.#config.github.pollIntervalMs);
   }
 
   stop(): void {
-    if (!this.#pollTimer) return;
-    clearInterval(this.#pollTimer);
+    this.#stopped = true;
+    if (this.#pollTimer) clearInterval(this.#pollTimer);
     this.#pollTimer = undefined;
   }
 
   async pollOnce(): Promise<void> {
+    if (this.#stopped) return;
     if (this.#polling) {
       log.warn(
         "skipping GitHub notification poll because prior poll is active",
@@ -167,12 +203,13 @@ export class GitHubBot {
     this.#polling = true;
     try {
       const bot = await this.#bot();
-      const botLogin = this.#config.github.login ?? bot.login;
+      const botLogin = bot.login;
       const enabledReasons = new Set(this.#config.github.notificationReasons);
       const notifications = await this.#api.listNotifications({
         participating: true,
         limit: Math.min(100, this.#config.github.maxNotificationsPerPoll),
       });
+      if (this.#stopped) return;
       log.info("GitHub notification poll finished", {
         count: notifications.length,
         enabledReasons: [...enabledReasons],
@@ -196,6 +233,7 @@ export class GitHubBot {
           }),
       );
       for (const [index, result] of collected.entries()) {
+        if (this.#stopped) return;
         const notification = notifications[index];
         if (!notification) continue;
         if (result.status === "rejected") {
@@ -261,11 +299,6 @@ export class GitHubBot {
     bot: GitHubUser;
   }): Promise<void> {
     if (this.#pendingTriggerKeys.has(input.trigger.key)) return;
-    // Atomically claim the trigger across processes. Two bot processes can
-    // otherwise both read "not processed" and both run the same trigger; the
-    // claim closes that check-then-act gap so only one wins.
-    const claim = await this.#state.tryClaim(input.trigger.key);
-    if (claim !== "claimed") return;
     this.#pendingTriggerKeys.add(input.trigger.key);
 
     let enqueued = false;
@@ -276,31 +309,64 @@ export class GitHubBot {
         conversation.canonicalId,
         input.trigger.key,
         async (signal) => {
-          let completed = false;
           try {
-            await this.#runTriggerTurn({
-              trigger: input.trigger,
-              bot: input.bot,
-              conversation,
-              actor,
-              signal,
+            // Claim only when the queued job starts. A claim made while another
+            // turn is ahead of this one could expire before this callback runs.
+            const confirmedAt = this.#claimLease.scheduler.now();
+            const claimResult = await this.#state.tryClaim(input.trigger.key);
+            if (typeof claimResult === "string") return;
+            const { claim } = claimResult;
+            const lease = new TriggerClaimLease({
+              state: this.#state,
+              claim,
+              confirmedAt,
+              runtime: this.#claimLease,
             });
-            completed = true;
-          } finally {
-            if (completed) {
-              await this.#state.markProcessed({
-                key: input.trigger.key,
-                notificationId: input.trigger.notificationId,
-                reason: input.trigger.notificationReason,
-                repository: input.trigger.repository.full_name,
-                subject: `${input.trigger.thread.kind}:${input.trigger.thread.number}`,
+            let completed = false;
+            try {
+              lease.start();
+              const turnSignal = AbortSignal.any([signal, lease.signal]);
+              turnSignal.throwIfAborted();
+              await this.#runTriggerTurn({
+                trigger: input.trigger,
+                bot: input.bot,
+                conversation,
+                actor,
+                signal: turnSignal,
               });
-            } else {
-              // The turn did not complete: release the claim so a later retry
-              // can re-claim it rather than leaving it wedged until the claim
-              // ages out.
-              await this.#state.releaseClaim(input.trigger.key);
+              turnSignal.throwIfAborted();
+              completed = true;
+            } finally {
+              try {
+                if (completed) {
+                  const marked = await this.#state.markProcessed(
+                    {
+                      key: input.trigger.key,
+                      notificationId: input.trigger.notificationId,
+                      reason: input.trigger.notificationReason,
+                      repository: input.trigger.repository.full_name,
+                      subject: `${input.trigger.thread.kind}:${input.trigger.thread.number}`,
+                    },
+                    claim,
+                  );
+                  if (!marked) {
+                    log.warn(
+                      "GitHub trigger completed after losing its claim",
+                      {
+                        key: input.trigger.key,
+                      },
+                    );
+                  }
+                } else {
+                  // The turn did not complete: release the claim so a later
+                  // poll can retry without waiting for the lease to age out.
+                  await this.#state.releaseClaim(claim);
+                }
+              } finally {
+                lease.stop();
+              }
             }
+          } finally {
             this.#pendingTriggerKeys.delete(input.trigger.key);
           }
         },
@@ -315,10 +381,7 @@ export class GitHubBot {
       });
     } finally {
       if (!enqueued) {
-        // We claimed but never handed work to the queue, so the queued callback
-        // that would release the claim never runs. Release it here.
         this.#pendingTriggerKeys.delete(input.trigger.key);
-        await this.#state.releaseClaim(input.trigger.key);
       }
     }
   }
@@ -330,6 +393,7 @@ export class GitHubBot {
     actor: ConversationParticipant;
     signal: AbortSignal;
   }): Promise<void> {
+    input.signal.throwIfAborted();
     log.info("starting GitHub conversation turn", {
       conversationId: input.conversation.canonicalId,
       triggerKey: input.trigger.key,
@@ -339,6 +403,7 @@ export class GitHubBot {
       deliveryInstructions: GITHUB_DELIVERY_INSTRUCTIONS,
       skillHintQuery: skillHintQuery(input.trigger),
     });
+    input.signal.throwIfAborted();
     const lease = this.#leaseDesktopHands(input.actor.identityId, input.signal);
     const request: ProviderTurnRequest = {
       conversationId: input.conversation.canonicalId,
@@ -378,6 +443,7 @@ export class GitHubBot {
         }
         throw error;
       }
+      input.signal.throwIfAborted();
       log.info("GitHub provider turn finished", {
         conversationId: input.conversation.canonicalId,
         triggerKey: input.trigger.key,
@@ -387,6 +453,7 @@ export class GitHubBot {
       await this.#sendProviderResponse({
         trigger: input.trigger,
         response,
+        signal: input.signal,
       });
     } finally {
       lease?.revoke();
@@ -410,6 +477,7 @@ export class GitHubBot {
   async #sendProviderResponse(input: {
     trigger: GitHubNotificationTrigger;
     response: ProviderTurnResponse;
+    signal: AbortSignal;
   }): Promise<void> {
     if (input.response.deliverySideEffects) return;
     const content = input.response.text.trim();
@@ -419,6 +487,7 @@ export class GitHubBot {
     let deliveredChunks = 0;
     for (const [index, chunk] of chunks.entries()) {
       try {
+        input.signal.throwIfAborted();
         if (index === 0 && input.trigger.source.kind === "review_comment") {
           await this.#api.replyToReviewComment({
             owner: input.trigger.thread.owner,
@@ -479,20 +548,14 @@ export class GitHubBot {
       joinedAt: new Date().toISOString(),
     };
     if (user.name) participant.displayName = user.name;
-    const identities = await this.#loadIdentities();
-    const identity = findHumanIdentity({
+    const identities = await this.#identities.load();
+    const identity = findHumanIdentityByPlatformId({
       identities,
       platform: "github",
       platformUserId: participant.platformUserId,
-      username: participant.username,
     });
     if (!identity) return participant;
     return { ...participant, identityId: identity.id };
-  }
-
-  #loadIdentities(): Promise<HumanIdentityConfig> {
-    this.#identities ??= loadHumanIdentities(this.#config.paths.configDirs);
-    return this.#identities;
   }
 
   async #bot(): Promise<GitHubUser> {
@@ -500,6 +563,183 @@ export class GitHubBot {
     this.#botUser = await this.#api.currentUser();
     return this.#botUser;
   }
+}
+
+class TriggerClaimLease {
+  readonly #state: GitHubNotificationState;
+  readonly #claim: TriggerClaim;
+  readonly #runtime: GitHubClaimLeaseRuntime;
+  readonly #controller = new AbortController();
+  #confirmedAt: number;
+  #renewalTimer: { cancel(): void } | undefined;
+  #expiryTimer: { cancel(): void } | undefined;
+  #stopped = true;
+
+  constructor(input: {
+    state: GitHubNotificationState;
+    claim: TriggerClaim;
+    confirmedAt: number;
+    runtime: GitHubClaimLeaseRuntime;
+  }) {
+    this.#state = input.state;
+    this.#claim = input.claim;
+    this.#confirmedAt = input.confirmedAt;
+    this.#runtime = input.runtime;
+  }
+
+  get signal(): AbortSignal {
+    return this.#controller.signal;
+  }
+
+  start(): void {
+    if (!this.#stopped) return;
+    this.#stopped = false;
+    this.#scheduleExpiry();
+    this.#scheduleRenewal(this.#runtime.renewalMs);
+  }
+
+  stop(): void {
+    if (this.#stopped) return;
+    this.#stopped = true;
+    this.#renewalTimer?.cancel();
+    this.#renewalTimer = undefined;
+    this.#expiryTimer?.cancel();
+    this.#expiryTimer = undefined;
+  }
+
+  #scheduleExpiry(): void {
+    this.#expiryTimer?.cancel();
+    const deadline = this.#expiryDeadline();
+    const delayMs = Math.max(0, deadline - this.#runtime.scheduler.now());
+    this.#expiryTimer = this.#runtime.scheduler.schedule(delayMs, async () => {
+      this.#expiryTimer = undefined;
+      this.#abort(
+        new Error(
+          "GitHub trigger claim could not be confirmed before its safety deadline",
+        ),
+      );
+    });
+  }
+
+  #scheduleRenewal(delayMs: number): void {
+    this.#renewalTimer?.cancel();
+    this.#renewalTimer = this.#runtime.scheduler.schedule(delayMs, async () => {
+      this.#renewalTimer = undefined;
+      await this.#renew();
+    });
+  }
+
+  async #renew(): Promise<void> {
+    if (this.#stopped) return;
+    const confirmedAt = this.#runtime.scheduler.now();
+    try {
+      const renewed = await this.#state.renewClaim(this.#claim);
+      if (this.#stopped) return;
+      if (!renewed) {
+        this.#abort(new Error("GitHub trigger claim ownership was lost"));
+        return;
+      }
+      // The attempt start is a conservative lower bound for the time written
+      // to disk, so the local deadline can never outlive the persisted lease.
+      this.#confirmedAt = confirmedAt;
+      this.#scheduleExpiry();
+      this.#scheduleRenewal(
+        Math.max(
+          0,
+          confirmedAt + this.#runtime.renewalMs - this.#runtime.scheduler.now(),
+        ),
+      );
+    } catch (error) {
+      if (this.#stopped) return;
+      log.error("failed to renew GitHub trigger claim", {
+        key: this.#claim.key,
+        error: errorMessage(error),
+      });
+      const remainingMs =
+        this.#expiryDeadline() - this.#runtime.scheduler.now();
+      if (remainingMs <= 1) {
+        this.#abort(
+          new Error("GitHub trigger claim renewal failed until its deadline", {
+            cause: error,
+          }),
+        );
+        return;
+      }
+      this.#scheduleRenewal(Math.min(this.#runtime.retryMs, remainingMs - 1));
+    }
+  }
+
+  #expiryDeadline(): number {
+    return (
+      this.#confirmedAt + this.#runtime.staleMs - this.#runtime.expirySafetyMs
+    );
+  }
+
+  #abort(reason: Error): void {
+    if (this.#stopped) return;
+    this.stop();
+    this.#controller.abort(reason);
+  }
+}
+
+function defaultClaimLeaseRuntime(): GitHubClaimLeaseRuntime {
+  return {
+    scheduler: nodeClaimLeaseScheduler,
+    staleMs: CLAIM_STALE_MS,
+    renewalMs: CLAIM_RENEWAL_MS,
+    retryMs: CLAIM_RENEWAL_RETRY_MS,
+    // This leaves a full normal renewal interval for an aborted provider or
+    // GitHub command to settle while the persisted claim is still exclusive.
+    expirySafetyMs: CLAIM_RENEWAL_MS,
+  };
+}
+
+const nodeClaimLeaseScheduler: GitHubClaimLeaseScheduler = {
+  now: Date.now,
+  schedule(delayMs, task) {
+    const timer = setTimeout(() => {
+      void task().catch((error: unknown) => {
+        log.error("GitHub claim lease timer failed", {
+          error: errorMessage(error),
+        });
+      });
+    }, delayMs);
+    timer.unref();
+    return { cancel: () => clearTimeout(timer) };
+  },
+};
+
+function validateClaimLeaseRuntime(
+  runtime: GitHubClaimLeaseRuntime,
+): GitHubClaimLeaseRuntime {
+  const timings: Array<readonly [string, number]> = [
+    ["staleMs", runtime.staleMs],
+    ["renewalMs", runtime.renewalMs],
+    ["retryMs", runtime.retryMs],
+    ["expirySafetyMs", runtime.expirySafetyMs],
+  ];
+  for (const [name, value] of timings) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`GitHub claim lease ${name} must be a positive integer`);
+    }
+  }
+  const confirmedLifetimeMs = runtime.staleMs - runtime.expirySafetyMs;
+  if (confirmedLifetimeMs <= 0) {
+    throw new Error(
+      "GitHub claim lease expirySafetyMs must be smaller than staleMs",
+    );
+  }
+  if (runtime.renewalMs >= confirmedLifetimeMs) {
+    throw new Error(
+      "GitHub claim lease renewalMs must be shorter than its confirmed lifetime",
+    );
+  }
+  if (runtime.retryMs >= confirmedLifetimeMs) {
+    throw new Error(
+      "GitHub claim lease retryMs must be shorter than its confirmed lifetime",
+    );
+  }
+  return runtime;
 }
 
 function accountRoutingForParticipant(

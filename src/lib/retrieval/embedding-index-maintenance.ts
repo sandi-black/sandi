@@ -3,6 +3,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import { errorMessage } from "@/lib/errors";
+import { isMissingPathError } from "@/lib/fs-errors";
 import type { Logger } from "@/lib/logging";
 import {
   memoryEmbeddingIndexSnapshot,
@@ -108,7 +109,6 @@ function startIndexMaintainer(
     stopped: false,
   };
 
-  void refreshWatchers(input, state);
   void ensureFresh(input, state, "startup");
 
   return {
@@ -188,7 +188,14 @@ async function ensureFresh(
     });
   } finally {
     state.rebuilding = false;
-    await refreshWatchers(input, state);
+    try {
+      await refreshWatchers(input, state);
+    } catch (error) {
+      input.logger.error("embedding watcher refresh failed", {
+        kind: input.kind,
+        error: errorMessage(error),
+      });
+    }
     if (state.queued && !state.stopped) {
       state.queued = false;
       scheduleEnsureFresh(input, state, "queued change");
@@ -203,7 +210,9 @@ async function refreshWatchers(
   if (state.stopped) return;
   closeWatchers(state);
   const dirs = await listDirectories(input.sourceRoot);
+  if (state.stopped) return;
   for (const dir of dirs) {
+    if (state.stopped) return;
     try {
       state.watchers.push(
         watch(dir, { persistent: true }, () => {
@@ -248,8 +257,9 @@ async function collectDirectories(dir: string, dirs: string[]): Promise<void> {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return;
+  } catch (error) {
+    if (isMissingPathError(error)) return;
+    throw error;
   }
   dirs.push(dir);
   for (const entry of entries) {

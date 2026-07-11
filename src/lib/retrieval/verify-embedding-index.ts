@@ -18,7 +18,11 @@ import {
   embeddingIndexCacheRoot,
   loadCurrentEmbeddingIndex,
 } from "@/lib/retrieval/embedding-index";
-import type { EmbeddingEngine } from "@/lib/retrieval/embeddings";
+import {
+  cosineSimilarity,
+  createEmbeddingEngineFromEnv,
+  type EmbeddingEngine,
+} from "@/lib/retrieval/embeddings";
 import { withTempDir } from "@/lib/verification/harness";
 
 async function verifySkillIndex(dataDir: string): Promise<void> {
@@ -176,6 +180,28 @@ const queryOnlyEmbeddingEngine: EmbeddingEngine = {
 };
 
 const previousDataDir = process.env["SANDI_DATA_DIR"];
+
+assert.equal(
+  cosineSimilarity([1, 0], [1]),
+  0,
+  "mismatched embedding dimensions must fail closed",
+);
+assert.throws(
+  () =>
+    createEmbeddingEngineFromEnv({
+      SANDI_EMBEDDING_BATCH_SIZE: "24junk",
+    }),
+  /positive integer/,
+  "embedding batch size rejects trailing junk",
+);
+assert.throws(
+  () =>
+    createEmbeddingEngineFromEnv({
+      SANDI_EMBEDDING_LOCAL_FILES_ONLY: "maybe",
+    }),
+  /true, false, 1, or 0/,
+  "embedding booleans reject ambiguous values",
+);
 
 await withTempDir("sandi-embedding-index-", async (tempRoot) => {
   try {

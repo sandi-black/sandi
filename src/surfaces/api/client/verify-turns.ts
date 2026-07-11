@@ -1,10 +1,12 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 
+import { errorMessage } from "@/lib/errors";
 import { assert, assertEqual } from "@/lib/verification/harness";
 import {
   resolveBooleanFlag,
   resolveConversationId,
 } from "@/surfaces/api/client/chat";
+import { postJson } from "@/surfaces/api/client/http";
 import { createResponsePrinter } from "@/surfaces/api/client/response-printer";
 import { reconcileSuffix, sendTurn } from "@/surfaces/api/client/turns";
 import type { ResponseChunk } from "@/surfaces/api/devices/protocol";
@@ -23,6 +25,7 @@ async function verifyTurns(): Promise<void> {
   verifyReconcile();
   verifyPrinter();
   await verifySendTurn();
+  await verifyHttpBounds();
   console.log("turns verification passed");
 }
 
@@ -243,6 +246,82 @@ async function verifySendTurn(): Promise<void> {
     "an unreachable server reports a reachability error",
   );
   console.log("ok sendTurn maps server replies to outcomes");
+}
+
+async function verifyHttpBounds(): Promise<void> {
+  const server = createServer((request, response) => {
+    request.resume();
+    if (request.url === "/drip") {
+      response.writeHead(200, { "content-type": "application/json" });
+      const drip = setInterval(() => response.write(" "), 10);
+      response.on("close", () => clearInterval(drip));
+      return;
+    }
+    if (request.url === "/large") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end("x".repeat(4_096));
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  const url = await listen(server);
+  try {
+    const timeoutError = await rejectionMessageWithin(
+      postJson({
+        url,
+        path: "/drip",
+        body: {},
+        timeoutMs: 75,
+      }),
+      1_000,
+    );
+    assert(
+      timeoutError.includes("timed out after 75ms"),
+      `an active slow-drip response hits the total deadline (got ${timeoutError})`,
+    );
+
+    const sizeError = await rejectionMessageWithin(
+      postJson({
+        url,
+        path: "/large",
+        body: {},
+        timeoutMs: 1_000,
+        maxResponseBytes: 1_024,
+      }),
+      1_000,
+    );
+    assert(
+      sizeError.includes("response exceeded 1024 bytes"),
+      `an oversized response is rejected at its byte cap (got ${sizeError})`,
+    );
+    console.log("ok postJson bounds total time and response bytes");
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise<void>((resolveClose) =>
+      server.close(() => resolveClose()),
+    );
+  }
+}
+
+async function rejectionMessageWithin(
+  promise: Promise<unknown>,
+  guardMs: number,
+): Promise<string> {
+  let guardTimer: ReturnType<typeof setTimeout> | undefined;
+  const guard = new Promise<never>((_resolve, reject) => {
+    guardTimer = setTimeout(
+      () => reject(new Error(`request did not settle within ${guardMs}ms`)),
+      guardMs,
+    );
+  });
+  try {
+    await Promise.race([promise, guard]);
+    return "request unexpectedly resolved";
+  } catch (error) {
+    return errorMessage(error);
+  } finally {
+    if (guardTimer) clearTimeout(guardTimer);
+  }
 }
 
 function delta(

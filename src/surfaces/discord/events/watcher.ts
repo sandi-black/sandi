@@ -1,11 +1,11 @@
 import type { FSWatcher } from "node:fs";
-import { existsSync, watch } from "node:fs";
+import { watch } from "node:fs";
 import { mkdir, readdir } from "node:fs/promises";
-import { join } from "node:path";
 
 import { Cron } from "croner";
 
 import { errorMessage } from "@/lib/errors";
+import { isMissingPathError } from "@/lib/fs-errors";
 import { createLogger } from "@/lib/logging";
 import type { SandiEvent } from "@/surfaces/discord/events/schemas";
 import { deleteEvent, readEvent } from "@/surfaces/discord/events/store";
@@ -27,6 +27,8 @@ export class EventWatcher {
   readonly #crons = new Map<string, Cron>();
   readonly #debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   #watcher: FSWatcher | undefined;
+  #running = false;
+  #generation = 0;
 
   constructor(eventsRoot: string, onTrigger: (trigger: EventTrigger) => void) {
     this.#eventsRoot = eventsRoot;
@@ -34,18 +36,40 @@ export class EventWatcher {
   }
 
   async start(): Promise<void> {
-    await mkdir(this.#eventsRoot, { recursive: true });
-    await this.#scanExisting();
-    this.#watcher = watch(this.#eventsRoot, (_eventType, filename) => {
-      if (typeof filename !== "string" || !filename.endsWith(".json")) return;
-      this.#debounce(filename, () => {
-        void this.#handleFileChange(filename);
+    if (this.#running) return;
+    const generation = ++this.#generation;
+    this.#running = true;
+    try {
+      await mkdir(this.#eventsRoot, { recursive: true });
+      if (!this.#running || generation !== this.#generation) return;
+      // Install the watcher before scanning so a file created between readdir
+      // and watch registration cannot remain invisible until restart.
+      this.#watcher = watch(this.#eventsRoot, (_eventType, filename) => {
+        if (typeof filename !== "string" || !filename.endsWith(".json")) {
+          return;
+        }
+        this.#debounce(filename, () => {
+          void this.#handleFileChange(filename);
+        });
       });
-    });
+      this.#watcher.on("error", (error) => {
+        log.error("events directory watcher failed", {
+          eventsRoot: this.#eventsRoot,
+          error: errorMessage(error),
+        });
+        this.stop();
+      });
+      await this.#scanExisting();
+    } catch (error) {
+      this.stop();
+      throw error;
+    }
     log.info("watching events directory", { eventsRoot: this.#eventsRoot });
   }
 
   stop(): void {
+    this.#generation += 1;
+    this.#running = false;
     this.#watcher?.close();
     this.#watcher = undefined;
     for (const timer of this.#timers.values()) clearTimeout(timer);
@@ -60,8 +84,9 @@ export class EventWatcher {
     let files: string[];
     try {
       files = await readdir(this.#eventsRoot);
-    } catch {
-      return;
+    } catch (error) {
+      if (isMissingPathError(error)) return;
+      throw error;
     }
     for (const filename of files) {
       if (filename.endsWith(".json")) await this.#handleFileChange(filename);
@@ -69,6 +94,7 @@ export class EventWatcher {
   }
 
   #debounce(filename: string, run: () => void): void {
+    if (!this.#running) return;
     const existing = this.#debounceTimers.get(filename);
     if (existing) clearTimeout(existing);
     this.#debounceTimers.set(
@@ -81,17 +107,17 @@ export class EventWatcher {
   }
 
   async #handleFileChange(filename: string): Promise<void> {
+    if (!this.#running) return;
     const id = filename.slice(0, -".json".length);
-    const filepath = join(this.#eventsRoot, filename);
-    if (!existsSync(filepath)) {
-      this.#cancel(id);
-      return;
-    }
+    // A malformed replacement must fail closed instead of leaving the prior
+    // valid schedule active.
+    this.#cancel(id);
 
     let event: SandiEvent;
     try {
       event = await readEvent(this.#eventsRoot, id);
     } catch (error) {
+      if (isMissingPathError(error)) return;
       log.error("invalid event file", {
         id,
         error: errorMessage(error),
@@ -99,7 +125,7 @@ export class EventWatcher {
       return;
     }
 
-    this.#cancel(id);
+    if (!this.#running) return;
     try {
       this.#schedule(id, event);
     } catch (error) {
@@ -111,6 +137,7 @@ export class EventWatcher {
   }
 
   #schedule(id: string, event: SandiEvent): void {
+    if (!this.#running) return;
     switch (event.type) {
       case "immediate":
         this.#triggerAndDelete(id, event, `[EVENT:${id}:immediate]`);
@@ -161,6 +188,7 @@ export class EventWatcher {
       timezone: event.timezone,
     });
     const cron = new Cron(event.schedule, { timezone: event.timezone }, () => {
+      if (!this.#running) return;
       this.#onTrigger({
         id,
         event,
@@ -171,9 +199,15 @@ export class EventWatcher {
   }
 
   #triggerAndDelete(id: string, event: SandiEvent, label: string): void {
+    if (!this.#running) return;
     log.info("executing event", { id, type: event.type });
     this.#onTrigger({ id, event, label });
-    void deleteEvent(this.#eventsRoot, id);
+    void deleteEvent(this.#eventsRoot, id).catch((error: unknown) => {
+      log.error("failed to delete triggered event", {
+        id,
+        error: errorMessage(error),
+      });
+    });
   }
 
   #cancel(id: string): void {

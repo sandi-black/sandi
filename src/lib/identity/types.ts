@@ -78,9 +78,9 @@ export type PlatformIdentityDescriptor = {
 
 // The one place a new identity platform gets wired in: reading its account
 // out of a HumanIdentityRecord's `platforms` block, normalized to a common
-// shape. findHumanIdentity and assertUniqueIdentities in resolver.ts dispatch
-// through this table instead of hand-rolling a branch per platform, so adding
-// a platform to IdentityPlatform means adding one entry here.
+// shape. Identity resolution and duplicate checks dispatch through this table
+// instead of hand-rolling a branch per platform, so adding a platform to
+// IdentityPlatform means adding one entry here.
 export const PLATFORM_IDENTITY_DESCRIPTORS: Record<
   IdentityPlatform,
   PlatformIdentityDescriptor

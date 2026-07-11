@@ -35,6 +35,7 @@ const LATEST_RELEASE_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${G
 // renderer load) instead of competing with it.
 const FIRST_CHECK_DELAY_MS = 30_000;
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const PORTABLE_CHECK_TIMEOUT_MS = 15_000;
 
 export type UpdateFlavor = "installed" | "portable" | "dev";
 
@@ -180,6 +181,9 @@ async function lookUpLatestTag(): Promise<string> {
       // GitHub's API rejects requests without a User-Agent.
       "user-agent": "sandi-desktop",
     },
+    // The wall-clock deadline covers DNS, headers, and reading/parsing the
+    // response so the tray cannot remain in "checking" forever.
+    signal: AbortSignal.timeout(PORTABLE_CHECK_TIMEOUT_MS),
   });
   if (!response.ok) {
     throw new Error(`release lookup returned ${response.status}`);

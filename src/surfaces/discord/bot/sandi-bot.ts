@@ -28,10 +28,9 @@ import type {
 import { formatDuration } from "@/lib/duration";
 import { errorMessage } from "@/lib/errors";
 import {
-  findHumanIdentity,
-  loadHumanIdentities,
+  findHumanIdentityByPlatformId,
+  HumanIdentityStore,
 } from "@/lib/identity/resolver";
-import type { HumanIdentityConfig } from "@/lib/identity/types";
 import { createLogger } from "@/lib/logging";
 import {
   defaultApiPairingsPath,
@@ -220,8 +219,10 @@ export class SandiBot {
   readonly #queue = new ThreadQueue();
   #ignoredChannels: Promise<Set<string>> | undefined;
   readonly #failureNotices = new Map<string, number>();
-  #identities: Promise<HumanIdentityConfig> | undefined;
+  readonly #identities: HumanIdentityStore;
   #forum: ForumChannel | undefined;
+  #startPromise: Promise<void> | undefined;
+  #lifecycle: AbortController | undefined;
 
   constructor(deps: SandiBotDependencies) {
     this.#config = deps.config;
@@ -229,10 +230,16 @@ export class SandiBot {
     this.#contextCompiler = deps.contextCompiler;
     this.#provider = deps.provider;
     this.#desktopHands = deps.desktopHands;
+    this.#identities = new HumanIdentityStore(this.#config.paths.configDirs, 0);
     this.#events = new EventWatcher(
       this.#config.paths.eventsRoot,
       (trigger) => {
-        void this.#enqueueEventTurn(trigger);
+        void this.#enqueueEventTurn(trigger).catch((error: unknown) => {
+          log.error("failed to enqueue Discord event turn", {
+            eventId: trigger.id,
+            error: errorMessage(error),
+          });
+        });
       },
     );
     this.#client = new Client({
@@ -265,19 +272,28 @@ export class SandiBot {
     this.#reactions = new ReactionDigestStore(this.#config.paths.dataDir);
   }
 
-  async start(): Promise<void> {
-    this.#client.once(Events.ClientReady, async (client) => {
-      log.info("discord client ready", {
-        user: client.user.tag,
+  start(): Promise<void> {
+    if (this.#startPromise) return this.#startPromise;
+    const lifecycle = new AbortController();
+    this.#lifecycle = lifecycle;
+    const startPromise = this.#startOnce(lifecycle.signal);
+    this.#startPromise = startPromise;
+    return startPromise;
+  }
+
+  async #startOnce(signal: AbortSignal): Promise<void> {
+    const ready = new Promise<void>((resolveReady, rejectReady) => {
+      const onAbort = (): void => {
+        rejectReady(new Error("Discord bot stopped while starting"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.#client.once(Events.ClientReady, (client) => {
+        void this.#initializeReady(client, signal)
+          .then(resolveReady, rejectReady)
+          .finally(() => {
+            signal.removeEventListener("abort", onAbort);
+          });
       });
-      this.#forum = await findSandiForum(this.#client, this.#config.discord);
-      log.info("sandi forum channel ready", {
-        channelId: this.#forum.id,
-        name: this.#forum.name,
-      });
-      await postStartupStatus(this.#client, this.#config.discord);
-      await this.#events.start();
-      await this.#reminders.start();
     });
 
     this.#client.on(Events.Debug, (message) => {
@@ -320,7 +336,13 @@ export class SandiBot {
     });
 
     this.#client.on(Events.MessageCreate, (message) => {
-      void this.#handleMessage(message);
+      void this.#handleMessage(message).catch((error: unknown) => {
+        log.error("failed to handle Discord message", {
+          messageId: message.id,
+          channelId: message.channelId,
+          error: errorMessage(error),
+        });
+      });
     });
 
     this.#client.on(Events.MessageReactionAdd, (reaction, user) => {
@@ -344,11 +366,44 @@ export class SandiBot {
       });
     });
 
-    await this.#client.login(this.#config.discord.token);
+    try {
+      await this.#client.login(this.#config.discord.token);
+      await ready;
+    } catch (error) {
+      this.#lifecycle?.abort();
+      await ready.catch(() => {});
+      this.#events.stop();
+      this.#reminders.stop();
+      this.#client.removeAllListeners();
+      this.#client.destroy();
+      throw error;
+    }
+  }
+
+  async #initializeReady(
+    client: { user: { tag: string } },
+    signal: AbortSignal,
+  ): Promise<void> {
+    log.info("discord client ready", {
+      user: client.user.tag,
+    });
+    this.#forum = await findSandiForum(this.#client, this.#config.discord);
+    signal.throwIfAborted();
+    log.info("sandi forum channel ready", {
+      channelId: this.#forum.id,
+      name: this.#forum.name,
+    });
+    await postStartupStatus(this.#client, this.#config.discord);
+    signal.throwIfAborted();
+    await this.#events.start();
+    signal.throwIfAborted();
+    await this.#reminders.start();
+    signal.throwIfAborted();
   }
 
   stop(): void {
     log.info("stopping Discord bot");
+    this.#lifecycle?.abort();
     this.#events.stop();
     this.#reminders.stop();
     this.#client.removeAllListeners();
@@ -694,7 +749,7 @@ export class SandiBot {
     // stale cache) and delegate the auth-grade resolution and code issuance to
     // issueDeviceCode. A stranger, or a member configured without an immutable
     // Discord account id, gets no code.
-    const identities = await loadHumanIdentities(this.#config.paths.configDirs);
+    const identities = await this.#identities.load();
     const result = await issueDeviceCode({
       identities,
       pairingsPath: defaultApiPairingsPath(this.#config.paths.dataDir),
@@ -1660,20 +1715,14 @@ export class SandiBot {
   async #withKnownIdentity(
     participant: ConversationParticipant,
   ): Promise<ConversationParticipant> {
-    const identities = await this.#loadIdentities();
-    const identity = findHumanIdentity({
+    const identities = await this.#identities.load();
+    const identity = findHumanIdentityByPlatformId({
       identities,
       platform: participant.platform,
       platformUserId: participant.platformUserId,
-      username: participant.username,
     });
     if (!identity) return participant;
     return { ...participant, identityId: identity.id };
-  }
-
-  #loadIdentities(): Promise<HumanIdentityConfig> {
-    this.#identities ??= loadHumanIdentities(this.#config.paths.configDirs);
-    return this.#identities;
   }
 
   #loadIgnoredChannels(): Promise<Set<string>> {

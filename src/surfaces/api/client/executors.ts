@@ -1,9 +1,22 @@
 import { spawn } from "node:child_process";
-import type { Dirent, Stats } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import type { Stats } from "node:fs";
+import {
+  mkdir,
+  open,
+  opendir,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { StringDecoder } from "node:string_decoder";
+import { TextDecoder } from "node:util";
 
 import { errorMessage } from "@/lib/errors";
+import { isMissingPathError } from "@/lib/fs-errors";
 import {
   listMonitors,
   listWindows,
@@ -33,12 +46,23 @@ import type {
 const MAX_OUTPUT_CHARS = 100_000;
 const MAX_LIST_ENTRIES = 1_000;
 const MAX_MATCH_RESULTS = 1_000;
-const MAX_WALK_FILES = 50_000;
+const MAX_WALK_ENTRIES = 50_000;
+const MAX_TEXT_FILE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
 const MAX_BASH_TIMEOUT_MS = 1_200_000;
 // Grace between SIGTERM and the escalated SIGKILL for a command that ignores the
 // term. Short: the command is already past its deadline or cancelled.
 const KILL_GRACE_MS = 2_000;
+// Once both tree-kill attempts have run, stop waiting on inherited pipes from
+// descendants that escaped the process tree. A remote caller must always get a
+// bounded answer even when the operating system never emits `close`.
+const KILL_SETTLEMENT_GRACE_MS = 1_000;
+
+// Pi may issue independent tool calls concurrently. Edits to one real file must
+// still observe each other's result, including when callers name that file
+// through different symlink paths, or a later write can silently erase an
+// earlier one.
+const fileMutationQueues = new Map<string, Promise<void>>();
 
 export type ExecutorContext = {
   // Relative paths resolve against this directory; absolute paths are used as
@@ -93,7 +117,7 @@ async function readLocal(
   context: ExecutorContext,
 ): Promise<ToolCallOutcome> {
   const path = resolvePath(context, params.path);
-  const content = await readFile(path, "utf8");
+  const content = await readBoundedUtf8File(path);
   const lines = content.split("\n");
   const offset = params.offset ?? 0;
   const end = params.limit !== undefined ? offset + params.limit : lines.length;
@@ -109,10 +133,12 @@ async function writeLocal(
   context: ExecutorContext,
 ): Promise<ToolCallOutcome> {
   const path = resolvePath(context, params.path);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, params.content, "utf8");
-  const bytes = Buffer.byteLength(params.content, "utf8");
-  return ok(`wrote ${bytes} bytes to ${path}`);
+  return withFileMutationQueue(path, async () => {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, params.content, "utf8");
+    const bytes = Buffer.byteLength(params.content, "utf8");
+    return ok(`wrote ${bytes} bytes to ${path}`);
+  });
 }
 
 async function editLocal(
@@ -120,22 +146,83 @@ async function editLocal(
   context: ExecutorContext,
 ): Promise<ToolCallOutcome> {
   const path = resolvePath(context, params.path);
-  const content = await readFile(path, "utf8");
-  const occurrences = countOccurrences(content, params.oldString);
-  if (occurrences === 0) {
-    return refused("oldString was not found in the file");
+  return withFileMutationQueue(path, async (canonicalPath) => {
+    const content = await readBoundedUtf8File(canonicalPath);
+    const occurrences = countOccurrences(content, params.oldString);
+    if (occurrences === 0) {
+      return refused("oldString was not found in the file");
+    }
+    if (occurrences > 1 && params.replaceAll !== true) {
+      return refused(
+        `oldString is not unique (${occurrences} matches); pass replaceAll to replace every one`,
+      );
+    }
+    const next =
+      params.replaceAll === true
+        ? content.split(params.oldString).join(params.newString)
+        : content.replace(params.oldString, params.newString);
+    await replaceFileAtomically(canonicalPath, next);
+    return ok(`replaced ${occurrences} occurrence(s) in ${path}`);
+  });
+}
+
+async function withFileMutationQueue<T>(
+  path: string,
+  run: (canonicalPath: string) => Promise<T>,
+): Promise<T> {
+  let canonicalPath: string;
+  try {
+    canonicalPath = await realpath(path);
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+    canonicalPath = resolve(path);
   }
-  if (occurrences > 1 && params.replaceAll !== true) {
-    return refused(
-      `oldString is not unique (${occurrences} matches); pass replaceAll to replace every one`,
-    );
+  const prior = fileMutationQueues.get(canonicalPath) ?? Promise.resolve();
+  let release = (): void => {};
+  const gate = new Promise<void>((resolveGate) => {
+    release = resolveGate;
+  });
+  const tail = prior.then(() => gate);
+  fileMutationQueues.set(canonicalPath, tail);
+  await prior;
+  try {
+    return await run(canonicalPath);
+  } finally {
+    release();
+    if (fileMutationQueues.get(canonicalPath) === tail) {
+      fileMutationQueues.delete(canonicalPath);
+    }
   }
-  const next =
-    params.replaceAll === true
-      ? content.split(params.oldString).join(params.newString)
-      : content.replace(params.oldString, params.newString);
-  await writeFile(path, next, "utf8");
-  return ok(`replaced ${occurrences} occurrence(s) in ${path}`);
+}
+
+async function replaceFileAtomically(
+  path: string,
+  content: string,
+): Promise<void> {
+  const stats = await stat(path);
+  const temp = join(
+    dirname(path),
+    `.sandi-edit-${randomBytes(6).toString("hex")}.tmp`,
+  );
+  try {
+    await writeFile(temp, content, {
+      encoding: "utf8",
+      flag: "wx",
+      flush: true,
+      mode: stats.mode & 0o7777,
+    });
+    await rename(temp, path);
+  } catch (error) {
+    try {
+      await rm(temp, { force: true });
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        `could not replace ${path} or remove its temporary file`,
+      );
+    }
+    throw error;
+  }
 }
 
 async function listLocal(
@@ -143,16 +230,19 @@ async function listLocal(
   context: ExecutorContext,
 ): Promise<ToolCallOutcome> {
   const path = resolvePath(context, params.path);
-  const entries = await readdir(path, { withFileTypes: true });
-  const names = entries
-    .map((entry) => (entry.isDirectory() ? `${entry.name}/` : entry.name))
-    .sort((a, b) => a.localeCompare(b));
-  const shown = names.slice(0, MAX_LIST_ENTRIES);
-  const note =
-    names.length > shown.length
-      ? `\n(${names.length - shown.length} more entries omitted)`
-      : "";
-  return ok(`${shown.join("\n")}${note}`);
+  const names: string[] = [];
+  let truncated = false;
+  const directory = await opendir(path);
+  for await (const entry of directory) {
+    if (names.length >= MAX_LIST_ENTRIES) {
+      truncated = true;
+      break;
+    }
+    names.push(entry.isDirectory() ? `${entry.name}/` : entry.name);
+  }
+  names.sort((a, b) => a.localeCompare(b));
+  const note = truncated ? "\n(listing truncated; more entries exist)" : "";
+  return ok(`${names.join("\n")}${note}`);
 }
 
 async function globLocal(
@@ -174,16 +264,22 @@ async function globLocal(
   const matcher = globToRegExp(params.pattern);
   const matches: string[] = [];
   const skipped: string[] = [];
-  for await (const file of walkFiles(base, skipped)) {
+  const traversal = newWalkState();
+  let resultLimitReached = false;
+  for await (const file of walkFiles(base, skipped, traversal, signal)) {
     if (signal?.aborted) return refused("cancelled");
     const rel = toPosix(relative(base, file));
     if (matcher.test(rel)) {
       matches.push(rel);
-      if (matches.length >= MAX_MATCH_RESULTS) break;
+      if (matches.length >= MAX_MATCH_RESULTS) {
+        resultLimitReached = true;
+        break;
+      }
     }
   }
+  if (signal?.aborted || traversal.cancelled) return refused("cancelled");
   matches.sort((a, b) => a.localeCompare(b));
-  const note = skippedNote(skipped);
+  const note = searchNotes(skipped, traversal, resultLimitReached);
   if (matches.length === 0) return ok(`(no files matched)${note}`);
   return ok(`${matches.join("\n")}${note}`);
 }
@@ -204,16 +300,40 @@ async function grepLocal(
     params.glob !== undefined ? globToRegExp(params.glob) : undefined;
   const results: string[] = [];
   const skipped: string[] = [];
+  const traversal = newWalkState();
+  let resultLimitReached = false;
+  let resultChars = 0;
+  let skippedFiles = 0;
 
   const searchFile = async (file: string, label: string): Promise<void> => {
-    const content = await readFile(file, "utf8");
+    let content: string;
+    try {
+      content = await readBoundedUtf8File(file);
+    } catch {
+      skippedFiles += 1;
+      return;
+    }
     if (hasNullByte(content)) return; // skip binary files
     const lines = content.split("\n");
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index] ?? "";
       if (regex.test(line)) {
-        results.push(`${label}:${index + 1}:${line}`);
-        if (results.length >= MAX_MATCH_RESULTS) return;
+        const rendered = `${label}:${index + 1}:${line}`;
+        const available = Math.max(0, MAX_OUTPUT_CHARS - resultChars);
+        if (available === 0) {
+          resultLimitReached = true;
+          return;
+        }
+        const bounded = rendered.slice(0, available);
+        results.push(bounded);
+        resultChars += bounded.length + 1;
+        if (
+          bounded.length < rendered.length ||
+          results.length >= MAX_MATCH_RESULTS
+        ) {
+          resultLimitReached = true;
+          return;
+        }
       }
     }
   };
@@ -222,15 +342,21 @@ async function grepLocal(
   if (stats.isFile()) {
     await searchFile(base, base);
   } else {
-    for await (const file of walkFiles(base, skipped)) {
+    for await (const file of walkFiles(base, skipped, traversal, signal)) {
       if (signal?.aborted) return refused("cancelled");
       const rel = toPosix(relative(base, file));
       if (fileFilter && !fileFilter.test(rel)) continue;
       await searchFile(file, rel);
-      if (results.length >= MAX_MATCH_RESULTS) break;
+      if (resultLimitReached) break;
     }
   }
-  const note = skippedNote(skipped);
+  if (signal?.aborted || traversal.cancelled) return refused("cancelled");
+  const note = searchNotes(
+    skipped,
+    traversal,
+    resultLimitReached,
+    skippedFiles,
+  );
   if (results.length === 0) return ok(`(no matches)${note}`);
   return ok(`${results.join("\n")}${note}`);
 }
@@ -263,65 +389,158 @@ function bashLocal(
       cwd,
       detached: process.platform !== "win32",
     });
-    const out: string[] = [];
+    const output = createBoundedTextCapture(MAX_OUTPUT_CHARS);
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     let timedOut = false;
     let cancelled = false;
+    let settled = false;
+    let terminationStarted = false;
+    let finishedOutput: { text: string; truncated: boolean } | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let escalation: ReturnType<typeof setTimeout> | undefined;
-    // Send SIGTERM, then escalate to an unignorable SIGKILL if the command traps
-    // or ignores the term and does not exit within the grace window. Without
-    // this a command can outlive its own timeout or cancel.
-    const terminate = (): void => {
+    let settlementBackstop: ReturnType<typeof setTimeout> | undefined;
+
+    function finishOutput(): { text: string; truncated: boolean } {
+      if (finishedOutput !== undefined) return finishedOutput;
+      output.append(stdoutDecoder.end());
+      output.append(stderrDecoder.end());
+      finishedOutput = output.finish();
+      return finishedOutput;
+    }
+
+    function cleanup(): void {
+      if (timer) clearTimeout(timer);
+      if (escalation) clearTimeout(escalation);
+      if (settlementBackstop) clearTimeout(settlementBackstop);
+      signal?.removeEventListener("abort", onAbort);
+    }
+
+    function settle(outcome: ToolCallOutcome): void {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveRun(outcome);
+    }
+
+    function stoppedOutcome(): ToolCallOutcome {
+      if (cancelled) return refused("cancelled");
+      const body = finishOutput();
+      const detail = `command timed out after ${timeoutMs}ms`;
+      return refused(
+        truncate(
+          body.text ? `${detail}\n\n${body.text}` : detail,
+          body.truncated,
+        ),
+      );
+    }
+
+    // One termination sequence owns both signals and the final settlement
+    // backstop. Timeout and abort can race, but must not create competing kill
+    // timers or leave an earlier timer outside cleanup's reach.
+    function terminate(): void {
+      if (terminationStarted || settled) return;
+      terminationStarted = true;
       killTree(child, "SIGTERM");
-      escalation = setTimeout(() => killTree(child, "SIGKILL"), KILL_GRACE_MS);
-    };
-    const timer = setTimeout(() => {
+      escalation = setTimeout(() => {
+        killTree(child, "SIGKILL");
+        settlementBackstop = setTimeout(() => {
+          child.stdout.destroy();
+          child.stderr.destroy();
+          child.unref();
+          settle(stoppedOutcome());
+        }, KILL_SETTLEMENT_GRACE_MS);
+      }, KILL_GRACE_MS);
+    }
+
+    // If the turn aborts or the link drops, kill the command rather than let it
+    // run on past a result no one is waiting for.
+    function onAbort(): void {
+      cancelled = true;
+      terminate();
+    }
+
+    timer = setTimeout(() => {
       timedOut = true;
       terminate();
     }, timeoutMs);
-    // If the turn aborts or the link drops, kill the command rather than let it
-    // run on past a result no one is waiting for.
-    const onAbort = (): void => {
-      cancelled = true;
-      terminate();
-    };
     signal?.addEventListener("abort", onAbort, { once: true });
-    const cleanup = (): void => {
-      clearTimeout(timer);
-      if (escalation) clearTimeout(escalation);
-      signal?.removeEventListener("abort", onAbort);
-    };
 
-    child.stdout.on("data", (chunk: Buffer) =>
-      out.push(chunk.toString("utf8")),
-    );
-    child.stderr.on("data", (chunk: Buffer) =>
-      out.push(chunk.toString("utf8")),
-    );
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      output.append(stdoutDecoder.write(chunk));
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      output.append(stderrDecoder.write(chunk));
+    });
     child.on("error", (error) => {
-      cleanup();
-      resolveRun(refused(errorMessage(error)));
+      settle(refused(errorMessage(error)));
     });
     child.on("close", (code) => {
-      cleanup();
       if (cancelled) {
-        resolveRun(refused("cancelled"));
+        settle(refused("cancelled"));
         return;
       }
-      const body = out.join("").trim();
+      const body = finishOutput();
       if (timedOut) {
         // A timeout means the command never finished: a failed call, not a
         // result. Carry any partial output in the error so evidence survives.
         const detail = `command timed out after ${timeoutMs}ms`;
-        resolveRun(refused(truncate(body ? `${detail}\n\n${body}` : detail)));
+        settle(
+          refused(
+            truncate(
+              body.text ? `${detail}\n\n${body.text}` : detail,
+              body.truncated,
+            ),
+          ),
+        );
         return;
       }
       // A non-zero exit is normal tool evidence (a failing test, grep finding
       // nothing), not a failed call. The exit code and output are exactly what
       // the model needs, so the run is ok and the code travels in the output.
       const header = `exit code: ${code ?? "none"}`;
-      resolveRun(ok(body ? `${header}\n\n${body}` : header));
+      settle(
+        ok(body.text ? `${header}\n\n${body.text}` : header, body.truncated),
+      );
     });
   });
+}
+
+type BoundedTextCapture = {
+  append(value: string): void;
+  finish(): { text: string; truncated: boolean };
+};
+
+function createBoundedTextCapture(maxChars: number): BoundedTextCapture {
+  let text = "";
+  let started = false;
+  let discardedNonWhitespace = false;
+  return {
+    append(value: string): void {
+      let remainingValue = value;
+      if (!started) {
+        remainingValue = remainingValue.trimStart();
+        if (remainingValue.length === 0) return;
+        started = true;
+      }
+      const available = Math.max(0, maxChars - text.length);
+      if (available > 0) {
+        text += remainingValue.slice(0, available);
+        remainingValue = remainingValue.slice(available);
+      }
+      if (remainingValue.trim().length > 0) {
+        discardedNonWhitespace = true;
+      }
+    },
+    finish(): { text: string; truncated: boolean } {
+      return {
+        text: discardedNonWhitespace ? text : text.trimEnd(),
+        truncated: discardedNonWhitespace,
+      };
+    },
+  };
 }
 
 // Kills a shell command and its descendants. `child.kill` signals only the
@@ -335,18 +554,30 @@ function killTree(
   signal: "SIGTERM" | "SIGKILL",
 ): void {
   if (child.pid === undefined) {
-    child.kill(signal);
+    killChildDirectly(child, signal);
     return;
   }
   if (process.platform === "win32") {
     // taskkill /f is already a forced kill, so it covers both the polite and the
-    // escalated step. stdio is ignored, but a spawn failure (taskkill missing or
-    // unable to start) falls back to signaling the child directly so a cancel is
-    // never silently a no-op that leaves the command running.
-    const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
-      stdio: "ignore",
+    // escalated step. A command can fail after spawning (for example, an access
+    // error), so both launch failures and non-zero exits fall back to the child
+    // process handle. The fallback is idempotent because Windows can report an
+    // error and a terminal event for the same failed launch.
+    const killer = spawn(
+      "taskkill.exe",
+      ["/pid", String(child.pid), "/t", "/f"],
+      { stdio: "ignore" },
+    );
+    let fallbackStarted = false;
+    const fallback = (): void => {
+      if (fallbackStarted) return;
+      fallbackStarted = true;
+      killChildDirectly(child, signal);
+    };
+    killer.once("error", fallback);
+    killer.once("exit", (code, killerSignal) => {
+      if (code !== 0 || killerSignal !== null) fallback();
     });
-    killer.on("error", () => child.kill(signal));
     return;
   }
   try {
@@ -354,7 +585,19 @@ function killTree(
   } catch {
     // The group may already be gone, or the child was never a group leader;
     // fall back to signaling the process directly.
+    killChildDirectly(child, signal);
+  }
+}
+
+function killChildDirectly(
+  child: ReturnType<typeof spawn>,
+  signal: "SIGTERM" | "SIGKILL",
+): void {
+  try {
     child.kill(signal);
+  } catch {
+    // The process may have closed between the state check and the signal. The
+    // termination backstop still settles the caller if no close event arrives.
   }
 }
 
@@ -362,31 +605,55 @@ function killTree(
 // (one unreadable subtree should not abort a whole-tree search) but its path is
 // pushed to `skipped` so the caller can report that results may be partial
 // rather than present an incomplete listing as if it were the whole truth.
+type WalkState = {
+  visitedEntries: number;
+  truncated: boolean;
+  cancelled: boolean;
+};
+
+function newWalkState(): WalkState {
+  return { visitedEntries: 0, truncated: false, cancelled: false };
+}
+
 async function* walkFiles(
   base: string,
   skipped: string[],
+  state: WalkState,
+  signal?: AbortSignal,
 ): AsyncGenerator<string> {
-  let visited = 0;
   const stack: string[] = [base];
   while (stack.length > 0) {
+    if (signal?.aborted) {
+      state.cancelled = true;
+      return;
+    }
     const dir = stack.pop();
     if (dir === undefined) break;
-    let entries: Dirent[];
     try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      skipped.push(dir);
-      continue;
-    }
-    for (const entry of entries) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(full);
-      } else if (entry.isFile()) {
-        visited += 1;
-        if (visited > MAX_WALK_FILES) return;
-        yield full;
+      const entries = await opendir(dir);
+      for await (const entry of entries) {
+        if (signal?.aborted) {
+          state.cancelled = true;
+          return;
+        }
+        state.visitedEntries += 1;
+        if (state.visitedEntries > MAX_WALK_ENTRIES) {
+          state.truncated = true;
+          return;
+        }
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          stack.push(full);
+        } else if (entry.isFile()) {
+          yield full;
+        }
       }
+    } catch {
+      if (signal?.aborted) {
+        state.cancelled = true;
+        return;
+      }
+      skipped.push(dir);
     }
   }
 }
@@ -423,12 +690,36 @@ function globToRegExp(pattern: string): RegExp {
   return new RegExp(`${out}$`);
 }
 
-// Appended to a glob or grep result when the walk could not read some
-// directories, so a partial listing is never mistaken for the whole truth.
-function skippedNote(skipped: string[]): string {
-  if (skipped.length === 0) return "";
-  const noun = skipped.length === 1 ? "directory" : "directories";
-  return `\n(${skipped.length} unreadable ${noun} skipped)`;
+// Appended to a glob or grep result whenever the search deliberately omitted
+// work, so a bounded partial answer is never presented as the whole tree.
+function searchNotes(
+  skipped: string[],
+  traversal: WalkState,
+  resultLimitReached: boolean,
+  skippedFiles = 0,
+): string {
+  const notes: string[] = [];
+  if (skipped.length > 0) {
+    const noun = skipped.length === 1 ? "directory" : "directories";
+    notes.push(`${skipped.length} unreadable ${noun} skipped`);
+  }
+  if (traversal.truncated) {
+    notes.push(
+      `search stopped after ${MAX_WALK_ENTRIES} filesystem entries; results may be incomplete`,
+    );
+  }
+  if (skippedFiles > 0) {
+    const noun = skippedFiles === 1 ? "file" : "files";
+    notes.push(
+      `${skippedFiles} unreadable, non-UTF-8, or over-${MAX_TEXT_FILE_BYTES}-byte ${noun} skipped`,
+    );
+  }
+  if (resultLimitReached) {
+    notes.push(
+      `search stopped after ${MAX_MATCH_RESULTS} results; more may exist`,
+    );
+  }
+  return notes.map((note) => `\n(${note})`).join("");
 }
 
 function resolvePath(context: ExecutorContext, path: string): string {
@@ -448,6 +739,35 @@ function hasNullByte(text: string): boolean {
   return false;
 }
 
+async function readBoundedUtf8File(path: string): Promise<string> {
+  const handle = await open(path, "r");
+  try {
+    const stats = await handle.stat();
+    if (stats.size > MAX_TEXT_FILE_BYTES) {
+      throw new Error(
+        `text file exceeds the ${MAX_TEXT_FILE_BYTES} byte local-tool limit`,
+      );
+    }
+    const bytes = Buffer.alloc(stats.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(
+        bytes,
+        offset,
+        bytes.length - offset,
+        offset,
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(
+      bytes.subarray(0, offset),
+    );
+  } finally {
+    await handle.close();
+  }
+}
+
 function countOccurrences(haystack: string, needle: string): number {
   if (needle.length === 0) return 0;
   let count = 0;
@@ -461,15 +781,15 @@ function countOccurrences(haystack: string, needle: string): number {
   return count;
 }
 
-function ok(output: string): ToolCallOutcome {
-  return { ok: true, output: truncate(output) };
+function ok(output: string, wasTruncated = false): ToolCallOutcome {
+  return { ok: true, output: truncate(output, wasTruncated) };
 }
 
 function refused(error: string): ToolCallOutcome {
   return { ok: false, output: "", error };
 }
 
-function truncate(text: string): string {
-  if (text.length <= MAX_OUTPUT_CHARS) return text;
+function truncate(text: string, wasTruncated = false): string {
+  if (!wasTruncated && text.length <= MAX_OUTPUT_CHARS) return text;
   return `${text.slice(0, MAX_OUTPUT_CHARS)}\n[truncated to ${MAX_OUTPUT_CHARS} characters]`;
 }

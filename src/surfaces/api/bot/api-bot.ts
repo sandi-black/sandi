@@ -73,10 +73,11 @@ const MAX_REQUEST_BODY_BYTES = 256 * 1024;
 // cutting off legitimate large-but-slow uploads. This is independent of the
 // provider turn timeout, which can run much longer.
 const BODY_READ_TIMEOUT_MS = 15_000;
-// Node's own header/request guards back-stop the body deadline at the socket
-// level so a client cannot stall before the body handler is attached.
+// Headers stay tight, while the server-wide request deadline must admit the raw
+// attachment route's documented five-minute upload. JSON routes retain their
+// own 15-second total body deadline.
 const SERVER_HEADERS_TIMEOUT_MS = 10_000;
-const SERVER_REQUEST_TIMEOUT_MS = 30_000;
+const SERVER_REQUEST_TIMEOUT_MS = 5 * 60_000 + 5_000;
 const TURNS_PATH = /^\/v1\/conversations\/([^/]+)\/turns$/;
 const TITLE_PATH = /^\/v1\/conversations\/([^/]+)\/title$/;
 const AUTH_PAIR_PATH = "/v1/auth/pair";
@@ -139,7 +140,6 @@ export class ApiBot {
     this.#provider = input.provider;
     this.#devices = input.devices;
     this.#broker = input.broker;
-    this.#deviceRoutes = new DeviceRoutes(input.devices);
     // Content-addressed, alongside conversations under the same server data
     // dir, following the same per-surface data-dir resolution ConversationStore
     // uses (no separate config knob; attachments are server state, not
@@ -153,6 +153,7 @@ export class ApiBot {
     // stops authenticating with no restart. Both files are tiny and only re-read
     // when they actually change.
     this.#tokens = new ApiTokenStore(input.config.api.tokensPath, 0);
+    this.#deviceRoutes = new DeviceRoutes(input.devices, this.#tokens);
     this.#identities = new HumanIdentityStore(input.config.paths.configDirs, 0);
   }
 
@@ -497,6 +498,7 @@ export class ApiBot {
         const body = await readJsonBody(request, {
           maxBytes: MAX_REQUEST_BODY_BYTES,
           timeoutMs: BODY_READ_TIMEOUT_MS,
+          response,
         });
         if (!body.ok) {
           return { status: body.status, body: { error: body.error } };
@@ -584,6 +586,7 @@ export class ApiBot {
         const body = await readJsonBody(request, {
           maxBytes: MAX_REQUEST_BODY_BYTES,
           timeoutMs: BODY_READ_TIMEOUT_MS,
+          response,
         });
         if (!body.ok) {
           return { status: body.status, body: { error: body.error } };
@@ -660,6 +663,7 @@ export class ApiBot {
     const body = await readJsonBody(request, {
       maxBytes: MAX_REQUEST_BODY_BYTES,
       timeoutMs: BODY_READ_TIMEOUT_MS,
+      response,
     });
     if (!body.ok) {
       sendJson(response, body.status, { error: body.error });
@@ -707,10 +711,18 @@ export class ApiBot {
     requestSignal: AbortSignal;
   }): Promise<string> {
     return new Promise((resolveTurn, rejectTurn) => {
-      this.#queue.enqueue(
+      let started = false;
+      const onRequestAbort = (): void => {
+        if (!started && handle.cancel()) {
+          rejectTurn(new RequestAbortedError());
+        }
+      };
+      const handle = this.#queue.enqueue(
         input.canonicalId,
         input.canonicalId,
         async (queueSignal) => {
+          started = true;
+          input.requestSignal.removeEventListener("abort", onRequestAbort);
           if (input.requestSignal.aborted) {
             log.info("skipping API turn for closed request", {
               conversationId: input.canonicalId,
@@ -738,6 +750,10 @@ export class ApiBot {
           }
         },
       );
+      input.requestSignal.addEventListener("abort", onRequestAbort, {
+        once: true,
+      });
+      if (input.requestSignal.aborted) onRequestAbort();
     });
   }
 

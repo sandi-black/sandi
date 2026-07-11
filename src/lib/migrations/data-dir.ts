@@ -104,8 +104,9 @@ export async function migrateDataDir(
 export async function readDataDirVersion(dataDir: string): Promise<number> {
   try {
     const raw = await readFile(join(dataDir, ".version"), "utf8");
-    const parsed = Number.parseInt(raw.trim(), 10);
-    if (Number.isNaN(parsed) || parsed < 0) {
+    const value = raw.trim();
+    const parsed = /^\d+$/.test(value) ? Number(value) : Number.NaN;
+    if (!Number.isSafeInteger(parsed) || parsed < 0) {
       throw new Error(
         `Invalid data dir version file: ${join(dataDir, ".version")}`,
       );

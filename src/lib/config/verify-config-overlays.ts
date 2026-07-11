@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { loadCoreConfig } from "@/lib/config/env";
@@ -8,6 +8,7 @@ import {
   listPoliciesFromRoots,
   readPolicyFromRoots,
 } from "@/lib/context/policies";
+import { ConversationStore } from "@/lib/conversations/store";
 import type { ConversationParticipant } from "@/lib/conversations/types";
 import { loadHumanIdentities } from "@/lib/identity/resolver";
 import { withTempDir } from "@/lib/verification/harness";
@@ -189,10 +190,77 @@ try {
     assert.doesNotMatch(prompt, /public soul/);
     assert.match(prompt, /shared\.md: Private Shared Policy/);
 
+    const conversationStore = new ConversationStore(dataDir);
+    await assertRejects(
+      () => conversationStore.get("../outside"),
+      "conversation storage ids reject path traversal",
+    );
+
+    const invalidStorageId = "invalid-participant";
+    const invalidConversationDir = join(
+      dataDir,
+      "conversations",
+      invalidStorageId,
+    );
+    await mkdir(invalidConversationDir, { recursive: true });
+    await writeFile(
+      join(invalidConversationDir, "manifest.json"),
+      JSON.stringify({
+        canonicalId: "github:example/repo:issue:1",
+        surface: "github",
+        platform: "github",
+        kind: "issue",
+        title: "Invalid participant",
+        createdAt: "2026-06-11T00:00:00.000Z",
+        updatedAt: "2026-06-11T00:00:00.000Z",
+        starterParticipantRef: "github:../outside",
+        participants: [
+          {
+            platform: "github",
+            platformUserId: "../outside",
+            username: "ada",
+            joinedAt: "2026-06-11T00:00:00.000Z",
+          },
+        ],
+        memoryScopes: [],
+      }),
+      "utf8",
+    );
+    await assertRejects(
+      () => conversationStore.get(invalidStorageId),
+      "participant ids reject path traversal before context compilation",
+    );
+
+    await rm(join(privateConfigDir, "soul.md"));
+    await mkdir(join(privateConfigDir, "soul.md"));
+    await assertRejects(
+      () =>
+        new ContextCompiler(config.paths.configDirs, dataDir).compileOneOff({
+          author,
+          title: "Unreadable Overlay Test",
+          metadata: "metadata: true",
+          deliveryInstructions: "Deliver one test response.",
+        }),
+      "a broken private overlay must not silently fall back to public config",
+    );
+
     console.log("config overlay verification passed");
   });
 } finally {
   restoreEnv(previousEnv);
+}
+
+async function assertRejects(
+  run: () => Promise<unknown>,
+  message: string,
+): Promise<void> {
+  let rejected = false;
+  try {
+    await run();
+  } catch {
+    rejected = true;
+  }
+  if (!rejected) throw new Error(`Expected rejection: ${message}`);
 }
 
 function saveEnv(keys: readonly string[]): Map<string, string | undefined> {

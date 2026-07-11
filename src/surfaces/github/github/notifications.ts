@@ -508,9 +508,9 @@ function parseIssueNumberFromApiUrl(
   const index = parts.indexOf(collection);
   if (index < 0) return undefined;
   const raw = parts[index + 1];
-  if (!raw) return undefined;
-  const number = Number.parseInt(raw, 10);
-  return Number.isInteger(number) && number > 0 ? number : undefined;
+  if (!raw || !/^\d+$/.test(raw)) return undefined;
+  const number = Number(raw);
+  return Number.isSafeInteger(number) && number > 0 ? number : undefined;
 }
 
 function isIssueCommentUrl(url: string): boolean {

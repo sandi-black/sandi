@@ -50,6 +50,7 @@ const TOKEN_BYTES = 32;
 type TurnBinding = {
   key: string;
   signal: AbortSignal;
+  controller: AbortController;
   // The turn id this lease streams under, when the caller supplied one. The
   // streaming ingress rejects a delta tagged with any other turn id so a relay
   // is always scoped to the turn that leased the token. Absent for callers that
@@ -94,40 +95,74 @@ export class ToolBroker {
   readonly #turns = new Map<string, TurnBinding>();
   #server: Server | undefined;
   #url: string | undefined;
+  #startPromise: Promise<void> | undefined;
+  #rejectStart: ((error: Error) => void) | undefined;
 
   constructor(registry: DeviceRegistry) {
     this.#registry = registry;
   }
 
   start(): Promise<void> {
-    if (this.#server) return Promise.resolve();
+    if (this.#url) return Promise.resolve();
+    if (this.#startPromise) return this.#startPromise;
     const server = createServer((request, response) => {
       void this.#handle(request, response);
     });
     server.headersTimeout = BROKER_HEADERS_TIMEOUT_MS;
     server.requestTimeout = BROKER_BODY_TIMEOUT_MS + 5_000;
     this.#server = server;
-    return new Promise((resolveStart, rejectStart) => {
-      const onError = (error: Error): void => rejectStart(error);
+    const startPromise = new Promise<void>((resolveStart, rejectStart) => {
+      let settled = false;
+      const fail = (error: Error): void => {
+        if (settled) return;
+        settled = true;
+        server.removeListener("error", onError);
+        if (this.#server === server) {
+          this.#server = undefined;
+          this.#url = undefined;
+        }
+        this.#startPromise = undefined;
+        this.#rejectStart = undefined;
+        rejectStart(error);
+      };
+      const onError = (error: Error): void => fail(error);
+      this.#rejectStart = fail;
       server.once("error", onError);
       server.listen(0, LOOPBACK_HOST, () => {
+        if (this.#server !== server) {
+          fail(new Error("tool broker stopped while starting"));
+          return;
+        }
         server.removeListener("error", onError);
         const address = server.address();
-        if (address && typeof address === "object") {
-          this.#url = `http://${LOOPBACK_HOST}:${address.port}`;
+        if (!address || typeof address !== "object") {
+          fail(new Error("tool broker did not expose a listening address"));
+          return;
         }
+        settled = true;
+        this.#url = `http://${LOOPBACK_HOST}:${address.port}`;
+        this.#startPromise = undefined;
+        this.#rejectStart = undefined;
         log.info("tool broker listening", { url: this.#url });
         resolveStart();
       });
     });
+    this.#startPromise = startPromise;
+    return startPromise;
   }
 
   stop(): void {
     const server = this.#server;
-    if (!server) return;
     this.#server = undefined;
     this.#url = undefined;
+    this.#rejectStart?.(new Error("tool broker stopped while starting"));
+    this.#rejectStart = undefined;
+    this.#startPromise = undefined;
+    for (const binding of this.#turns.values()) {
+      binding.controller.abort(new Error("tool broker stopped"));
+    }
     this.#turns.clear();
+    if (!server) return;
     server.close();
     server.closeAllConnections?.();
   }
@@ -152,13 +187,15 @@ export class ToolBroker {
     const url = this.#url;
     if (!url) throw new Error("tool broker is not started");
     const token = randomBytes(TOKEN_BYTES).toString("hex");
+    const controller = new AbortController();
     // Resolve the owning identity now, while the leased link is live: a turn's
     // own desktop is connected at lease time, so this fixes the set of desktops
     // a later call may target even if the original link drops mid-turn.
     const identityId = this.#registry.identityForKey(input.key);
     this.#turns.set(token, {
       key: input.key,
-      signal: input.signal,
+      signal: AbortSignal.any([input.signal, controller.signal]),
+      controller,
       ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
       ...(identityId !== undefined ? { identityId } : {}),
       ...(input.originDevice === true ? { originDevice: true } : {}),
@@ -166,7 +203,10 @@ export class ToolBroker {
     return {
       ticket: { url, token },
       revoke: () => {
+        const binding = this.#turns.get(token);
+        if (!binding) return;
         this.#turns.delete(token);
+        binding.controller.abort(new Error("tool broker lease revoked"));
       },
     };
   }
@@ -266,23 +306,45 @@ export class ToolBroker {
         sendJson(response, 401, { error: "unauthorized" });
         return;
       }
+      if (binding.signal.aborted) {
+        sendJson(response, 401, { error: "unauthorized" });
+        return;
+      }
+      const requestController = new AbortController();
+      const abortRequest = (): void => {
+        requestController.abort(new Error("tool broker request disconnected"));
+      };
+      request.once("aborted", abortRequest);
+      response.once("close", () => {
+        if (!response.writableFinished) abortRequest();
+      });
+      const scopedBinding: TurnBinding = {
+        ...binding,
+        signal: AbortSignal.any([binding.signal, requestController.signal]),
+      };
 
       if (path === STREAM_PATH) {
-        await this.#handleStream(request, response, binding);
+        await this.#handleStream(request, response, scopedBinding);
         return;
       }
 
       if (path === ATTACHMENT_PATH) {
-        await this.#handleAttachment(request, response, binding);
+        await this.#handleAttachment(request, response, scopedBinding);
         return;
       }
 
       const body = await readJsonBody(request, {
         maxBytes: BROKER_MAX_BODY_BYTES,
         timeoutMs: BROKER_BODY_TIMEOUT_MS,
+        response,
+        signal: scopedBinding.signal,
       });
       if (!body.ok) {
         sendJson(response, body.status, { error: body.error });
+        return;
+      }
+      if (scopedBinding.signal.aborted) {
+        sendJson(response, 401, { error: "unauthorized" });
         return;
       }
       const parsed = BrokerCallSchema.safeParse(body.value);
@@ -296,7 +358,7 @@ export class ToolBroker {
       // the registry, naming the desktops this identity has connected so Sandi
       // can pick one to target.
       if (call.tool === "local_list_desktops") {
-        sendJson(response, 200, this.#listDesktops(binding));
+        sendJson(response, 200, this.#listDesktops(scopedBinding));
         return;
       }
 
@@ -310,18 +372,22 @@ export class ToolBroker {
       const selector = desktopSelector(call);
       let targetKey: string;
       if (selector !== undefined) {
-        const resolved = this.#resolveDesktop(binding, selector);
+        const resolved = this.#resolveDesktop(scopedBinding, selector);
         if (!resolved) {
           sendJson(response, 200, {
             ok: false,
             output: "",
-            error: unknownDesktopMessage(this.#registry, binding, selector),
+            error: unknownDesktopMessage(
+              this.#registry,
+              scopedBinding,
+              selector,
+            ),
           });
           return;
         }
         targetKey = resolved;
       } else {
-        const fallback = this.#defaultDesktop(binding);
+        const fallback = this.#defaultDesktop(scopedBinding);
         if (!fallback.ok) {
           sendJson(response, 200, {
             ok: false,
@@ -337,7 +403,7 @@ export class ToolBroker {
         const outcome = await this.#registry.dispatch({
           key: targetKey,
           call,
-          signal: binding.signal,
+          signal: scopedBinding.signal,
         });
         sendJson(response, 200, outcome);
       } catch (error) {
@@ -415,9 +481,15 @@ export class ToolBroker {
     const body = await readJsonBody(request, {
       maxBytes: options.maxBytes,
       timeoutMs: BROKER_BODY_TIMEOUT_MS,
+      response,
+      signal: binding.signal,
     });
     if (!body.ok) {
       sendJson(response, body.status, { error: body.error });
+      return;
+    }
+    if (binding.signal.aborted) {
+      sendJson(response, 401, { error: "unauthorized" });
       return;
     }
     const parsed = options.schema.safeParse(body.value);

@@ -1,20 +1,37 @@
 import { Buffer } from "node:buffer";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { request } from "node:https";
+import { randomUUID } from "node:crypto";
+import {
+  type FileHandle,
+  mkdir,
+  open,
+  realpath,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import {
+  type ClientRequest,
+  request as httpRequest,
+  type IncomingMessage,
+  type RequestOptions,
+} from "node:http";
+import { request as httpsRequest } from "node:https";
 import {
   basename,
   dirname,
   extname,
   isAbsolute,
   join,
+  relative,
   resolve,
+  sep,
 } from "node:path";
 import { promisify, TextDecoder } from "node:util";
 
 import { type REST, Routes } from "discord.js";
 
 import { z } from "zod/v4";
+import { isMissingPathError } from "@/lib/fs-errors";
 import {
   type DeliverySideEffectKind,
   recordDeliverySideEffect,
@@ -57,6 +74,10 @@ const GIT_BINARY_CHECK_BYTES = 8_000;
 const MAX_TEXT_ATTACHMENT_PREVIEW_BYTES = 256 * 1024;
 const MAX_SEARCH_MESSAGES = 5_000;
 const MAX_SEARCH_RESULTS = 50;
+const DISCORD_HTTP_TIMEOUT_MS = 30_000;
+const MAX_DISCORD_HTTP_RESPONSE_BYTES = 1024 * 1024;
+const FILE_PROBE_TIMEOUT_MS = 3_000;
+const FILE_PROBE_MAX_OUTPUT_BYTES = 64 * 1024;
 const SEARCH_SNIPPET_CHARS_BEFORE = 80;
 const SEARCH_SNIPPET_CHARS_AFTER = 160;
 const execFile = promisify(execFileCallback);
@@ -383,17 +404,17 @@ export async function deleteMessage(input: DeleteMessageInput = {}): Promise<{
 
 export async function sendFile(input: SendFileInput): Promise<DiscordMessage> {
   const parsed = SendFileInputSchema.parse(input);
-  const path = resolveAllowedFilePath(parsed.path);
+  const file = await readAllowedFilePath(parsed.path);
+  const path = file.path;
   const filename = parsed.filename ?? basename(path);
   const mimeType =
     parsed.mimeType ?? (await fileMimeType(path)) ?? mimeFromPath(path);
   return sendLocalFile({
     input: parsed,
-    path,
+    data: file.data,
     filename,
     mimeType,
     sideEffect: "discord:send-file",
-    tooLargeLabel: "file",
   });
 }
 
@@ -401,24 +422,26 @@ export async function sendImage(
   input: SendImageInput,
 ): Promise<DiscordMessage> {
   const parsed = SendImageInputSchema.parse(input);
-  const path = resolveAllowedImagePath(parsed.path);
+  const file = await readAllowedFile({
+    path: parsed.path,
+    label: "Discord image upload",
+    roots: [generatedImagesRoot(), discordAttachmentsRoot(), assetsRoot()],
+  });
   return sendLocalFile({
     input: parsed,
-    path,
-    filename: basename(path),
-    mimeType: mimeFromPath(path),
+    data: file.data,
+    filename: basename(file.path),
+    mimeType: mimeFromPath(file.path),
     sideEffect: "discord:send-image",
-    tooLargeLabel: "image",
   });
 }
 
 async function sendLocalFile(input: {
   input: SendMessageInput;
-  path: string;
+  data: Buffer;
   filename: string;
   mimeType: string;
   sideEffect: DeliverySideEffectKind;
-  tooLargeLabel: string;
 }): Promise<DiscordMessage> {
   const rest = createRest();
   const context = optionalContext();
@@ -427,12 +450,6 @@ async function sendLocalFile(input: {
     context,
     rest,
   );
-  const data = await readFile(input.path);
-  if (data.byteLength > MAX_DISCORD_FILE_BYTES) {
-    throw new Error(
-      `Discord ${input.tooLargeLabel} upload is too large: ${data.byteLength} bytes`,
-    );
-  }
   const body: Record<string, unknown> = {
     content: limitDiscordContent(input.input.content),
     allowed_mentions: allowedMentions(input.input.allowMentions),
@@ -445,7 +462,7 @@ async function sendLocalFile(input: {
   }
   const message = DiscordMessageSchema.parse(
     await discordPostFile(Routes.channelMessages(channelId), body, {
-      data,
+      data: input.data,
       filename: safeFilename(input.filename),
       mimeType: input.mimeType,
     }),
@@ -581,8 +598,31 @@ function discordPostFile(
     mimeType: string;
   },
 ): Promise<unknown> {
-  const boundary = `sandi-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const payload = Buffer.from(JSON.stringify(body), "utf8");
+  return requestMultipartJson({
+    url: new URL(`https://discord.com/api/v10${route}`),
+    headers: {
+      Authorization: `Bot ${readToken()}`,
+      "User-Agent": "Sandi Discord Bot",
+    },
+    body,
+    file,
+  });
+}
+
+export function requestMultipartJson(input: {
+  url: URL;
+  headers: Readonly<Record<string, string>>;
+  body: Record<string, unknown>;
+  file: {
+    data: Buffer;
+    filename: string;
+    mimeType: string;
+  };
+  timeoutMs?: number;
+  maxResponseBytes?: number;
+}): Promise<unknown> {
+  const boundary = `sandi-${randomUUID()}`;
+  const payload = Buffer.from(JSON.stringify(input.body), "utf8");
   const prefix = Buffer.from(
     [
       `--${boundary}`,
@@ -597,65 +637,185 @@ function discordPostFile(
     [
       "",
       `--${boundary}`,
-      `Content-Disposition: form-data; name="files[0]"; filename="${escapeHeaderValue(file.filename)}"`,
-      `Content-Type: ${file.mimeType}`,
+      `Content-Disposition: form-data; name="files[0]"; filename="${escapeHeaderValue(input.file.filename)}"`,
+      `Content-Type: ${input.file.mimeType}`,
       "",
       "",
     ].join("\r\n"),
     "utf8",
   );
   const suffix = Buffer.from(`\r\n--${boundary}--\r\n`, "utf8");
-  const requestBody = Buffer.concat([
-    prefix,
-    payload,
-    middle,
-    file.data,
-    suffix,
-  ]);
+  const contentLength =
+    prefix.byteLength +
+    payload.byteLength +
+    middle.byteLength +
+    input.file.data.byteLength +
+    suffix.byteLength;
+  const timeoutMs = input.timeoutMs ?? DISCORD_HTTP_TIMEOUT_MS;
+  const maxResponseBytes =
+    input.maxResponseBytes ?? MAX_DISCORD_HTTP_RESPONSE_BYTES;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("Multipart request timeout must be a positive integer.");
+  }
+  if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes <= 0) {
+    throw new Error(
+      "Multipart response byte limit must be a positive integer.",
+    );
+  }
 
   return new Promise((resolvePromise, reject) => {
-    const req = request(
+    let settled = false;
+    let responseStarted = false;
+    let timeout: NodeJS.Timeout | undefined;
+
+    const finish = (result: { value: unknown } | { error: Error }): void => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      if ("error" in result) reject(result.error);
+      else resolvePromise(result.value);
+    };
+
+    const req = openHttpRequest(
+      input.url,
       {
         method: "POST",
-        hostname: "discord.com",
-        path: `/api/v10${route}`,
         headers: {
-          Authorization: `Bot ${readToken()}`,
+          ...input.headers,
           "Content-Type": `multipart/form-data; boundary=${boundary}`,
-          "Content-Length": String(requestBody.byteLength),
-          "User-Agent": "Sandi Discord Bot",
+          "Content-Length": String(contentLength),
         },
       },
       (res) => {
+        responseStarted = true;
+        let declaredResponseBytes: number | undefined;
+        try {
+          declaredResponseBytes = parseContentLength(
+            res.headers["content-length"] ?? null,
+            "Discord file upload response",
+          );
+        } catch (error) {
+          finish({
+            error: error instanceof Error ? error : new Error(String(error)),
+          });
+          res.destroy();
+          return;
+        }
+        if (
+          declaredResponseBytes !== undefined &&
+          declaredResponseBytes > maxResponseBytes
+        ) {
+          finish({
+            error: new Error(
+              `Discord file upload response exceeded ${maxResponseBytes} bytes.`,
+            ),
+          });
+          res.destroy();
+          return;
+        }
         const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        let receivedBytes = 0;
+
+        res.on("data", (chunk: Buffer) => {
+          if (settled) return;
+          if (receivedBytes + chunk.byteLength > maxResponseBytes) {
+            finish({
+              error: new Error(
+                `Discord file upload response exceeded ${maxResponseBytes} bytes.`,
+              ),
+            });
+            res.destroy();
+            return;
+          }
+          receivedBytes += chunk.byteLength;
+          chunks.push(chunk);
+        });
+        res.on("aborted", () => {
+          finish({
+            error: new Error(
+              "Discord file upload response was aborted before completion.",
+            ),
+          });
+        });
+        res.on("error", (error) => finish({ error }));
         res.on("end", () => {
-          const text = Buffer.concat(chunks).toString("utf8");
+          if (settled) return;
+          const text = Buffer.concat(chunks, receivedBytes).toString("utf8");
           if (
             !res.statusCode ||
             res.statusCode < 200 ||
             res.statusCode >= 300
           ) {
-            reject(
-              new Error(
+            finish({
+              error: new Error(
                 `Discord file upload failed (${res.statusCode ?? "unknown"}): ${text}`,
               ),
-            );
+            });
             return;
           }
           try {
-            resolvePromise(JSON.parse(text));
+            const parsed: unknown = JSON.parse(text);
+            finish({ value: parsed });
           } catch {
-            reject(
-              new Error(`Discord file upload returned invalid JSON: ${text}`),
-            );
+            finish({
+              error: new Error(
+                `Discord file upload returned invalid JSON: ${text}`,
+              ),
+            });
+          }
+        });
+        res.on("close", () => {
+          if (!res.complete) {
+            finish({
+              error: new Error(
+                "Discord file upload response closed before completion.",
+              ),
+            });
           }
         });
       },
     );
-    req.on("error", reject);
-    req.end(requestBody);
+
+    req.on("error", (error) => finish({ error }));
+    req.on("close", () => {
+      if (!responseStarted) {
+        finish({
+          error: new Error(
+            "Discord file upload request closed before receiving a response.",
+          ),
+        });
+      }
+    });
+    timeout = setTimeout(() => {
+      finish({
+        error: new Error(
+          `Discord file upload exceeded its ${timeoutMs}ms deadline.`,
+        ),
+      });
+      req.destroy();
+    }, timeoutMs);
+    timeout.unref();
+
+    req.write(prefix);
+    req.write(payload);
+    req.write(middle);
+    req.write(input.file.data);
+    req.end(suffix);
   });
+}
+
+function openHttpRequest(
+  url: URL,
+  options: RequestOptions,
+  onResponse: (response: IncomingMessage) => void,
+): ClientRequest {
+  if (url.protocol === "https:") {
+    return httpsRequest(url, options, onResponse);
+  }
+  if (url.protocol === "http:") {
+    return httpRequest(url, options, onResponse);
+  }
+  throw new Error(`Unsupported multipart request protocol: ${url.protocol}`);
 }
 
 async function downloadAttachment(
@@ -664,30 +824,21 @@ async function downloadAttachment(
 ): Promise<ReadAttachmentResult & { bytes: Buffer }> {
   if (!attachment.url)
     throw new Error(`Attachment ${attachment.id} has no downloadable URL.`);
-  const response = await fetch(attachment.url);
-  if (!response.ok)
-    throw new Error(
-      `Could not download Discord attachment (${response.status}).`,
-    );
-  const contentLength = response.headers.get("content-length");
-  if (contentLength && Number(contentLength) > MAX_DISCORD_FILE_BYTES) {
-    throw new Error(`Discord attachment is too large: ${contentLength} bytes`);
-  }
+  assertAttachmentSize(attachment);
+  const response = await fetchBoundedBytes(
+    attachment.url,
+    MAX_DISCORD_FILE_BYTES,
+  );
   const fallbackContentType =
     attachment.content_type ??
-    response.headers.get("content-type") ??
+    response.contentType ??
     "application/octet-stream";
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.byteLength > MAX_DISCORD_FILE_BYTES) {
-    throw new Error(
-      `Discord attachment is too large: ${bytes.byteLength} bytes`,
-    );
-  }
+  const bytes = response.bytes;
   const safeName = safeFilename(attachment.filename ?? `${attachment.id}`);
   const savedPath = join(
     discordAttachmentsRoot(),
-    messageId,
-    `${attachment.id}-${safeName}`,
+    safeFilename(messageId),
+    `${safeFilename(attachment.id)}-${safeName}`,
   );
   await mkdir(dirname(savedPath), { recursive: true });
   await writeFile(savedPath, bytes);
@@ -699,6 +850,156 @@ async function downloadAttachment(
   return attachment.filename
     ? attachmentReadResult({ ...input, filename: attachment.filename })
     : attachmentReadResult(input);
+}
+
+function assertAttachmentSize(attachment: DiscordAttachment): void {
+  if (attachment.size === undefined) return;
+  if (!Number.isSafeInteger(attachment.size) || attachment.size < 0) {
+    throw new Error(
+      `Discord attachment ${attachment.id} reported an invalid size.`,
+    );
+  }
+  if (attachment.size > MAX_DISCORD_FILE_BYTES) {
+    throw new Error(
+      `Discord attachment is too large: ${attachment.size} bytes`,
+    );
+  }
+}
+
+export async function fetchBoundedBytes(
+  url: string,
+  maxBytes: number,
+  timeoutMs = DISCORD_HTTP_TIMEOUT_MS,
+): Promise<{ bytes: Buffer; contentType: string | undefined }> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error("Download byte limit must be a positive integer.");
+  }
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("Download timeout must be a positive integer.");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort(
+      new Error(
+        `Discord attachment download exceeded its ${timeoutMs}ms deadline.`,
+      ),
+    );
+  }, timeoutMs);
+  timeout.unref();
+  try {
+    return await fetchBoundedBytesWithSignal(url, maxBytes, controller.signal);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchBoundedBytesWithSignal(
+  url: string,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<{ bytes: Buffer; contentType: string | undefined }> {
+  const response = await fetch(url, {
+    signal,
+  });
+  if (!response.ok) {
+    await cancelResponseAndThrow(
+      response,
+      new Error(`Could not download Discord attachment (${response.status}).`),
+    );
+  }
+
+  let declaredLength: number | undefined;
+  try {
+    declaredLength = parseContentLength(
+      response.headers.get("content-length"),
+      "Discord attachment",
+    );
+  } catch (error) {
+    await cancelResponseAndThrow(
+      response,
+      error instanceof Error ? error : new Error(String(error)),
+    );
+  }
+  if (declaredLength !== undefined && declaredLength > maxBytes) {
+    await cancelResponseAndThrow(
+      response,
+      new Error(`Discord attachment is too large: ${declaredLength} bytes`),
+    );
+  }
+  if (!response.body) {
+    throw new Error("Discord attachment response had no body.");
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let receivedBytes = 0;
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    if (receivedBytes + chunk.value.byteLength > maxBytes) {
+      const error = new Error(
+        `Discord attachment is too large: more than ${maxBytes} bytes`,
+      );
+      try {
+        await reader.cancel(error);
+      } catch (cancelError) {
+        throw new AggregateError(
+          [error, cancelError],
+          "Discord attachment exceeded its byte limit and cancellation failed.",
+        );
+      }
+      throw error;
+    }
+    receivedBytes += chunk.value.byteLength;
+    chunks.push(Buffer.from(chunk.value));
+  }
+
+  const contentEncoding = response.headers.get("content-encoding");
+  if (
+    declaredLength !== undefined &&
+    (!contentEncoding || contentEncoding === "identity") &&
+    receivedBytes !== declaredLength
+  ) {
+    throw new Error(
+      `Discord attachment ended after ${receivedBytes} of ${declaredLength} declared bytes.`,
+    );
+  }
+  return {
+    bytes: Buffer.concat(chunks, receivedBytes),
+    contentType: response.headers.get("content-type") ?? undefined,
+  };
+}
+
+async function cancelResponseAndThrow(
+  response: Response,
+  error: Error,
+): Promise<never> {
+  if (!response.body) throw error;
+  try {
+    await response.body.cancel(error);
+  } catch (cancelError) {
+    throw new AggregateError(
+      [error, cancelError],
+      `${error.message} Response cancellation also failed.`,
+    );
+  }
+  throw error;
+}
+
+function parseContentLength(
+  raw: string | null,
+  label: string,
+): number | undefined {
+  if (raw === null) return undefined;
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`${label} returned an invalid Content-Length.`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(`${label} Content-Length is too large to parse.`);
+  }
+  return value;
 }
 
 function publicAttachmentResult(
@@ -782,44 +1083,96 @@ async function attachmentMimeType(
 
 async function fileMimeType(path: string): Promise<string | undefined> {
   try {
-    const { stdout } = await execFile("file", ["--brief", "--mime-type", path]);
+    const { stdout } = await execFile(
+      "file",
+      ["--brief", "--mime-type", path],
+      {
+        timeout: FILE_PROBE_TIMEOUT_MS,
+        maxBuffer: FILE_PROBE_MAX_OUTPUT_BYTES,
+        windowsHide: true,
+      },
+    );
     return stdout.trim() || undefined;
   } catch {
     return undefined;
   }
 }
 
-function resolveAllowedFilePath(path: string): string {
-  return resolveAllowedPath({
+export async function readAllowedFilePath(
+  path: string,
+): Promise<{ path: string; data: Buffer }> {
+  return readAllowedFile({
     path,
-    label: "File",
+    label: "Discord file upload",
     roots: allowedFileRoots(),
   });
 }
 
-function resolveAllowedImagePath(path: string): string {
-  return resolveAllowedPath({
-    path,
-    label: "Image",
-    roots: [generatedImagesRoot(), discordAttachmentsRoot(), assetsRoot()],
-  });
-}
-
-function resolveAllowedPath(input: {
+async function readAllowedFile(input: {
   path: string;
   label: string;
   roots: readonly string[];
-}): string {
+}): Promise<{ path: string; data: Buffer }> {
+  const canonicalPath = await resolveAllowedPath(input);
+  const handle = await open(canonicalPath, "r");
+  try {
+    const openedStat = await handle.stat();
+    const currentPath = await resolveAllowedPath({
+      ...input,
+      path: canonicalPath,
+    });
+    const currentStat = await stat(currentPath);
+    if (
+      openedStat.dev !== currentStat.dev ||
+      openedStat.ino !== currentStat.ino
+    ) {
+      throw new Error(`${input.label} changed while it was being authorized.`);
+    }
+    return {
+      path: canonicalPath,
+      data: await readBoundedHandle(
+        handle,
+        MAX_DISCORD_FILE_BYTES,
+        input.label,
+      ),
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function resolveAllowedPath(input: {
+  path: string;
+  label: string;
+  roots: readonly string[];
+}): Promise<string> {
   const raw = input.path.trim().startsWith("@")
     ? input.path.trim().slice(1)
     : input.path.trim();
   const absolute = isAbsolute(raw) ? resolve(raw) : resolve(raw);
-  if (!input.roots.some((root) => isPathInside(absolute, root))) {
+  const canonicalPath = await realpath(absolute);
+  const canonicalRoots = await Promise.all(
+    input.roots.map(async (root) => canonicalAllowedRoot(root)),
+  );
+  if (
+    !canonicalRoots.some(
+      (root) => root !== undefined && isPathInside(canonicalPath, root),
+    )
+  ) {
     throw new Error(
-      `${input.label} path must be under ${input.roots.join(", ")}. Received: ${absolute}`,
+      `${input.label} path must resolve under ${input.roots.join(", ")}. Received: ${absolute}`,
     );
   }
-  return absolute;
+  return canonicalPath;
+}
+
+async function canonicalAllowedRoot(root: string): Promise<string | undefined> {
+  try {
+    return await realpath(resolve(root));
+  } catch (error) {
+    if (isMissingPathError(error)) return undefined;
+    throw error;
+  }
 }
 
 function allowedFileRoots(): string[] {
@@ -852,8 +1205,59 @@ function dataRoot(): string {
 }
 
 function isPathInside(path: string, root: string): boolean {
-  const normalizedRoot = root.endsWith("/") ? root : `${root}/`;
-  return path === root || path.startsWith(normalizedRoot);
+  const pathFromRoot = relative(root, path);
+  return (
+    pathFromRoot === "" ||
+    (pathFromRoot !== ".." &&
+      !pathFromRoot.startsWith(`..${sep}`) &&
+      !isAbsolute(pathFromRoot))
+  );
+}
+
+export async function readBoundedFile(
+  path: string,
+  maxBytes: number,
+  label: string,
+): Promise<Buffer> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error("File byte limit must be a positive integer.");
+  }
+  const handle = await open(path, "r");
+  try {
+    return await readBoundedHandle(handle, maxBytes, label);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readBoundedHandle(
+  handle: FileHandle,
+  maxBytes: number,
+  label: string,
+): Promise<Buffer> {
+  const fileStat = await handle.stat();
+  if (!fileStat.isFile()) {
+    throw new Error(`${label} must be a regular file.`);
+  }
+  if (fileStat.size > maxBytes) {
+    throw new Error(`${label} is too large: ${fileStat.size} bytes`);
+  }
+
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  while (totalBytes <= maxBytes) {
+    const buffer = Buffer.allocUnsafe(
+      Math.min(64 * 1024, maxBytes + 1 - totalBytes),
+    );
+    const result = await handle.read(buffer, 0, buffer.byteLength, null);
+    if (result.bytesRead === 0) break;
+    totalBytes += result.bytesRead;
+    chunks.push(buffer.subarray(0, result.bytesRead));
+  }
+  if (totalBytes > maxBytes) {
+    throw new Error(`${label} grew beyond ${maxBytes} bytes while reading.`);
+  }
+  return Buffer.concat(chunks, totalBytes);
 }
 
 function mimeFromPath(path: string): string {

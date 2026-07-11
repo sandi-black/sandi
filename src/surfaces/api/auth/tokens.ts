@@ -17,10 +17,24 @@ const ApiTokenEntrySchema = z.object({
   label: z.string().min(1),
 });
 
-const ApiTokensFileSchema = z.object({
-  version: z.literal(1),
-  tokens: z.array(ApiTokenEntrySchema),
-});
+const ApiTokensFileSchema = z
+  .object({
+    version: z.literal(1),
+    tokens: z.array(ApiTokenEntrySchema),
+  })
+  .superRefine((file, context) => {
+    const hashes = new Set<string>();
+    for (const [index, token] of file.tokens.entries()) {
+      if (hashes.has(token.tokenSha256)) {
+        context.addIssue({
+          code: "custom",
+          message: "tokenSha256 must be unique",
+          path: ["tokens", index, "tokenSha256"],
+        });
+      }
+      hashes.add(token.tokenSha256);
+    }
+  });
 
 export type ApiTokenEntry = z.infer<typeof ApiTokenEntrySchema>;
 export type ApiTokensFile = z.infer<typeof ApiTokensFileSchema>;
@@ -130,21 +144,41 @@ export function verifyBearer(
 export class ApiTokenStore {
   readonly #path: string;
   readonly #ttlMs: number;
+  readonly #now: () => number;
   #cache: ApiTokensFile = EMPTY_TOKENS;
   #cacheKey: string | undefined;
   #checkedAt = 0;
+  readonly #listeners = new Set<(tokens: ApiTokensFile) => void>();
 
-  constructor(path: string, ttlMs = 5_000) {
+  constructor(path: string, ttlMs = 5_000, now: () => number = Date.now) {
     this.#path = path;
     this.#ttlMs = ttlMs;
+    this.#now = now;
   }
 
   async verify(token: string): Promise<ApiTokenEntry | undefined> {
     return verifyBearer(token, await this.#load());
   }
 
+  async contains(entry: ApiTokenEntry): Promise<boolean> {
+    const tokens = await this.#load();
+    return tokens.tokens.some(
+      (candidate) =>
+        candidate.tokenSha256 === entry.tokenSha256 &&
+        candidate.identityId === entry.identityId &&
+        candidate.deviceId === entry.deviceId,
+    );
+  }
+
+  onChange(listener: (tokens: ApiTokensFile) => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+
   async #load(): Promise<ApiTokensFile> {
-    const now = Date.now();
+    const now = this.#now();
     // A non-positive TTL disables caching entirely: always reload. This keeps
     // revocation immediate in tests and is a safe (if slower) production
     // setting. With a positive TTL we serve the cache until it expires, then
@@ -152,22 +186,46 @@ export class ApiTokenStore {
     if (this.#ttlMs > 0 && this.#cacheKey !== undefined) {
       if (now - this.#checkedAt < this.#ttlMs) return this.#cache;
       const key = await this.#statKey();
+      if (key === this.#cacheKey) {
+        this.#checkedAt = now;
+        return this.#cache;
+      }
+      return this.#reload(key, now);
+    }
+    const key = await this.#statKey();
+    if (key === this.#cacheKey) {
       this.#checkedAt = now;
-      if (key === this.#cacheKey) return this.#cache;
-      this.#cache = await loadApiTokens(this.#path);
-      this.#cacheKey = key;
       return this.#cache;
     }
-    this.#cache = await loadApiTokens(this.#path);
-    this.#cacheKey = await this.#statKey();
+    return this.#reload(key, now);
+  }
+
+  async #reload(key: string, now: number): Promise<ApiTokensFile> {
+    let loaded: ApiTokensFile;
+    try {
+      loaded = await loadApiTokens(this.#path);
+    } catch (error) {
+      // Existing device streams must fail closed with request authentication.
+      // A malformed or unreadable authorization source cannot leave a device
+      // authorized from an older snapshot.
+      this.#notify(EMPTY_TOKENS);
+      throw error;
+    }
+    this.#cache = loaded;
+    this.#cacheKey = key;
     this.#checkedAt = now;
-    return this.#cache;
+    this.#notify(loaded);
+    return loaded;
+  }
+
+  #notify(tokens: ApiTokensFile): void {
+    for (const listener of this.#listeners) listener(tokens);
   }
 
   async #statKey(): Promise<string> {
     try {
-      const info = await stat(this.#path);
-      return `${info.mtimeMs}:${info.size}`;
+      const info = await stat(this.#path, { bigint: true });
+      return `${info.dev}:${info.ino}:${info.mtimeNs}:${info.ctimeNs}:${info.size}`;
     } catch (error) {
       if (isMissingPathError(error)) return "missing";
       throw error;

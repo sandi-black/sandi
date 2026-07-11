@@ -36,55 +36,80 @@ export type AttachmentStaging = {
 
 export function createAttachmentStaging(stagingDir: string): AttachmentStaging {
   const staged = new Map<string, StagedAttachment>();
+  let reservedSlots = 0;
+
+  const reserveSlot = (): boolean => {
+    if (staged.size + reservedSlots >= MAX_ATTACHMENTS_PER_TURN) return false;
+    reservedSlots += 1;
+    return true;
+  };
+  const releaseSlot = (): void => {
+    reservedSlots -= 1;
+  };
 
   return {
     async stagePath(path) {
-      let size: number;
+      if (!reserveSlot()) return null;
       try {
-        const info = await stat(path);
-        if (!info.isFile()) return null;
-        size = info.size;
-      } catch (error) {
-        // A vanished path (dropped then deleted) is a normal no-op; a
-        // permission or I/O error is not and must reach the caller.
-        if (isMissingFileError(error)) return null;
-        throw error;
+        let size: number;
+        try {
+          const info = await stat(path);
+          if (!info.isFile()) return null;
+          size = info.size;
+        } catch (error) {
+          // A vanished path (dropped then deleted) is a normal no-op; a
+          // permission or I/O error is not and must reach the caller.
+          if (isMissingFileError(error)) return null;
+          throw error;
+        }
+        if (size > MAX_ATTACHMENT_BYTES) return null;
+        const name = basename(path);
+        const mimeType = IMAGE_MIME_BY_EXT[extname(path).toLowerCase()];
+        const attachment: StagedAttachment = {
+          id: randomUUID(),
+          name,
+          mimeType: mimeType ?? "application/octet-stream",
+          size,
+          kind: mimeType ? "image" : "file",
+          path,
+        };
+        staged.set(attachment.id, attachment);
+        return attachment;
+      } finally {
+        releaseSlot();
       }
-      if (size > MAX_ATTACHMENT_BYTES) return null;
-      const name = basename(path);
-      const mimeType = IMAGE_MIME_BY_EXT[extname(path).toLowerCase()];
-      const attachment: StagedAttachment = {
-        id: randomUUID(),
-        name,
-        mimeType: mimeType ?? "application/octet-stream",
-        size,
-        kind: mimeType ? "image" : "file",
-        path,
-      };
-      staged.set(attachment.id, attachment);
-      return attachment;
     },
 
     async stagePastedImage(dataUrl) {
-      const match = /^data:image\/(png|jpeg|webp);base64,(.+)$/.exec(dataUrl);
-      if (!match?.[1] || !match[2]) return null;
-      const ext = match[1] === "jpeg" ? "jpg" : match[1];
-      const bytes = Buffer.from(match[2], "base64");
-      if (bytes.byteLength > MAX_ATTACHMENT_BYTES) return null;
-      await mkdir(stagingDir, { recursive: true });
-      const name = `pasted-${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`;
-      const path = join(stagingDir, name);
-      await writeFile(path, bytes);
-      const attachment: StagedAttachment = {
-        id: randomUUID(),
-        name,
-        mimeType: `image/${match[1]}`,
-        size: bytes.byteLength,
-        kind: "image",
-        path,
-      };
-      staged.set(attachment.id, attachment);
-      return attachment;
+      if (!reserveSlot()) return null;
+      try {
+        const prefix = ["png", "jpeg", "webp"].find((mime) =>
+          dataUrl.startsWith(`data:image/${mime};base64,`),
+        );
+        if (!prefix) return null;
+        const encoded = dataUrl.slice(`data:image/${prefix};base64,`.length);
+        if (!encoded) return null;
+        const ext = prefix === "jpeg" ? "jpg" : prefix;
+        const bytes = Buffer.from(encoded, "base64");
+        if (bytes.byteLength > MAX_ATTACHMENT_BYTES) return null;
+        await mkdir(stagingDir, { recursive: true });
+        const id = randomUUID();
+        const name = `pasted-${id}.${ext}`;
+        const path = join(stagingDir, name);
+        await writeFile(path, bytes);
+        const attachment: StagedAttachment = {
+          id,
+          name,
+          mimeType: `image/${prefix}`,
+          size: bytes.byteLength,
+          kind: "image",
+          path,
+        };
+        staged.set(attachment.id, attachment);
+        return attachment;
+      } finally {
+        releaseSlot();
+      }
     },
 
     unstage(id) {

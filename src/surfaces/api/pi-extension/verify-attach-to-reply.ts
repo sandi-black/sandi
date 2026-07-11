@@ -18,7 +18,11 @@ import {
 // so testing them directly covers both of its branches without standing up a
 // fake ExtensionAPI.
 
-type ServerMode = { kind: "accepted" } | { kind: "status"; status: number };
+type ServerMode =
+  | { kind: "accepted" }
+  | { kind: "status"; status: number }
+  | { kind: "partial-close" }
+  | { kind: "oversized" };
 
 async function verifyAttachToReply(): Promise<void> {
   verifyReadAttachTarget();
@@ -69,8 +73,82 @@ async function verifyAttachToReply(): Promise<void> {
       "an unexpected broker status throws",
     );
     console.log("ok an unexpected broker status throws");
+
+    setMode({ kind: "partial-close" });
+    await assertThrows(
+      () =>
+        withDeadline(
+          postAttachment(target, {
+            turnId: target.turnId,
+            seq: 4,
+            path: "x",
+          }),
+          "partial attachment response did not settle",
+        ),
+      "before completion",
+      "a partial attachment response rejects promptly",
+    );
+    console.log("ok a partial attachment response rejects promptly");
+
+    setMode({ kind: "oversized" });
+    await assertThrows(
+      () =>
+        postAttachment(target, {
+          turnId: target.turnId,
+          seq: 5,
+          path: "x",
+        }),
+      "exceeded 64 KiB",
+      "an oversized attachment response is rejected",
+    );
+    console.log("ok an oversized attachment response is rejected");
   });
+  await verifyAbortSignal();
   console.log("attach_to_reply verification passed");
+}
+
+async function verifyAbortSignal(): Promise<void> {
+  let markStarted: (() => void) | undefined;
+  let markClosed: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const closed = new Promise<void>((resolve) => {
+    markClosed = resolve;
+  });
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => markStarted?.());
+    response.on("close", () => markClosed?.());
+  });
+  const url = await listen(server);
+  const controller = new AbortController();
+  const target: AttachTarget = {
+    url,
+    token: "a1b2c3d4e5f60718293a4b5c6d7e8f90".repeat(2),
+    turnId: "turn-x",
+  };
+  const call = postAttachment(
+    target,
+    { turnId: target.turnId, seq: 0, path: "x" },
+    controller.signal,
+  );
+  const checked = assertThrows(
+    () => withDeadline(call, "aborted attachment POST did not settle"),
+    "cancelled by pi",
+    "the pi tool AbortSignal rejects the attachment POST",
+  );
+  try {
+    await withDeadline(started, "broker did not receive the attachment POST");
+    controller.abort(new Error("cancelled by pi"));
+    await checked;
+    await withDeadline(closed, "aborting did not close the attachment request");
+    console.log(
+      "ok the pi AbortSignal promptly destroys the attachment request",
+    );
+  } finally {
+    server.close();
+  }
 }
 
 function verifyToolResultShapes(): void {
@@ -173,8 +251,18 @@ async function withBroker(
       body = raw ? JSON.parse(raw) : undefined;
       if (mode.kind === "accepted") {
         respond(response, 202, { ok: true });
-      } else {
+      } else if (mode.kind === "status") {
         respond(response, mode.status, { error: "broker_error" });
+      } else if (mode.kind === "partial-close") {
+        response.writeHead(202, { "content-length": "100" });
+        response.flushHeaders();
+        response.write("{");
+        setImmediate(() => response.destroy());
+      } else {
+        response.writeHead(202, {
+          "content-length": String(64 * 1024 + 1),
+        });
+        response.flushHeaders();
       }
     });
   });
@@ -228,6 +316,22 @@ async function assertThrows(
   }
   console.error(`${label}: expected a throw but none happened`);
   process.exit(1);
+}
+
+function withDeadline<T>(promise: Promise<T>, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), 2_000);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function restoreEnv(key: string, value: string | undefined): void {

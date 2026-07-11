@@ -15,6 +15,7 @@ import {
   type Point,
   type Size,
 } from "./window-anchor";
+import { lockWindowToRenderer } from "./window-navigation";
 
 // The popover chat window. Created hidden at startup and shown/hidden for the
 // rest of the app's life: closing hides, and only the tray's Quit destroys.
@@ -89,6 +90,7 @@ export function createChatWindow(input: {
       nodeIntegration: false,
     },
   });
+  lockWindowToRenderer(win);
   win.setAlwaysOnTop(true, "screen-saver");
 
   let saveTimer: ReturnType<typeof setTimeout> | undefined;

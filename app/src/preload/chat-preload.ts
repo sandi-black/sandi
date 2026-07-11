@@ -38,6 +38,8 @@ const bridge: SandiChatBridge = {
   submitTurn: (input) => ipcRenderer.invoke(IPC.turnSubmit, input),
   stopTurn: (turnId) => ipcRenderer.invoke(IPC.turnStop, turnId),
   cancelQueued: (turnId) => ipcRenderer.invoke(IPC.turnCancelQueued, turnId),
+  getQueueState: (conversationId) =>
+    ipcRenderer.invoke(IPC.queueStateGet, conversationId),
 
   pickAttachments: () => ipcRenderer.invoke(IPC.attachmentPick),
   // The path never touches the renderer's own code: sandbox-era drag-drop

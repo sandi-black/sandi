@@ -85,12 +85,14 @@ export type QueueState = {
 
 export type TurnDeltaEvent = {
   turnId: string;
+  conversationId: string;
   channel: "text" | "thinking";
   delta: string;
 };
 
 export type TurnAttachmentEvent = {
   turnId: string;
+  conversationId: string;
   attachment: ReplyAttachment;
 };
 
@@ -150,6 +152,7 @@ export type SandiChatBridge = {
   }): Promise<{ turnId: string }>;
   stopTurn(turnId: string): Promise<void>;
   cancelQueued(turnId: string): Promise<void>;
+  getQueueState(conversationId: string): Promise<QueueState>;
 
   pickAttachments(): Promise<StagedAttachment[]>;
   stageDroppedFile(file: File): Promise<StagedAttachment | null>;
@@ -196,6 +199,7 @@ export const IPC = {
   turnAttachment: "turn:attachment",
   turnSettled: "turn:settled",
   queueState: "queue:state",
+  queueStateGet: "queue:state-get",
 
   attachmentPick: "attachment:pick",
   attachmentStageDrop: "attachment:stage-drop",

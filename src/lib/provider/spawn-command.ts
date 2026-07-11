@@ -1,4 +1,8 @@
-import { type ChildProcessByStdio, spawn } from "node:child_process";
+import {
+  type ChildProcess,
+  type ChildProcessByStdio,
+  spawn,
+} from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 
 type SpawnCommandOptions = {
@@ -49,6 +53,31 @@ export function spawnCommandIgnoringStdin(
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: process.platform === "win32",
     windowsVerbatimArguments: process.platform === "win32",
+  });
+}
+
+export function terminateCommandProcess(
+  child: ChildProcess,
+  force = false,
+): void {
+  if (process.platform !== "win32" || child.pid === undefined) {
+    child.kill(force ? "SIGKILL" : "SIGTERM");
+    return;
+  }
+  const args = ["/pid", String(child.pid), "/t", ...(force ? ["/f"] : [])];
+  const killer = spawn("taskkill", args, {
+    windowsHide: true,
+    stdio: "ignore",
+  });
+  let fellBack = false;
+  const fallback = (): void => {
+    if (fellBack) return;
+    fellBack = true;
+    child.kill(force ? "SIGKILL" : "SIGTERM");
+  };
+  killer.once("error", fallback);
+  killer.once("close", (code) => {
+    if (code !== 0) fallback();
   });
 }
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 
 import {
@@ -39,6 +40,9 @@ const DEFAULT_LOCAL_EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
 const DEFAULT_LOCAL_EMBEDDING_DTYPE: DataType = "q8";
 const PIPELINE_CACHE = new Map<string, Promise<FeatureExtractionPipeline>>();
 const EMBEDDING_CACHE = new Map<string, number[]>();
+// Prompt queries are usually unique. Without a bound, a long-running host
+// retains every query string and vector forever.
+const EMBEDDING_CACHE_MAX_ENTRIES = 2_048;
 
 export function createEmbeddingEngineFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -67,7 +71,7 @@ export function createEmbeddingEngineFromEnv(
       const misses: { index: number; text: string; cacheKey: string }[] = [];
       for (const [index, text] of input.entries()) {
         const cacheKey = embeddingCacheKey(config, text);
-        const cached = EMBEDDING_CACHE.get(cacheKey);
+        const cached = getCachedEmbedding(cacheKey);
         if (cached) {
           embeddings[index] = cached;
         } else {
@@ -88,7 +92,7 @@ export function createEmbeddingEngineFromEnv(
         for (const [batchIndex, row] of rows.entries()) {
           const miss = batch[batchIndex];
           if (!miss) continue;
-          EMBEDDING_CACHE.set(miss.cacheKey, row);
+          cacheEmbedding(miss.cacheKey, row);
           embeddings[miss.index] = row;
         }
       }
@@ -101,7 +105,8 @@ export function createEmbeddingEngineFromEnv(
 }
 
 export function cosineSimilarity(a: readonly number[], b: readonly number[]) {
-  const length = Math.min(a.length, b.length);
+  if (a.length !== b.length) return 0;
+  const length = a.length;
   if (length === 0) return 0;
 
   let dot = 0;
@@ -144,12 +149,46 @@ function localFeatureExtractor(
     dtype: config.dtype,
     local_files_only: config.localFilesOnly,
   });
-  PIPELINE_CACHE.set(cacheKey, created);
-  return created;
+  let retryable: Promise<FeatureExtractionPipeline>;
+  retryable = created.catch((error: unknown) => {
+    // Model downloads and local cache reads can fail transiently. A rejected
+    // cached promise would otherwise disable embeddings until process restart.
+    if (PIPELINE_CACHE.get(cacheKey) === retryable) {
+      PIPELINE_CACHE.delete(cacheKey);
+    }
+    throw error;
+  });
+  PIPELINE_CACHE.set(cacheKey, retryable);
+  return retryable;
 }
 
 function embeddingCacheKey(config: LocalEmbeddingConfig, text: string): string {
-  return `${config.model}\0${config.dtype}\0${text}`;
+  return createHash("sha256")
+    .update(config.model)
+    .update("\0")
+    .update(config.dtype)
+    .update("\0")
+    .update(text)
+    .digest("hex");
+}
+
+function getCachedEmbedding(key: string): number[] | undefined {
+  const value = EMBEDDING_CACHE.get(key);
+  if (!value) return undefined;
+  // Map insertion order gives us a compact LRU without another index.
+  EMBEDDING_CACHE.delete(key);
+  EMBEDDING_CACHE.set(key, value);
+  return value;
+}
+
+function cacheEmbedding(key: string, value: number[]): void {
+  EMBEDDING_CACHE.delete(key);
+  EMBEDDING_CACHE.set(key, value);
+  while (EMBEDDING_CACHE.size > EMBEDDING_CACHE_MAX_ENTRIES) {
+    const oldest = EMBEDDING_CACHE.keys().next().value;
+    if (oldest === undefined) break;
+    EMBEDDING_CACHE.delete(oldest);
+  }
 }
 
 function tensorRows(tensor: TensorLike): number[][] {
@@ -167,8 +206,8 @@ function numberArray(value: unknown): number[] {
   }
   const values: number[] = [];
   for (const item of value) {
-    if (typeof item !== "number") {
-      throw new Error("Embedding row contained a non-number value.");
+    if (typeof item !== "number" || !Number.isFinite(item)) {
+      throw new Error("Embedding row contained a non-finite number.");
     }
     values.push(item);
   }
@@ -197,7 +236,10 @@ function readDtype(env: NodeJS.ProcessEnv): DataType | undefined {
 function readBooleanEnv(env: NodeJS.ProcessEnv, name: string): boolean {
   const value = readEnv(env, name);
   if (!value) return false;
-  return value === "1" || value.toLowerCase() === "true";
+  const normalized = value.toLowerCase();
+  if (normalized === "1" || normalized === "true") return true;
+  if (normalized === "0" || normalized === "false") return false;
+  throw new Error(`${name} must be true, false, 1, or 0.`);
 }
 
 function readPositiveIntEnv(
@@ -206,8 +248,14 @@ function readPositiveIntEnv(
 ): number | undefined {
   const value = readEnv(env, name);
   if (!value) return undefined;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`${name} must be a positive integer.`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive safe integer.`);
+  }
+  return parsed;
 }
 
 function readEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {

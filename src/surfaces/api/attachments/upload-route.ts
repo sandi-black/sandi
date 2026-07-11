@@ -4,6 +4,7 @@ import {
   AttachmentNameSchema,
   type AttachmentStore,
   AttachmentTooLargeError,
+  MAX_ATTACHMENT_BYTES,
   SupportedAttachmentMimeTypeSchema,
 } from "@/surfaces/api/attachments/store";
 import { sendJson } from "@/surfaces/api/http/respond";
@@ -29,7 +30,7 @@ export async function handleAttachmentUpload(
     .toLowerCase();
   const mimeType = SupportedAttachmentMimeTypeSchema.safeParse(rawMime);
   if (!mimeType.success) {
-    sendJson(response, 400, { error: "invalid_mime" });
+    sendAndDiscard(request, response, 400, "invalid_mime");
     return;
   }
 
@@ -38,7 +39,16 @@ export async function handleAttachmentUpload(
     (Array.isArray(nameHeader) ? nameHeader[0] : nameHeader)?.trim(),
   );
   if (!name.success) {
-    sendJson(response, 400, { error: "invalid_name" });
+    sendAndDiscard(request, response, 400, "invalid_name");
+    return;
+  }
+
+  const declaredLength = Number(request.headers["content-length"]);
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > MAX_ATTACHMENT_BYTES
+  ) {
+    sendAndDiscard(request, response, 413, "too_large");
     return;
   }
 
@@ -52,9 +62,21 @@ export async function handleAttachmentUpload(
     sendJson(response, 200, result);
   } catch (error) {
     if (error instanceof AttachmentTooLargeError) {
-      sendJson(response, 413, { error: "too_large" });
+      sendAndDiscard(request, response, 413, "too_large");
       return;
     }
+    request.resume();
     throw error;
   }
+}
+
+function sendAndDiscard(
+  request: IncomingMessage,
+  response: ServerResponse,
+  status: number,
+  error: string,
+): void {
+  request.once("error", () => {});
+  request.resume();
+  sendJson(response, status, { error });
 }

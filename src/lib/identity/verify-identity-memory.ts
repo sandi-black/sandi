@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { buildMemoryContext, loadMemory } from "@/lib/context/memory";
 import type { ConversationParticipant } from "@/lib/conversations/types";
 import {
-  findHumanIdentity,
+  findHumanIdentityByPlatformId,
   loadHumanIdentities,
 } from "@/lib/identity/resolver";
 import { participantMemoryRef } from "@/lib/identity/types";
@@ -43,17 +43,15 @@ await withTempDir("sandi-identity-memory-", async (tempRoot) => {
   );
 
   const identities = await loadHumanIdentities(configDir);
-  const discordIdentity = findHumanIdentity({
+  const discordIdentity = findHumanIdentityByPlatformId({
     identities,
     platform: "discord",
     platformUserId: "discord-user-casey",
-    username: "casey-discord",
   });
-  const githubIdentity = findHumanIdentity({
+  const githubIdentity = findHumanIdentityByPlatformId({
     identities,
     platform: "github",
     platformUserId: "22222222",
-    username: "casey-github",
   });
   assert(discordIdentity?.id === "casey", "Discord Casey should map to Casey");
   assert(githubIdentity?.id === "casey", "GitHub Casey should map to Casey");

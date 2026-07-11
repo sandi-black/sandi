@@ -50,18 +50,17 @@ const bot = new ApiBot({
   broker,
 });
 
-process.on("unhandledRejection", (reason) => {
-  log.error("unhandled rejection", { reason });
+process.once("unhandledRejection", (reason) => {
+  fatalShutdown("unhandled rejection", reason);
 });
 
-process.on("uncaughtException", (error) => {
-  log.error("uncaught exception", { error: error.message });
-  process.exitCode = 1;
+process.once("uncaughtException", (error) => {
+  fatalShutdown("uncaught exception", error);
 });
 
 let shutdownStarted = false;
 
-function shutdown(signal: NodeJS.Signals): void {
+function shutdown(signal: string): void {
   if (shutdownStarted) return;
   shutdownStarted = true;
   log.info("shutdown signal received", { signal });
@@ -85,6 +84,14 @@ function shutdown(signal: NodeJS.Signals): void {
     });
     process.exitCode = 1;
   }
+}
+
+function fatalShutdown(kind: string, error: unknown): void {
+  log.error(kind, { error: errorMessage(error) });
+  process.exitCode = 1;
+  shutdown(kind);
+  const forcedExit = setTimeout(() => process.exit(1), 5_000);
+  forcedExit.unref();
 }
 
 process.once("SIGINT", () => {

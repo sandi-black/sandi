@@ -1,6 +1,9 @@
 import { readdir, readFile, rm } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 
+import { errorMessage } from "@/lib/errors";
+import { isMissingPathError } from "@/lib/fs-errors";
+import { createLogger } from "@/lib/logging";
 import {
   atomicWriteManaged,
   withManagedWrite,
@@ -11,6 +14,7 @@ import {
 } from "@/surfaces/discord/reminders/schemas";
 
 const REMINDER_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,79}$/;
+const log = createLogger("reminder-store");
 
 export type StoredReminder = {
   id: string;
@@ -22,8 +26,9 @@ export async function listReminders(root: string): Promise<StoredReminder[]> {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await readdir(absoluteRoot, { withFileTypes: true });
-  } catch {
-    return [];
+  } catch (error) {
+    if (isMissingPathError(error)) return [];
+    throw error;
   }
 
   const reminders: StoredReminder[] = [];
@@ -32,7 +37,12 @@ export async function listReminders(root: string): Promise<StoredReminder[]> {
     const id = entry.name.slice(0, -".json".length);
     try {
       reminders.push({ id, reminder: await readReminder(absoluteRoot, id) });
-    } catch {}
+    } catch (error) {
+      log.warn("skipping unreadable reminder", {
+        id,
+        error: errorMessage(error),
+      });
+    }
   }
   return reminders.sort((a, b) => a.id.localeCompare(b.id));
 }

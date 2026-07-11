@@ -86,8 +86,9 @@ async function fileStatKey(path: string): Promise<string | null> {
   try {
     const info = await stat(path);
     return `${info.mtimeMs}:${info.size}`;
-  } catch {
-    return null;
+  } catch (error) {
+    if (isMissingPathError(error)) return null;
+    throw error;
   }
 }
 
@@ -151,8 +152,9 @@ async function collectPolicyRefs(
   let entries: Dirent[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return;
+  } catch (error) {
+    if (isMissingPathError(error)) return;
+    throw error;
   }
 
   for (const entry of entries) {

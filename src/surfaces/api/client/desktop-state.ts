@@ -3,8 +3,8 @@ import { spawn } from "node:child_process";
 import { z } from "zod/v4";
 import { errorMessage } from "@/lib/errors";
 import {
-  CANONICAL_BASE64,
   imageBytesMatchMime,
+  isCanonicalBase64,
   type LocalScreenshotParams,
   type ToolCallOutcome,
 } from "@/surfaces/api/devices/protocol";
@@ -82,7 +82,7 @@ const CaptureSchema = z
     originalHeight: z.number().int().positive(),
     width: z.number().int().positive(),
     height: z.number().int().positive(),
-    base64: z.string().regex(CANONICAL_BASE64, "must be canonical base64"),
+    base64: z.string().refine(isCanonicalBase64, "must be canonical base64"),
   })
   .refine((capture) => imageBytesMatchMime("image/jpeg", capture.base64), {
     message: "capture was not a JPEG image",

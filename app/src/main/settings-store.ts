@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -88,7 +89,7 @@ function load(filePath: string): Settings {
 // overwrite the only copy, surface the reset, and run on defaults; a settings
 // loss should not brick the whole app.
 function quarantine(filePath: string): Settings {
-  const backupPath = `${filePath}.corrupt`;
+  const backupPath = `${filePath}.corrupt-${randomUUID()}`;
   renameSync(filePath, backupPath);
   console.error(
     `settings file was corrupt; moved it to ${backupPath} and reset to defaults`,

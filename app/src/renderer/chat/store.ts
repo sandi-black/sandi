@@ -34,16 +34,25 @@ type ChatState = {
   uiError: string | undefined;
 
   setSessions(sessions: SessionSummary[]): void;
-  setActive(conversationId: string, transcript: TranscriptEntry[]): void;
+  setActive(
+    conversationId: string,
+    transcript: TranscriptEntry[],
+    queue: QueueState,
+  ): void;
   appendTranscript(entry: TranscriptEntry): void;
   beginLiveTurn(turnId: string, conversationId: string): void;
   appendDelta(
     turnId: string,
+    conversationId: string,
     channel: "text" | "thinking",
     delta: string,
   ): void;
-  appendLiveAttachment(turnId: string, attachment: ReplyAttachment): void;
-  endLiveTurn(turnId: string): void;
+  appendLiveAttachment(
+    turnId: string,
+    conversationId: string,
+    attachment: ReplyAttachment,
+  ): void;
+  endLiveTurn(turnId: string, conversationId: string): void;
   setQueue(queue: QueueState): void;
   setLink(link: LinkStatus): void;
   setStaged(staged: StagedAttachment[]): void;
@@ -66,42 +75,75 @@ export const useChatStore = create<ChatState>((set) => ({
   uiError: undefined,
 
   setSessions: (sessions) => set({ sessions }),
-  setActive: (conversationId, transcript) =>
-    set({
-      activeConversationId: conversationId,
-      transcript,
-      liveTurn: undefined,
-      liveAttachments: [],
-      drawerOpen: false,
+  setActive: (conversationId, transcript, queue) =>
+    set((state) => {
+      const sameConversation = state.activeConversationId === conversationId;
+      return {
+        activeConversationId: conversationId,
+        // A settle-triggered disk reload can finish after the next queued turn
+        // has started. Keep newer optimistic entries and live state while the
+        // authoritative entries replace matching provisional ones.
+        transcript: sameConversation
+          ? mergeTranscript(transcript, state.transcript)
+          : transcript,
+        liveTurn: sameConversation ? state.liveTurn : undefined,
+        liveAttachments: sameConversation ? state.liveAttachments : [],
+        queue:
+          sameConversation && state.queue?.conversationId === conversationId
+            ? state.queue
+            : queue,
+        drawerOpen: false,
+      };
     }),
   appendTranscript: (entry) =>
     set((state) => ({ transcript: [...state.transcript, entry] })),
   beginLiveTurn: (turnId, conversationId) =>
-    set({
-      liveTurn: { turnId, conversationId, text: "" },
-      liveAttachments: [],
-    }),
-  appendDelta: (turnId, channel, delta) =>
+    set((state) =>
+      state.activeConversationId === conversationId
+        ? {
+            liveTurn: { turnId, conversationId, text: "" },
+            liveAttachments: [],
+          }
+        : state,
+    ),
+  appendDelta: (turnId, conversationId, channel, delta) =>
     set((state) => {
-      if (state.liveTurn?.turnId !== turnId) return state;
+      if (
+        state.activeConversationId !== conversationId ||
+        state.liveTurn?.turnId !== turnId ||
+        state.liveTurn.conversationId !== conversationId
+      ) {
+        return state;
+      }
       // Thinking deltas are still streamed by main but no longer rendered.
       if (channel === "thinking") return state;
       return {
         liveTurn: { ...state.liveTurn, text: state.liveTurn.text + delta },
       };
     }),
-  appendLiveAttachment: (turnId, attachment) =>
+  appendLiveAttachment: (turnId, conversationId, attachment) =>
     set((state) => {
-      if (state.liveTurn?.turnId !== turnId) return state;
+      if (
+        state.activeConversationId !== conversationId ||
+        state.liveTurn?.turnId !== turnId ||
+        state.liveTurn.conversationId !== conversationId
+      ) {
+        return state;
+      }
       return { liveAttachments: [...state.liveAttachments, attachment] };
     }),
-  endLiveTurn: (turnId) =>
+  endLiveTurn: (turnId, conversationId) =>
     set((state) =>
-      state.liveTurn?.turnId === turnId
+      state.activeConversationId === conversationId &&
+      state.liveTurn?.turnId === turnId &&
+      state.liveTurn.conversationId === conversationId
         ? { liveTurn: undefined, liveAttachments: [] }
         : state,
     ),
-  setQueue: (queue) => set({ queue }),
+  setQueue: (queue) =>
+    set((state) =>
+      state.activeConversationId === queue.conversationId ? { queue } : state,
+    ),
   setLink: (link) => set({ link }),
   setStaged: (staged) => set({ staged }),
   addStaged: (attachment) =>
@@ -113,3 +155,18 @@ export const useChatStore = create<ChatState>((set) => ({
   setDrawerOpen: (drawerOpen) => set({ drawerOpen }),
   setUiError: (uiError) => set({ uiError }),
 }));
+
+function mergeTranscript(
+  authoritative: TranscriptEntry[],
+  current: TranscriptEntry[],
+): TranscriptEntry[] {
+  const keys = new Set(authoritative.map(transcriptEntryKey));
+  return [
+    ...authoritative,
+    ...current.filter((entry) => !keys.has(transcriptEntryKey(entry))),
+  ];
+}
+
+function transcriptEntryKey(entry: TranscriptEntry): string {
+  return `${entry.type}:${entry.turnId}`;
+}

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -160,17 +160,34 @@ async function main(): Promise<void> {
       [],
       "corrupt index starts empty",
     );
+    const firstBackups = (await readdir(dir)).filter((name) =>
+      name.startsWith("index.json.corrupt-"),
+    );
+    assert.equal(firstBackups.length, 1, "corrupt index gets a unique backup");
+    const firstBackup = firstBackups[0];
+    assert.ok(firstBackup, "the first backup has a filename");
     assert.equal(
-      await readFile(join(dir, "index.json.corrupt"), "utf8"),
+      await readFile(join(dir, firstBackup), "utf8"),
       "{not json",
       "corrupt index preserved aside",
     );
     await quarantined.createSession("post-quarantine session");
     assert.equal(
-      await readFile(join(dir, "index.json.corrupt"), "utf8"),
+      await readFile(join(dir, firstBackup), "utf8"),
       "{not json",
       "persisting a new index leaves the quarantined copy alone",
     );
+
+    // A later corruption keeps both originals. A fixed `.corrupt` filename
+    // made the second startup fail on Windows because rename cannot replace
+    // an existing destination.
+    await writeFile(join(dir, "index.json"), "{broken again", "utf8");
+    const quarantinedAgain = await createTranscriptStore(dir);
+    assert.deepEqual(quarantinedAgain.listSessions(), []);
+    const allBackups = (await readdir(dir)).filter((name) =>
+      name.startsWith("index.json.corrupt-"),
+    );
+    assert.equal(allBackups.length, 2, "repeated corruption keeps both copies");
 
     console.log("verify-transcript-store: ok");
   } finally {

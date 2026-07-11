@@ -147,14 +147,17 @@ async function acquireAndRun<T>(
   await mkdir(dirname(absolutePath), { recursive: true });
   const token = await acquireLock(lockPath);
   const heartbeat = startHeartbeat(lockPath, token);
-  const held = heldKeys.getStore() ?? new Set<string>();
+  // AsyncLocalStorage propagates values by reference. Mutating an inherited
+  // Set would make a sibling branch look reentrant while this branch holds a
+  // different lock, allowing the sibling to bypass both lock layers. Give each
+  // acquired lock its own snapshot so only true descendants inherit the key.
+  const held = new Set(heldKeys.getStore() ?? []);
   held.add(key);
 
   let result: T;
   try {
     result = await heldKeys.run(held, critical);
   } catch (bodyError) {
-    held.delete(key);
     heartbeat.stop();
     // Never let a release failure mask the original body error: log the release
     // failure as context and re-surface the body error.
@@ -170,7 +173,6 @@ async function acquireAndRun<T>(
     throw bodyError;
   }
 
-  held.delete(key);
   heartbeat.stop();
   // The body succeeded, so a release failure is the only error to report.
   await releaseLock(lockPath, token);

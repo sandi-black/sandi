@@ -2,10 +2,12 @@ import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import {
   access,
+  chmod,
   mkdir,
   readFile,
   rename,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -122,6 +124,7 @@ export async function migrateLegacyDesktopConfig(
   if (!(await pathExists(legacy))) return undefined;
   await mkdir(dirname(target), { recursive: true });
   await rename(legacy, target);
+  await chmod(target, 0o600);
   return target;
 }
 
@@ -145,6 +148,14 @@ export async function loadDesktopCredentials(
   } catch (error) {
     if (isMissingPathError(error)) return undefined;
     throw error;
+  }
+  if (process.platform !== "win32") {
+    const mode = (await stat(path)).mode & 0o777;
+    if ((mode & 0o077) !== 0) {
+      throw new Error(
+        `desktop credentials must be owner-only (expected mode 600, got ${mode.toString(8)})`,
+      );
+    }
   }
   return DesktopCredentialsSchema.parse(JSON.parse(raw));
 }

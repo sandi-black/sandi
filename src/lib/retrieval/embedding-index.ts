@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
-import { isMissingFileError } from "../fs-errors";
+import { isMissingFileError, isMissingPathError } from "../fs-errors";
 import {
   createEmbeddingEngineFromEnv,
   type EmbeddingEngine,
@@ -236,8 +236,9 @@ export async function cleanupOldEmbeddingIndexGenerations(input: {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await readdir(generationsRoot, { withFileTypes: true });
-  } catch {
-    return;
+  } catch (error) {
+    if (isMissingPathError(error)) return;
+    throw error;
   }
 
   const keepCount = input.keepCount ?? 2;

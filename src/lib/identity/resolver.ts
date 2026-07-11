@@ -90,23 +90,6 @@ function assertUniqueIdentities(config: HumanIdentityConfig): void {
   }
 }
 
-export function findHumanIdentity(input: {
-  identities: HumanIdentityConfig;
-  platform: IdentityPlatform;
-  platformUserId: string;
-  username: string;
-}): HumanIdentityRecord | undefined {
-  const username = input.username.toLowerCase();
-  const platformUserId = input.platformUserId.toLowerCase();
-  const descriptor = PLATFORM_IDENTITY_DESCRIPTORS[input.platform];
-  return input.identities.humans.find((human) => {
-    const account = descriptor.readAccount(human.platforms);
-    if (!account) return false;
-    if (account.id && account.id.toLowerCase() === platformUserId) return true;
-    return account.username.toLowerCase() === username;
-  });
-}
-
 /**
  * Strict, auth-grade identity resolution: matches only on the immutable platform
  * account id, never on a mutable username. Use this for security gates that mint
@@ -139,17 +122,23 @@ export function findHumanIdentityByPlatformId(input: {
 export class HumanIdentityStore {
   readonly #configDirs: string[];
   readonly #ttlMs: number;
+  readonly #now: () => number;
   #cache: HumanIdentityConfig = { version: 1, humans: [] };
   #cacheKey: string | undefined;
   #checkedAt = 0;
 
-  constructor(configDirs: string | readonly string[], ttlMs = 5_000) {
+  constructor(
+    configDirs: string | readonly string[],
+    ttlMs = 5_000,
+    now: () => number = Date.now,
+  ) {
     this.#configDirs = normalizeConfigDirs(configDirs);
     this.#ttlMs = ttlMs;
+    this.#now = now;
   }
 
   async load(): Promise<HumanIdentityConfig> {
-    const now = Date.now();
+    const now = this.#now();
     if (
       this.#ttlMs > 0 &&
       this.#cacheKey !== undefined &&
@@ -163,10 +152,14 @@ export class HumanIdentityStore {
     // call, which is what auth gates use for immediate revocation. (Same
     // ordering as ApiTokenStore.)
     const key = await this.#statKey();
-    this.#checkedAt = now;
-    if (this.#cacheKey === key) return this.#cache;
-    this.#cache = await loadHumanIdentities(this.#configDirs);
+    if (this.#cacheKey === key) {
+      this.#checkedAt = now;
+      return this.#cache;
+    }
+    const loaded = await loadHumanIdentities(this.#configDirs);
+    this.#cache = loaded;
     this.#cacheKey = key;
+    this.#checkedAt = now;
     return this.#cache;
   }
 
@@ -175,8 +168,10 @@ export class HumanIdentityStore {
     for (const configDir of this.#configDirs) {
       const path = join(configDir, "identities", "humans.json");
       try {
-        const info = await stat(path);
-        parts.push(`${info.mtimeMs}:${info.size}`);
+        const info = await stat(path, { bigint: true });
+        parts.push(
+          `${info.dev}:${info.ino}:${info.mtimeNs}:${info.ctimeNs}:${info.size}`,
+        );
       } catch (error) {
         if (isMissingPathError(error)) {
           parts.push("missing");

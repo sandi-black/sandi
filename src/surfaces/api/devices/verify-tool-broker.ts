@@ -5,6 +5,7 @@ import { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
 import { ToolBroker } from "@/surfaces/api/devices/tool-broker";
 
 async function verifyToolBroker(): Promise<void> {
+  await verifyLifecycle();
   const registry = new DeviceRegistry();
   const broker = new ToolBroker(registry);
   await broker.start();
@@ -33,6 +34,29 @@ async function verifyToolBroker(): Promise<void> {
     registry.closeAll();
   }
   console.log("tool broker verification passed");
+}
+
+async function verifyLifecycle(): Promise<void> {
+  const broker = new ToolBroker(new DeviceRegistry());
+  const first = broker.start();
+  const concurrent = broker.start();
+  assert(first === concurrent, "concurrent starts share one readiness promise");
+  await first;
+  assert(broker.url() !== undefined, "start resolves only after URL readiness");
+  broker.stop();
+
+  const interrupted = broker.start();
+  broker.stop();
+  await assertRejects(interrupted, "stopping during start settles its promise");
+  await broker.start();
+  assert(
+    broker.url() !== undefined,
+    "a broker can restart after interrupted start",
+  );
+  broker.stop();
+  console.log(
+    "ok tool broker start and stop have deterministic lifecycle state",
+  );
 }
 
 async function verifyHappyPath(
@@ -107,12 +131,17 @@ async function verifyAbortRejects(
   // A silent device that receives the dispatch but never answers. Capture its
   // SSE writes so we can confirm the abort propagates as a tool_cancel.
   const writes: string[] = [];
+  let markDispatched: (() => void) | undefined;
+  const dispatched = new Promise<void>((resolve) => {
+    markDispatched = resolve;
+  });
   registry.connect({
     key: "d-silent",
     deviceId: "d-silent",
     identityId: "i",
     write: (chunk) => {
       writes.push(chunk);
+      if (chunk.includes("event: tool_call")) markDispatched?.();
       return true;
     },
     end: () => {},
@@ -127,8 +156,10 @@ async function verifyAbortRejects(
     tool: "local_bash",
     params: { command: "sleep" },
   });
-  // Abort the turn while the call is in flight.
-  setTimeout(() => controller.abort(), 50);
+  // Abort only after the fake desktop observed the call. This barrier makes the
+  // cancellation assertion independent of CI scheduling.
+  await dispatched;
+  controller.abort();
   const response = await pending;
   assertEqual(
     response.status,
@@ -172,18 +203,65 @@ async function verifyRevoke(
   registry: DeviceRegistry,
   broker: ToolBroker,
 ): Promise<void> {
-  connectEchoDevice(registry, "d-revoke", okEcho);
+  const writes: string[] = [];
+  let markDispatched: (() => void) | undefined;
+  const dispatched = new Promise<void>((resolve) => {
+    markDispatched = resolve;
+  });
+  registry.connect({
+    key: "d-revoke",
+    deviceId: "d-revoke",
+    identityId: "i",
+    write: (chunk) => {
+      writes.push(chunk);
+      if (chunk.includes("event: tool_call")) markDispatched?.();
+      return true;
+    },
+    end: () => {},
+  });
   const lease = broker.lease({
     key: "d-revoke",
     signal: new AbortController().signal,
+    originDevice: true,
   });
+  const pending = postCall(lease.ticket.url, lease.ticket.token, {
+    tool: "local_bash",
+    params: { command: "long-running" },
+  });
+  const first = await Promise.race([
+    dispatched.then(() => ({ type: "dispatch" as const })),
+    pending.then((response) => ({ type: "response" as const, response })),
+  ]);
+  assertEqual(
+    first.type,
+    "dispatch",
+    `revoke fixture must dispatch before settling (${JSON.stringify(first)})`,
+  );
   lease.revoke();
+  const interrupted = await pending;
+  assertEqual(interrupted.status, 504, "revoke settles an in-flight call");
+  assert(
+    writes.some((chunk) => chunk.includes("event: tool_cancel")),
+    "revoke tells the desktop to cancel authorized work",
+  );
   const response = await postCall(lease.ticket.url, lease.ticket.token, {
     tool: "local_read",
     params: {},
   });
   assertEqual(response.status, 401, "a revoked token no longer routes");
-  console.log("ok a revoked lease token stops working");
+  console.log("ok lease revocation cancels in-flight work and stops new calls");
+}
+
+async function assertRejects(
+  promise: Promise<unknown>,
+  message: string,
+): Promise<void> {
+  try {
+    await promise;
+  } catch {
+    return;
+  }
+  throw new Error(message);
 }
 
 async function verifyListDesktops(

@@ -104,7 +104,7 @@ async function main(): Promise<void> {
         deviceId: "verify-device",
         identityId: "hopper",
       }),
-      "utf8",
+      { encoding: "utf8", mode: 0o600 },
     );
     process.env["SANDI_DESKTOP_CONFIG"] = configPath;
 

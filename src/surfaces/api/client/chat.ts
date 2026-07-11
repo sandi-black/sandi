@@ -77,45 +77,58 @@ export async function runChatRepl(options: ChatReplOptions): Promise<void> {
   );
 
   const rl = createInterface({ input: process.stdin });
-  process.once("SIGINT", () => {
+  const shutdown = (): void => {
     controller.abort();
     rl.close();
-  });
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
 
-  process.stdout.write("you> ");
-  for await (const rawLine of rl) {
-    const line = rawLine.trim();
-    if (line === "") {
-      process.stdout.write("you> ");
-      continue;
+  try {
+    process.stdout.write("you> ");
+    for await (const rawLine of rl) {
+      const line = rawLine.trim();
+      if (line === "") {
+        process.stdout.write("you> ");
+        continue;
+      }
+      if (line === "/exit" || line === "/quit") break;
+      // Mint the turn id here so the printer can bind its live preview to this
+      // exact turn and ignore any straggling delta from the previous one.
+      const turnId = randomUUID();
+      currentTurnId = turnId;
+      printer.begin(turnId);
+      process.stdout.write("sandi> ");
+      try {
+        const outcome = await sendTurn({
+          url: credentials.url,
+          token: credentials.token,
+          conversationId,
+          input: line,
+          turnId,
+          signal: controller.signal,
+        });
+        if (outcome.ok) {
+          printer.settle(outcome.text);
+        } else {
+          printer.settle("");
+          process.stderr.write(`[sandi] ${outcome.error}\n`);
+        }
+      } catch (error) {
+        printer.settle("");
+        process.stderr.write(`[sandi] ${errorMessage(error)}\n`);
+      } finally {
+        currentTurnId = undefined;
+      }
+      process.stdout.write("\nyou> ");
     }
-    if (line === "/exit" || line === "/quit") break;
-    // Mint the turn id here so the printer can bind its live preview to this
-    // exact turn and ignore any straggling delta from the previous one.
-    const turnId = randomUUID();
-    currentTurnId = turnId;
-    printer.begin(turnId);
-    process.stdout.write("sandi> ");
-    const outcome = await sendTurn({
-      url: credentials.url,
-      token: credentials.token,
-      conversationId,
-      input: line,
-      turnId,
-      signal: controller.signal,
-    });
-    if (outcome.ok) {
-      printer.settle(outcome.text);
-    } else {
-      process.stdout.write("\n");
-      process.stderr.write(`[sandi] ${outcome.error}\n`);
-    }
-    process.stdout.write("\nyou> ");
+  } finally {
+    process.removeListener("SIGINT", shutdown);
+    process.removeListener("SIGTERM", shutdown);
+    rl.close();
+    controller.abort();
+    await link;
   }
-
-  rl.close();
-  controller.abort();
-  await link;
   process.stdout.write("\nchat ended\n");
 }
 

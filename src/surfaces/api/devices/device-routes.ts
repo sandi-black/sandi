@@ -1,7 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import type { ApiTokenEntry } from "@/surfaces/api/auth/tokens";
-import type { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
+import type { ApiTokenEntry, ApiTokenStore } from "@/surfaces/api/auth/tokens";
+import type {
+  DeviceConnectionHandle,
+  DeviceRegistry,
+} from "@/surfaces/api/devices/device-registry";
 import { DeviceResultSchema } from "@/surfaces/api/devices/protocol";
 import { readJsonBody } from "@/surfaces/api/http/read-json-body";
 import { sendJson } from "@/surfaces/api/http/respond";
@@ -19,9 +22,14 @@ const DEVICE_RESULT_BODY_TIMEOUT_MS = 30_000;
 // the listener and its shared dependencies rather than also owning device I/O.
 export class DeviceRoutes {
   readonly #registry: DeviceRegistry;
+  readonly #tokens: ApiTokenStore;
 
-  constructor(registry: DeviceRegistry) {
+  constructor(registry: DeviceRegistry, tokens: ApiTokenStore) {
     this.#registry = registry;
+    this.#tokens = tokens;
+    tokens.onChange((file) => {
+      registry.retainAuthorizedTokens(file.tokens);
+    });
   }
 
   // A desktop holds this SSE stream open to receive the tool calls for its turns.
@@ -30,6 +38,15 @@ export class DeviceRoutes {
   // stream stays open until the client goes away; each tool call arrives as a
   // `tool_call` event and each result comes back on the result route.
   handleLink(response: ServerResponse, entry: ApiTokenEntry): void {
+    let handle: DeviceConnectionHandle | undefined;
+    const onClose = (): void => {
+      handle?.close();
+    };
+    response.once("close", onClose);
+    if (response.destroyed || response.closed || response.writableEnded) {
+      response.removeListener("close", onClose);
+      return;
+    }
     response.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-cache, no-transform",
@@ -37,9 +54,9 @@ export class DeviceRoutes {
       // Stop intermediaries from buffering the stream so events flush at once.
       "x-accel-buffering": "no",
     });
-    response.write(": linked\n\n");
+    const initiallyWritable = response.write(": linked\n\n");
 
-    const handle = this.#registry.connect({
+    handle = this.#registry.connect({
       key: entry.tokenSha256,
       deviceId: entry.deviceId,
       identityId: entry.identityId,
@@ -47,15 +64,23 @@ export class DeviceRoutes {
       // is full) so the registry can shed a high-rate response stream rather than
       // buffer it without bound.
       write: (chunk) => response.write(chunk),
+      onDrain: (listener) => {
+        response.on("drain", listener);
+        return () => {
+          response.removeListener("drain", listener);
+        };
+      },
+      initialBackpressured: !initiallyWritable,
+      isAuthorized: () => this.#tokens.contains(entry),
       end: () => {
         response.end();
       },
     });
     // An SSE link ends only when the client disconnects: tear it down so the
     // device frees and any in-flight calls reject.
-    response.on("close", () => {
+    if (response.destroyed || response.closed || response.writableEnded) {
       handle.close();
-    });
+    }
   }
 
   // A desktop POSTs one tool result here as each call finishes. The call is
@@ -69,6 +94,7 @@ export class DeviceRoutes {
     const body = await readJsonBody(request, {
       maxBytes: DEVICE_RESULT_MAX_BODY_BYTES,
       timeoutMs: DEVICE_RESULT_BODY_TIMEOUT_MS,
+      response,
     });
     if (!body.ok) {
       sendJson(response, body.status, { error: body.error });

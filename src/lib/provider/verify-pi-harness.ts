@@ -2,7 +2,7 @@ import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { PiConfig } from "@/lib/config/env";
-import { PiCliClient } from "@/lib/provider/pi-cli-client";
+import { PiCliClient, piSessionFilePath } from "@/lib/provider/pi-cli-client";
 import { assert, isRecord, withTempDir } from "@/lib/verification/harness";
 
 await withTempDir("sandi-pi-harness-", async (tempRoot) => {
@@ -17,11 +17,17 @@ await withTempDir("sandi-pi-harness-", async (tempRoot) => {
   const sessionDir = join(tempRoot, "sessions");
   const extensionPath = join(tempRoot, "sandi-extension.ts");
 
+  assert(
+    piSessionFilePath(sessionDir, "api:a_b:c:d") !==
+      piSessionFilePath(sessionDir, "api:a:b_c:d"),
+    "distinct canonical conversation ids must never share a Pi session file",
+  );
+
   try {
     await writeFile(
       fakePiModulePath,
       `#!/usr/bin/env node
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 
 let stdin = "";
 process.stdin.setEncoding("utf8");
@@ -29,12 +35,19 @@ for await (const chunk of process.stdin) {
   stdin += chunk;
 }
 
+const args = process.argv.slice(2);
+const promptIndex = args.indexOf("--append-system-prompt");
+const systemPrompt = promptIndex >= 0 && args[promptIndex + 1]
+  ? await readFile(args[promptIndex + 1], "utf8")
+  : undefined;
+
 await writeFile(
   process.env.FAKE_PI_RECORD_PATH,
   JSON.stringify(
     {
-      args: process.argv.slice(2),
+      args,
       stdin,
+      systemPrompt,
       env: {
         PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
         PI_PACKAGE_DIR: process.env.PI_PACKAGE_DIR,
@@ -135,10 +148,16 @@ process.stdout.write("fake model output\\n");
     );
     const promptPath = valueAfter(record.args, "--append-system-prompt");
     assert(
-      promptPath !== undefined &&
-        (await readFile(promptPath, "utf8")) === "system instructions",
+      promptPath !== undefined && record.systemPrompt === "system instructions",
       "system prompt payload should contain the compiled instructions",
     );
+    let promptCleaned = false;
+    try {
+      await readFile(promptPath ?? "", "utf8");
+    } catch {
+      promptCleaned = true;
+    }
+    assert(promptCleaned, "turn-scoped system prompt payload is cleaned up");
     assert(
       !record.args.includes("hello from stdin"),
       "user input should not be passed as an argv argument",
@@ -286,6 +305,7 @@ process.stdout.write("fake model output\\n");
 type FakePiRecord = {
   args: string[];
   stdin: string;
+  systemPrompt?: string;
   env: {
     PI_CODING_AGENT_DIR?: string;
     PI_PACKAGE_DIR?: string;
@@ -301,6 +321,7 @@ function parseRecord(raw: string): FakePiRecord {
   if (!isRecord(parsed)) throw new Error("fake Pi record was not an object");
   const args = parsed["args"];
   const stdin = parsed["stdin"];
+  const systemPrompt = optionalString(parsed["systemPrompt"]);
   const env = parsed["env"];
   if (!Array.isArray(args) || !args.every((item) => typeof item === "string")) {
     throw new Error("fake Pi record args were malformed");
@@ -319,6 +340,7 @@ function parseRecord(raw: string): FakePiRecord {
   return {
     args,
     stdin,
+    ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     env: parsedEnv,
   };
 }

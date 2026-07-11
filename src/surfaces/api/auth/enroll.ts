@@ -1,5 +1,9 @@
 import { readEnv } from "@/lib/config/env";
 import { loadHumanIdentities } from "@/lib/identity/resolver";
+import {
+  InvalidApiSegmentError,
+  requireApiSegment,
+} from "@/surfaces/api/api/conversations";
 import { mintApiToken } from "@/surfaces/api/auth/tokens";
 import { loadApiAppConfig } from "@/surfaces/api/config";
 
@@ -9,14 +13,22 @@ async function main(): Promise<void> {
   const config = loadApiAppConfig();
   const args = parseArgs(process.argv.slice(2));
 
-  const identityId = args.identityId ?? readEnv(["SANDI_API_ENROLL_IDENTITY"]);
-  const deviceId = args.deviceId ?? readEnv(["SANDI_API_ENROLL_DEVICE"]);
-  const label = args.label ?? readEnv(["SANDI_API_ENROLL_LABEL"]);
+  const rawIdentityId =
+    args.identityId ?? readEnv(["SANDI_API_ENROLL_IDENTITY"]);
+  const rawDeviceId = args.deviceId ?? readEnv(["SANDI_API_ENROLL_DEVICE"]);
+  const rawLabel = args.label ?? readEnv(["SANDI_API_ENROLL_LABEL"]);
 
-  if (!identityId || !deviceId || !label) {
+  if (!rawIdentityId || !rawDeviceId || !rawLabel) {
     fail(
       "Usage: tsx src/surfaces/api/auth/enroll.ts --identity <identityId> --device <deviceId> --label <label>",
     );
+  }
+
+  const identityId = parseSegment(rawIdentityId, "identityId");
+  const deviceId = parseSegment(rawDeviceId, "deviceId");
+  const label = rawLabel.trim();
+  if (label.length === 0 || label.length > 200) {
+    fail("Device label must contain 1-200 characters.");
   }
 
   const identities = await loadHumanIdentities(config.paths.configDirs);
@@ -44,6 +56,17 @@ async function main(): Promise<void> {
   console.log("");
   console.log(`  ${rawToken}`);
   console.log("");
+}
+
+function parseSegment(value: string, name: "identityId" | "deviceId"): string {
+  try {
+    return requireApiSegment(value, name);
+  } catch (error) {
+    if (error instanceof InvalidApiSegmentError) {
+      fail(`${name} is not a valid API identifier: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
 type ParsedArgs = {

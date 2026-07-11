@@ -77,30 +77,13 @@ export function createTurnManager(input: {
     const next = queue.pending.shift();
     if (!next) {
       emitQueueState(conversationId);
+      queues.delete(conversationId);
       return;
     }
     const controller = new AbortController();
     queue.inflight = { turnId: next.turnId, controller };
     emitQueueState(conversationId);
     input.events.onTurnStarted({ conversationId, turnId: next.turnId });
-    void input
-      .sendTurn({
-        conversationId,
-        text: next.text,
-        turnId: next.turnId,
-        attachmentIds: next.attachmentIds,
-        signal: controller.signal,
-      })
-      .then((outcome) => {
-        settle(next.turnId, outcome);
-      })
-      .catch((error: unknown) => {
-        settle(next.turnId, {
-          ok: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-
     const settle = (turnId: string, outcome: TurnOutcome): void => {
       delete queue.inflight;
       if (outcome.ok) {
@@ -120,6 +103,35 @@ export function createTurnManager(input: {
       }
       drain(conversationId);
     };
+
+    let pending: Promise<TurnOutcome>;
+    try {
+      pending = input.sendTurn({
+        conversationId,
+        text: next.text,
+        turnId: next.turnId,
+        attachmentIds: next.attachmentIds,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      // A transport is expected to return a rejected promise, but a
+      // synchronous throw must not wedge every later turn in the queue.
+      settle(next.turnId, {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    void pending
+      .then((outcome) => {
+        settle(next.turnId, outcome);
+      })
+      .catch((error: unknown) => {
+        settle(next.turnId, {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
   };
 
   return {
@@ -147,6 +159,9 @@ export function createTurnManager(input: {
         if (index >= 0) {
           queue.pending.splice(index, 1);
           emitQueueState(conversationId);
+          if (!queue.inflight && queue.pending.length === 0) {
+            queues.delete(conversationId);
+          }
           return;
         }
       }

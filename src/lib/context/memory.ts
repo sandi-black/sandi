@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 
 import type {
@@ -6,6 +6,7 @@ import type {
   ConversationMemoryScope,
   ConversationParticipant,
 } from "@/lib/conversations/types";
+import { isMissingPathError } from "@/lib/fs-errors";
 import { participantMemoryRef } from "@/lib/identity/types";
 import { normalizeRefPrefix } from "@/lib/memory-refs";
 import type { MemoryContext as ToolMemoryContext } from "@/lib/pi-extension/memory-common";
@@ -375,10 +376,10 @@ function toolMemoryContext(context: MemoryContext): ToolMemoryContext {
 
 async function readIfExists(filepath: string): Promise<string | null> {
   try {
-    await access(filepath);
     return await readFile(filepath, "utf8");
-  } catch {
-    return null;
+  } catch (error) {
+    if (isMissingPathError(error)) return null;
+    throw error;
   }
 }
 

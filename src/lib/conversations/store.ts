@@ -16,10 +16,24 @@ import { JsonFileStore } from "@/lib/state/file-store";
 
 const log = createLogger("conversation-store");
 
+// Storage ids are directory names under data/conversations. Every production
+// surface already emits this alphabet; parsing it here keeps a hand-edited
+// manifest call or a future surface from escaping that root.
+const ConversationStorageIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,799}$/);
+
+// Platform ids become user-memory and user-config directory names. Discord and
+// GitHub immutable ids, plus their documented username fallbacks, fit this
+// lossless path-segment alphabet.
+const PlatformUserIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/);
+
 const ParticipantSchema = z
   .object({
     platform: z.enum(["discord", "github"]),
-    platformUserId: z.string(),
+    platformUserId: PlatformUserIdSchema,
     username: z.string(),
     displayName: z.string().optional(),
     identityId: z.string().optional(),
@@ -66,9 +80,10 @@ export class ConversationStore {
   }
 
   async get(storageId: string): Promise<ConversationManifest | undefined> {
+    const parsedStorageId = ConversationStorageIdSchema.parse(storageId);
     try {
       const raw = await readFile(
-        join(this.#dataDir, "conversations", storageId, "manifest.json"),
+        join(this.#dataDir, "conversations", parsedStorageId, "manifest.json"),
         "utf8",
       );
       return ConversationManifestSchema.parse(JSON.parse(raw));
@@ -171,8 +186,9 @@ export class ConversationStore {
   }
 
   #storeFor(targetId: string): JsonFileStore<ConversationManifest> {
+    const storageId = ConversationStorageIdSchema.parse(targetId);
     return new JsonFileStore(
-      join(this.#dataDir, "conversations", targetId, "manifest.json"),
+      join(this.#dataDir, "conversations", storageId, "manifest.json"),
       ConversationManifestSchema,
     );
   }

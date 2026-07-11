@@ -318,6 +318,9 @@ export class DeviceRegistry {
       output: result.output,
       ...(result.error !== undefined ? { error: result.error } : {}),
       ...(result.image !== undefined ? { image: result.image } : {}),
+      ...(result.attachment !== undefined
+        ? { attachment: result.attachment }
+        : {}),
     });
     return true;
   }

@@ -51,7 +51,7 @@ export function noDesktopLinkResult(): AttachToReplyResult {
     content: [
       {
         type: "text",
-        text: "no desktop link on this surface: attach_to_reply is only available on a turn with a connected desktop",
+        text: "attach_to_reply delivers files only to desktop chat turns; for Discord, use attach_desktop_file_to_discord",
       },
     ],
     details: { tool: "attach_to_reply", ok: false },

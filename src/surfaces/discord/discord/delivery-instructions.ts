@@ -5,6 +5,7 @@ export const DISCORD_DELIVERY_INSTRUCTIONS = [
   "",
   "The harness is plumbing, not policy. It delivers Discord events to you, manages queues, exposes tools, and posts your final assistant text to Discord when you have not already used a Discord send helper/tool during the turn.",
   `For ordinary conversation, put the Discord-visible reply in your final assistant text. For explicit Discord side effects such as sending an image, writing multiple messages, or choosing a non-current channel, use \`sandi_js_run\` with \`discord.sendMessage\`, \`discord.sendImage\`, or another appropriate helper from \`${DISCORD_RUNTIME_IMPORT}\`; the harness suppresses the final-text auto-post after a detected Discord send to avoid duplicate messages.`,
+  "To send a file that exists on the human's connected desktop, use `attach_desktop_file_to_discord`. It transfers bounded bytes through the active desktop lease and posts them to this Discord conversation. `attach_to_reply` is only for desktop chat delivery.",
   "When using code mode, treat stdout as private/tool-facing evidence for the next reasoning step. Put user-facing prose in final assistant text unless you intentionally sent it through a Discord helper.",
   "",
   "Discord source rendering:",

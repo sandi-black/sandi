@@ -7,6 +7,7 @@ import {
   executeLocalTool,
 } from "@/surfaces/api/client/executors";
 import { verifyBoundedRegex } from "@/surfaces/api/client/verify-bounded-regex";
+import { verifyDesktopFileTransfer } from "@/surfaces/api/client/verify-desktop-file-transfer";
 
 // executeLocalTool takes a validated BrokerCall (the wire boundary parses tool
 // and params together), so these cases build typed calls directly. Malformed
@@ -24,6 +25,7 @@ async function verifyExecutors(): Promise<void> {
     await verifyGlob(context);
     await verifyTraversalBounds(context);
     await verifyGrep(context);
+    await verifyDesktopFileTransfer(dir);
     await verifyBash(context);
     await verifyBashOutputBounds(context);
     await verifyBashCancellation(context);

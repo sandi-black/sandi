@@ -6,6 +6,7 @@ import { errorMessage } from "@/lib/errors";
 import type { DesktopCredentials } from "@/surfaces/api/client/credentials";
 import { executeLocalTool } from "@/surfaces/api/client/executors";
 import { postJson } from "@/surfaces/api/client/http";
+import type { DesktopFileAttachment } from "@/surfaces/api/devices/desktop-file-transfer";
 import {
   type DeviceImage,
   RESPONSE_ATTACHMENT_EVENT,
@@ -426,6 +427,9 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
         output: outcome.output,
         ...(outcome.error !== undefined ? { error: outcome.error } : {}),
         ...(outcome.image !== undefined ? { image: outcome.image } : {}),
+        ...(outcome.attachment !== undefined
+          ? { attachment: outcome.attachment }
+          : {}),
       },
       signal,
     );
@@ -442,6 +446,7 @@ async function reportResult(
     output: string;
     error?: string;
     image?: DeviceImage;
+    attachment?: DesktopFileAttachment;
   },
   signal: AbortSignal = conn.signal,
 ): Promise<void> {

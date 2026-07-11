@@ -3,9 +3,11 @@ import { request as httpRequest } from "node:http";
 import { assert, assertEqual } from "@/lib/verification/harness";
 import { DeviceRegistry } from "@/surfaces/api/devices/device-registry";
 import { ToolBroker } from "@/surfaces/api/devices/tool-broker";
+import { verifyDiscordFileBroker } from "@/surfaces/api/devices/verify-discord-file-broker";
 
 async function verifyToolBroker(): Promise<void> {
   await verifyLifecycle();
+  await verifyDiscordFileBroker();
   const registry = new DeviceRegistry();
   const broker = new ToolBroker(registry);
   await broker.start();

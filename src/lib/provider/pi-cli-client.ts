@@ -90,6 +90,7 @@ export type ProviderTurnResponse = {
 
 export type ProviderFailureReason =
   | "aborted"
+  | "account-unavailable"
   | "quota-limit"
   | "rate-limit"
   | "timeout"
@@ -208,7 +209,7 @@ export class PiCliClient implements ModelProviderClient {
     if (candidates.length === 0) {
       throw new ProviderTurnError({
         message: "No configured Pi account is available for this route",
-        reason: "unknown",
+        reason: "account-unavailable",
         exitCode: null,
         stderr:
           "No configured Pi account is available. Check each account's auth.json.",

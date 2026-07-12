@@ -15,7 +15,10 @@ import {
 } from "@/lib/memory/consolidation";
 import { DreamStateStore } from "@/lib/memory/dream-state";
 import type { DreamingConfig } from "@/lib/memory/dreaming-config";
-import type { ModelProviderClient } from "@/lib/provider/pi-cli-client";
+import {
+  type ModelProviderClient,
+  ProviderTurnError,
+} from "@/lib/provider/pi-cli-client";
 
 export type MemoryDreaming = {
   stop(): void;
@@ -61,6 +64,12 @@ export function startMemoryDreaming(
 // any burst of idle conversations) from spawning a provider turn per conversation
 // all at once.
 const MAX_CONCURRENT_ENCODES = 3;
+
+export function isUnavailableDreamingRoute(error: unknown): boolean {
+  return (
+    error instanceof ProviderTurnError && error.reason === "account-unavailable"
+  );
+}
 
 class DreamingService {
   readonly #input: MemoryDreamingInput;
@@ -343,6 +352,15 @@ class DreamingService {
         signal: this.#abort.signal,
       });
     } catch (error) {
+      if (isUnavailableDreamingRoute(error)) {
+        this.#input.logger.info(
+          "conversation encode skipped without account route",
+          {
+            storageId,
+          },
+        );
+        return;
+      }
       this.#input.logger.error("conversation encode failed", {
         storageId,
         error: errorMessage(error),
@@ -395,6 +413,12 @@ class DreamingService {
             await this.#dreamState.markDreamed(manifest.canonicalId, startedAt);
           }
         } catch (error) {
+          if (isUnavailableDreamingRoute(error)) {
+            this.#input.logger.info("dream skipped without account route", {
+              conversationId: manifest.canonicalId,
+            });
+            continue;
+          }
           failed += 1;
           this.#input.logger.error("dream failed for conversation", {
             conversationId: manifest.canonicalId,

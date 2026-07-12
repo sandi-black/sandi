@@ -12,6 +12,7 @@ import {
 } from "@/lib/memory/consolidation";
 import { DreamStateStore } from "@/lib/memory/dream-state";
 import { loadDreamingConfig } from "@/lib/memory/dreaming-config";
+import { isUnavailableDreamingRoute } from "@/lib/memory/dreaming-service";
 import {
   episodicNoteRef,
   episodicScopePrefix,
@@ -34,7 +35,10 @@ import type {
   ProviderTurnRequest,
   ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
-import { piSessionFilePath } from "@/lib/provider/pi-cli-client";
+import {
+  ProviderTurnError,
+  piSessionFilePath,
+} from "@/lib/provider/pi-cli-client";
 import { withTempDir } from "@/lib/verification/harness";
 
 // A surface-neutral fixture: this is a core (src/lib) module, so it must not
@@ -445,6 +449,19 @@ await withTempDir("sandi-pending-", async (tempRoot) => {
     false,
   );
 });
+
+// 9. Conversations without an account route are expected legacy/unmapped data,
+// not provider failures worth repeatedly logging as errors.
+{
+  const unavailable = new ProviderTurnError({
+    message: "No configured Pi account is available for this route",
+    reason: "account-unavailable",
+    exitCode: null,
+    stderr: "No configured Pi account is available.",
+  });
+  assert.equal(isUnavailableDreamingRoute(unavailable), true);
+  assert.equal(isUnavailableDreamingRoute(new Error("provider failed")), false);
+}
 
 logger.info("dreaming verification passed");
 console.log("dreaming verification passed");

@@ -313,6 +313,7 @@ set -euo pipefail
 repo=/srv/sandi/app
 service=sandi.service
 lock=/run/sandi-autopull.lock
+deployed_revision_file=/run/sandi-autopull-deployed-revision
 source_skills_root=/srv/sandi/app/data/skills
 production_skills_root=/srv/sandi/data/skills
 path_prefix=/root/.volta/bin:/root/.volta/tools/image/node/24.15.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -378,23 +379,26 @@ git fetch --prune
 
 remote="$(git rev-parse "$upstream")"
 if [[ "$before" == "$remote" ]]; then
-  log "already up to date at $before"
-  exit 0
-fi
+  deployed="$(cat "$deployed_revision_file" 2>/dev/null || true)"
+  if [[ "$deployed" == "$before" ]]; then
+    log "already deployed at $before"
+    exit 0
+  fi
+  # A previous pull may have failed during install, verification, command sync,
+  # skill sync, or restart. Retry that same revision instead of treating the
+  # advanced checkout as successfully deployed.
+  log "checkout is current at $before but deployment is unconfirmed; retrying"
+  after="$before"
+else
+  base="$(git merge-base HEAD "$upstream")"
+  if [[ "$base" != "$before" ]]; then
+    log "local branch has diverged from $upstream; skipping automatic pull"
+    exit 0
+  fi
 
-base="$(git merge-base HEAD "$upstream")"
-if [[ "$base" != "$before" ]]; then
-  log "local branch has diverged from $upstream; skipping automatic pull"
-  exit 0
-fi
-
-log "fast-forwarding $branch from $before to $remote"
-git pull --ff-only
-
-after="$(git rev-parse HEAD)"
-if [[ "$after" == "$before" ]]; then
-  log "pull completed without changing HEAD"
-  exit 0
+  log "fast-forwarding $branch from $before to $remote"
+  git pull --ff-only
+  after="$(git rev-parse HEAD)"
 fi
 
 log "refreshing npm dependencies"
@@ -415,6 +419,8 @@ sync_builtin_skills
 log "restarting $service"
 systemctl restart "$service"
 
+printf '%s\n' "$after" >"$deployed_revision_file.tmp"
+mv "$deployed_revision_file.tmp" "$deployed_revision_file"
 log "updated $service to $after"
 ```
 

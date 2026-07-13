@@ -302,7 +302,7 @@ sudo systemctl stop sandi.service sandi-github.service
 An optional update timer can check the app repo, fast-forward only when the
 worktree is clean and the branch has not diverged, refresh dependencies, verify
 the checkout, sync Discord commands, sync builtin skills into
-`/srv/sandi/data/skills`, and restart `sandi.service`.
+`/srv/sandi/data/skills`, and restart each installed Sandi service.
 
 Create `/usr/local/sbin/sandi-autopull`:
 
@@ -311,7 +311,7 @@ Create `/usr/local/sbin/sandi-autopull`:
 set -euo pipefail
 
 repo=/srv/sandi/app
-service=sandi.service
+services=(sandi.service sandi-github.service sandi-api.service)
 lock=/run/sandi-autopull.lock
 deployed_revision_file=/run/sandi-autopull-deployed-revision
 source_skills_root=/srv/sandi/app/data/skills
@@ -416,12 +416,18 @@ fi
 
 sync_builtin_skills
 
-log "restarting $service"
-systemctl restart "$service"
+for service in "${services[@]}"; do
+  if systemctl list-unit-files "$service" --no-pager --no-legend | grep -q "^$service"; then
+    log "restarting $service"
+    systemctl restart "$service"
+  else
+    log "$service is not installed; skipping restart"
+  fi
+done
 
 printf '%s\n' "$after" >"$deployed_revision_file.tmp"
 mv "$deployed_revision_file.tmp" "$deployed_revision_file"
-log "updated $service to $after"
+log "updated installed services to $after"
 ```
 
 Install it:

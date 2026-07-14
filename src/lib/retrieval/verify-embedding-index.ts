@@ -40,6 +40,18 @@ async function verifySkillIndex(dataDir: string): Promise<void> {
     description: "Use for chat Markdown formatting.",
     body: "Format chat messages with markdown bullets and readable layout.",
   });
+  await writeSkill({
+    root: join(skillsRoot, "core", "builtin"),
+    name: "layered-skill",
+    description: "Builtin definition that should be overridden.",
+    body: "Builtin wording should not surface from cached search.",
+  });
+  await writeSkill({
+    root: join(skillsRoot, "core", "custom"),
+    name: "layered-skill",
+    description: "Custom definition for a phosphorescent kettle.",
+    body: "Custom override about phosphorescent kettle maintenance.",
+  });
 
   const snapshot = await skillEmbeddingIndexSnapshot(skillsRoot);
   const rebuilt = await rebuildSkillEmbeddingIndex({
@@ -54,12 +66,17 @@ async function verifySkillIndex(dataDir: string): Promise<void> {
   });
   assert.equal(cached?.manifest.version, EMBEDDING_INDEX_VERSION);
   assert.equal(cached?.manifest.contentHash, snapshot.contentHash);
-  assert.equal(cached?.manifest.sourceFileCount, 2);
+  assert.equal(cached?.manifest.sourceFileCount, 4);
+  assert.equal(
+    cached?.bm25Index,
+    undefined,
+    "duplicate layered skill names defer BM25 until effective filtering",
+  );
   const sameGeneration = await loadCurrentEmbeddingIndex({
     kind: "skills",
     cacheRoot: embeddingIndexCacheRoot(dataDir),
   });
-  assert.equal(sameGeneration?.bm25Index, cached?.bm25Index);
+  assert.equal(sameGeneration, cached);
 
   const search = await searchSkillsHybrid({
     root: skillsRoot,
@@ -71,6 +88,19 @@ async function verifySkillIndex(dataDir: string): Promise<void> {
     embeddingEngine: queryOnlyEmbeddingEngine,
   });
   assert.equal(search.results[0]?.name, "image-generation");
+
+  const layeredSearch = await searchSkillsHybrid({
+    root: skillsRoot,
+    surface: "chat",
+    query: "phosphorescent kettle maintenance",
+    embeddingEngine: null,
+  });
+  assert.equal(layeredSearch.results[0]?.name, "layered-skill");
+  assert.equal(layeredSearch.results[0]?.source.kind, "custom");
+  assert.doesNotMatch(
+    layeredSearch.results[0]?.snippets.join("\n") ?? "",
+    /Builtin wording/,
+  );
 
   await writeSkill({
     root: join(skillsRoot, "core", "builtin"),
@@ -95,7 +125,10 @@ async function verifySkillIndex(dataDir: string): Promise<void> {
     kind: "skills",
     cacheRoot: embeddingIndexCacheRoot(dataDir),
   });
-  assert.notEqual(nextGeneration?.bm25Index, cached?.bm25Index);
+  assert.notEqual(
+    nextGeneration?.manifest.generation,
+    cached?.manifest.generation,
+  );
   assert.equal(
     nextGeneration?.manifest.contentHash,
     changedSnapshot.contentHash,

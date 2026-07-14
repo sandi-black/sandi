@@ -49,7 +49,7 @@ export type EmbeddingIndexManifest = {
 export type CachedEmbeddingIndex = {
   manifest: EmbeddingIndexManifest;
   passages: IndexedSearchPassage[];
-  bm25Index: Bm25Index;
+  bm25Index?: Bm25Index | undefined;
 };
 
 export type RebuildEmbeddingIndexResult =
@@ -221,18 +221,24 @@ export async function loadCurrentEmbeddingIndex(input: {
   if (!rawIndex) return null;
   const parsed = INDEX_FILE_SCHEMA.parse(rawIndex);
   const passages = parsed.passages.map(indexedPassageFromDisk);
+  const bm25Documents = passages
+    .map((passage) => ({
+      id: searchPassageDocumentId(passage),
+      content: passage.content.trim(),
+    }))
+    .filter((passage) => passage.content.length > 0);
+  const documentIds = new Set(bm25Documents.map((document) => document.id));
   const index: CachedEmbeddingIndex = {
     manifest,
     passages,
-    bm25Index: buildBm25Index(
-      passages
-        .map((passage) => ({
-          id: searchPassageDocumentId(passage),
-          content: passage.content.trim(),
-        }))
-        .filter((passage) => passage.content.length > 0),
-    ),
   };
+  // Skill generations may contain builtin/custom or core/surface definitions
+  // with the same name. Their parent/passage IDs collide until the caller
+  // filters to effective sources. In that case, let hybrid search build BM25
+  // over the filtered corpus instead of rejecting an otherwise valid cache.
+  if (documentIds.size === bm25Documents.length) {
+    index.bm25Index = buildBm25Index(bm25Documents);
+  }
   LOADED_INDEX_CACHE.set(cacheKey, { generation: pointer.generation, index });
   return index;
 }

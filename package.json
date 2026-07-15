@@ -86,7 +86,7 @@
     "verify:attach-to-reply": "tsx src/surfaces/api/pi-extension/verify-attach-to-reply.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.80.6",
+    "@earendil-works/pi-ai": "0.80.7",
     "@earendil-works/pi-coding-agent": "0.80.6",
     "@huggingface/transformers": "^4.2.0",
     "croner": "^10.0.1",

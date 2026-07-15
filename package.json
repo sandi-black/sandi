@@ -90,7 +90,7 @@
     "@earendil-works/pi-coding-agent": "0.80.6",
     "@huggingface/transformers": "^4.2.0",
     "croner": "^10.0.1",
-    "discord.js": "^14.26.5",
+    "discord.js": "^14.27.0",
     "dotenv": "^17.4.2",
     "re2-wasm": "^1.0.2",
     "tsx": "^4.23.1",

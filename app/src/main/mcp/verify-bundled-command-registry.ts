@@ -10,7 +10,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { createBundledMcpCommandRegistry } from "./bundled-command-registry";
+import {
+  createBundledMcpCommandRegistry,
+  WINDOWS_MCP_UI_TOOLS,
+} from "./bundled-command-registry";
 
 const versions: Record<string, string> = {
   node: "24.18.0",
@@ -52,6 +55,24 @@ try {
     (await registry.resolve("windows-mcp"))?.executable.includes(
       "relocated resources with spaces",
     ),
+  );
+  assert.deepEqual((await registry.resolve("windows-mcp"))?.argsPrefix, []);
+  assert.deepEqual((await registry.resolve("windows-mcp"))?.argsSuffix, [
+    "--tools",
+    WINDOWS_MCP_UI_TOOLS.join(","),
+  ]);
+  assert(
+    !WINDOWS_MCP_UI_TOOLS.some((tool) =>
+      [
+        "PowerShell",
+        "FileSystem",
+        "Clipboard",
+        "Process",
+        "Registry",
+        "Scrape",
+      ].includes(tool),
+    ),
+    "the bundled Windows catalog contains only UI tools",
   );
 
   const corruptResources = join(root, "corrupt resources");

@@ -42,6 +42,7 @@ export type BundledMcpCommand = {
   manifestSha256?: string;
   executable: string;
   argsPrefix: string[];
+  argsSuffix?: string[];
   cwd?: string;
   env?: Record<string, string>;
 };
@@ -361,7 +362,11 @@ export function createMcpHost(input: {
       const cwd = command.cwd ?? config.cwd;
       const transport = new ExactStdioTransport({
         executable: command.executable,
-        args: [...command.argsPrefix, ...config.args],
+        args: [
+          ...command.argsPrefix,
+          ...config.args,
+          ...(command.argsSuffix ?? []),
+        ],
         env: command.env ?? {},
         ...(cwd !== undefined ? { cwd } : {}),
       });

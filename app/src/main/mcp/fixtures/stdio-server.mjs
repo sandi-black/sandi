@@ -47,6 +47,7 @@ const tools = () => [
         pathValue: { type: "string" },
         userProfilePresent: { type: "boolean" },
         unapprovedPresent: { type: "boolean" },
+        processArgs: { type: "array", items: { type: "string" } },
       },
       required: [
         "message",
@@ -56,6 +57,7 @@ const tools = () => [
         "pathValue",
         "userProfilePresent",
         "unapprovedPresent",
+        "processArgs",
       ],
     },
   },
@@ -187,6 +189,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         userProfilePresent: process.env["USERPROFILE"] !== undefined,
         unapprovedPresent:
           process.env["SANDI_MCP_FIXTURE_UNAPPROVED"] !== undefined,
+        processArgs: process.argv.slice(2),
       },
     };
   }

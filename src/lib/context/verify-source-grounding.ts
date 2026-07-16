@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 
 import { ContextCompiler } from "@/lib/context/context-compiler";
 import { loadMemory, type MemoryContext } from "@/lib/context/memory";
 import { loadSkillsGuidance } from "@/lib/context/skills";
 import { searchSkillsHybrid } from "@/lib/pi-extension/skill-hybrid-search";
 import type { EmbeddingEngine } from "@/lib/retrieval/embeddings";
+import { SURFACE_IDS } from "@/lib/surface-context";
 import { withTempDir } from "@/lib/verification/harness";
 
 const testEmbeddingEngine: EmbeddingEngine = {
@@ -23,6 +24,7 @@ try {
   await withTempDir("sandi-source-grounding-", async (tempRoot) => {
     await verifyCompiledContextIncludesSourceGrounding(tempRoot);
     await verifyWebResearchHinting(tempRoot);
+    await verifyComputerUseHinting(tempRoot);
     await verifyPromptSkillHintTuning(tempRoot);
     await verifyPromptMemoryHintTuning(tempRoot);
     console.log("source grounding verification passed");
@@ -85,6 +87,48 @@ async function verifyWebResearchHinting(root: string): Promise<void> {
   });
 
   assert.equal(hints.results[0]?.name, "web-research");
+}
+
+async function verifyComputerUseHinting(root: string): Promise<void> {
+  const skillsRoot = join(root, "data", "skills", "core", "builtin");
+  const source = resolve(
+    import.meta.dirname,
+    "../../../data/skills/core/builtin/computer-use/SKILL.md",
+  );
+  const destination = join(skillsRoot, "computer-use", "SKILL.md");
+  await mkdir(join(destination, ".."), { recursive: true });
+  await writeFile(destination, await readFile(source, "utf8"), "utf8");
+  await writeSkill({
+    root: skillsRoot,
+    name: "recipes",
+    description: "Use for cooking instructions and saved recipes.",
+    body: "Find and explain recipes, ingredients, soup, and cooking steps.",
+  });
+
+  const prompts = [
+    "Open Windows Settings and click the Bluetooth toggle",
+    "Type this text into Notepad",
+    "Use Chrome to fill out and submit this web form",
+    "Automate this native Windows GUI",
+  ];
+  for (const surface of SURFACE_IDS) {
+    for (const prompt of prompts) {
+      assert.match(
+        await skillGuidance(root, prompt, testEmbeddingEngine, surface),
+        /computer-use/,
+      );
+    }
+  }
+
+  assert.doesNotMatch(
+    await skillGuidance(
+      root,
+      "Find my tomato soup recipe",
+      testEmbeddingEngine,
+      "api",
+    ),
+    /computer-use/,
+  );
 }
 
 async function verifyPromptSkillHintTuning(root: string): Promise<void> {
@@ -216,10 +260,11 @@ async function skillGuidance(
   root: string,
   hintQuery: string,
   embeddingEngine?: EmbeddingEngine | null,
+  surface = "chat",
 ): Promise<string> {
   return await loadSkillsGuidance({
     skillsRoot: join(root, "data", "skills"),
-    surface: "chat",
+    surface,
     hintQuery,
     embeddingEngine,
   });
@@ -265,7 +310,7 @@ async function writeMemory(input: {
 
 function testEmbedding(text: string): number[] {
   const normalized = text.toLowerCase();
-  const vector = new Array<number>(10).fill(0.01);
+  const vector = new Array<number>(11).fill(0.01);
   addSignals(vector, 0, normalized, [
     "image",
     "images",
@@ -321,6 +366,21 @@ function testEmbedding(text: string): number[] {
   addSignals(vector, 6, normalized, ["game", "games", "dice", "bdo"]);
   addSignals(vector, 7, normalized, ["remind", "reminder", "followup"]);
   addSignals(vector, 8, normalized, ["recipe", "recipes", "soup"]);
+  addSignals(vector, 9, normalized, [
+    "windows",
+    "chrome",
+    "browser",
+    "click",
+    "clicking",
+    "type",
+    "typing",
+    "gui",
+    "form",
+    "notepad",
+    "settings",
+    "computer",
+    "desktop",
+  ]);
   const magnitude = Math.hypot(...vector);
   return vector.map((value) => value / magnitude);
 }

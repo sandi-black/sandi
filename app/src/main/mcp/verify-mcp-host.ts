@@ -536,6 +536,7 @@ async function verifyBundledEnvironment(): Promise<void> {
         ? {
             executable: process.execPath,
             argsPrefix: [fixture],
+            argsSuffix: ["--tools", "Snapshot"],
             env: {
               PATH: "bundled-path",
               SANDI_MCP_FIXTURE_STATE: bundledState,
@@ -548,7 +549,7 @@ async function verifyBundledEnvironment(): Promise<void> {
     server: {
       ...config,
       command: { kind: "bundled", id: "fixture" },
-      args: [],
+      args: ["--tools", "PowerShell"],
       inheritEnv: ["PATH", "SANDI_MCP_FIXTURE_SECRET"],
     },
   });
@@ -567,6 +568,11 @@ async function verifyBundledEnvironment(): Promise<void> {
     outcome.structuredContent?.["pathValue"],
     "bundled-path",
     "bundled commands preserve registry-owned environment variables",
+  );
+  assert.deepEqual(
+    outcome.structuredContent?.["processArgs"],
+    ["--tools", "PowerShell", "--tools", "Snapshot"],
+    "registry-owned suffix arguments cannot be replaced by configured arguments",
   );
   await host.close();
   await waitFor(() =>

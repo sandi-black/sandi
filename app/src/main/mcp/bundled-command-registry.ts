@@ -22,8 +22,24 @@ type Manifest = z.infer<typeof ManifestSchema>;
 type CommandDefinition = {
   executable: (root: string) => string;
   argsPrefix: (root: string) => string[];
+  argsSuffix?: (root: string) => string[];
   requiredFiles: string[];
 };
+
+export const WINDOWS_MCP_UI_TOOLS = [
+  "Snapshot",
+  "Screenshot",
+  "Click",
+  "Type",
+  "Scroll",
+  "Move",
+  "Shortcut",
+  "Wait",
+  "WaitFor",
+  "App",
+  "MultiSelect",
+  "MultiEdit",
+] as const;
 
 const definitions: Record<string, CommandDefinition> = {
   node: bundledExecutable("node/node.exe"),
@@ -45,6 +61,7 @@ const definitions: Record<string, CommandDefinition> = {
   "windows-mcp": {
     executable: (root) => bundledPath(root, "servers/windows-mcp/launch.cmd"),
     argsPrefix: () => [],
+    argsSuffix: () => ["--tools", WINDOWS_MCP_UI_TOOLS.join(",")],
     requiredFiles: [
       "python/python.exe",
       "servers/windows-mcp/launch.cmd",
@@ -95,6 +112,7 @@ export function createBundledMcpCommandRegistry(input: {
         manifestSha256: result.manifestSha256,
         executable: definition.executable(root),
         argsPrefix: definition.argsPrefix(root),
+        argsSuffix: definition.argsSuffix?.(root) ?? [],
         env,
       };
     },

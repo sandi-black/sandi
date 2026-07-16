@@ -36,6 +36,7 @@ import { createLinkManager } from "./link-manager";
 import { createBundledMcpCommandRegistry } from "./mcp/bundled-command-registry";
 import { createMcpHost } from "./mcp/mcp-host";
 import { createDesktopToolExecutor } from "./mcp/tool-executor";
+import { installPackagedSmokeExit } from "./packaged-smoke-exit";
 import { createPetWindow } from "./pet-window";
 import { createSettingsStore } from "./settings-store";
 import { createTranscriptStore } from "./transcript-store";
@@ -86,6 +87,7 @@ async function main(): Promise<void> {
   await app.whenReady();
   installRendererProtocols();
   installBrowserSessionPolicy(session.defaultSession);
+  installPackagedSmokeExit(app);
 
   let quitting = false;
   app.on("before-quit", () => {

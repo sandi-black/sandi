@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 
 import { apiTokenEntry, ApiTokenStore } from "../../src/surfaces/api/auth/tokens";
@@ -18,7 +19,10 @@ import { createMcpConfigStore } from "../src/main/mcp/config-store";
 const packagedRoot = resolve(
   process.env["SANDI_PACKAGED_APP_ROOT"] ?? "release/win-unpacked",
 );
-const appExe = join(packagedRoot, "Sandi.exe");
+const packagedAppExe = resolve(join(packagedRoot, "Sandi.exe"));
+const launcherExe = resolve(
+  process.env["SANDI_PACKAGED_APP_EXE"] ?? join(packagedRoot, "Sandi.exe"),
+);
 const fixture = join(
   join(packagedRoot, "resources", "app.asar"),
   "out/main/mcp-fixture.js",
@@ -28,6 +32,7 @@ const userData = join(root, "user-data");
 const credentialsPath = join(root, "desktop.json");
 const tokensPath = join(root, "tokens.json");
 const statePath = join(root, "fixture-state.log");
+const exitPath = join(root, "exit");
 const wrapperPath = join(root, "fixture.cmd");
 const token = "a".repeat(64);
 const entry = apiTokenEntry({
@@ -48,7 +53,7 @@ writeFileSync(
 );
 writeFileSync(
   wrapperPath,
-  `@set ELECTRON_RUN_AS_NODE=1\r\n@\"${appExe}\" \"${fixture}\" %*\r\n`,
+  `@set ELECTRON_RUN_AS_NODE=1\r\n@\"${packagedAppExe}\" \"${fixture}\" %*\r\n`,
 );
 
 const registry = new DeviceRegistry();
@@ -74,6 +79,7 @@ const api = createServer(async (request, response) => {
 });
 
 let app: ReturnType<typeof spawn> | undefined;
+let shutdownError: Error | undefined;
 try {
   await broker.start();
   await new Promise<void>((resolveListen, rejectListen) => {
@@ -86,7 +92,7 @@ try {
     credentialsPath,
     `${JSON.stringify({ url: `http://127.0.0.1:${address.port}`, token, deviceId: "Ada workstation", identityId: "ada" })}\n`,
   );
-  app = spawn(appExe, [`--user-data-dir=${userData}`], {
+  app = spawn(launcherExe, [`--user-data-dir=${userData}`], {
     env: {
       ...process.env,
       PATH: join(process.env["SystemRoot"] ?? "C:\\Windows", "System32"),
@@ -95,12 +101,19 @@ try {
       npm_config_offline: "true",
       PIP_NO_INDEX: "1",
       UV_OFFLINE: "1",
+      NODE_OPTIONS: `--use-env-proxy --import=${pathToFileURL(join(import.meta.dirname, "offline-network-guard.mjs")).href}`,
+      SANDI_MCP_OFFLINE_TEST: "1",
       SANDI_DESKTOP_CONFIG: credentialsPath,
       SANDI_MCP_FIXTURE_STATE: statePath,
+      SANDI_PACKAGED_SMOKE_EXIT_FILE: exitPath,
     },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: "inherit",
   });
-  await waitUntil(() => registry.identityForKey(entry.tokenSha256) === "ada", "desktop link");
+  await waitUntil(
+    () => registry.identityForKey(entry.tokenSha256) === "ada",
+    "desktop link",
+    process.env["SANDI_PACKAGED_APP_EXE"] === undefined ? 30_000 : 180_000,
+  );
   registry.connect({
     key: graceEntry.tokenSha256,
     deviceId: "Grace workstation",
@@ -186,7 +199,15 @@ try {
     enabled: true,
     command: { kind: "bundled" as const, id: "chrome-devtools-mcp" },
     args: ["--headless"],
-    inheritEnv: ["PATH", "USERPROFILE", "TEMP", "HTTP_PROXY", "HTTPS_PROXY"],
+    inheritEnv: [
+      "PATH",
+      "USERPROFILE",
+      "TEMP",
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "NODE_OPTIONS",
+      "SANDI_MCP_OFFLINE_TEST",
+    ],
   };
   assert.equal(
     (
@@ -204,13 +225,66 @@ try {
     arguments: {},
   });
   assert.equal(chromeStartup.ok, false);
-  assert.match(chromeStartup.error ?? "", /not in the cached catalog/);
-  const chromeSearch = await callBroker(origin.ticket, "local_mcp", {
-    operation: "search",
-    serverId: chromeConfig.id,
-    query: "navigate",
-  });
-  assert.match(textOf(chromeSearch), /navigate_page/);
+  const expectedBundledError = process.env["SANDI_EXPECT_BUNDLED_ERROR"];
+  if (expectedBundledError) {
+    assert.match(chromeStartup.error ?? "", new RegExp(expectedBundledError));
+  } else {
+    assert.match(chromeStartup.error ?? "", /not in the cached catalog/);
+    const chromeSearch = await callBroker(origin.ticket, "local_mcp", {
+      operation: "search",
+      serverId: chromeConfig.id,
+      query: "navigate",
+    });
+    assert.match(textOf(chromeSearch), /navigate_page/);
+
+    const bundledConfig = {
+      id: "packaged-windows-mcp",
+      label: "Packaged Windows-MCP",
+      enabled: true,
+      command: { kind: "bundled" as const, id: "windows-mcp" },
+      args: [],
+      inheritEnv: [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "npm_config_offline",
+        "PIP_NO_INDEX",
+        "UV_OFFLINE",
+        "SANDI_MCP_OFFLINE_TEST",
+      ],
+    };
+    assert.equal(
+      (
+        await callBroker(origin.ticket, "local_mcp_configure", {
+          operation: "upsert",
+          server: bundledConfig,
+        })
+      ).ok,
+      true,
+    );
+    const bundledStartup = await callBroker(origin.ticket, "local_mcp", {
+      operation: "call",
+      serverId: bundledConfig.id,
+      toolName: "missing_after_catalog_refresh",
+      arguments: {},
+    });
+    assert.equal(bundledStartup.ok, false);
+    assert.match(bundledStartup.error ?? "", /not in the cached catalog/);
+    const bundledSearch = await callBroker(origin.ticket, "local_mcp", {
+      operation: "search",
+      serverId: bundledConfig.id,
+      query: "Snapshot",
+    });
+    assert.match(textOf(bundledSearch), /Snapshot/);
+    assert.equal(
+      (
+        await callBroker(origin.ticket, "local_mcp_configure", {
+          operation: "remove",
+          serverId: bundledConfig.id,
+        })
+      ).ok,
+      true,
+    );
+  }
   assert.equal(
     (
       await callBroker(origin.ticket, "local_mcp_configure", {
@@ -220,66 +294,25 @@ try {
     ).ok,
     true,
   );
-
-  const bundledConfig = {
-    id: "packaged-windows-mcp",
-    label: "Packaged Windows-MCP",
-    enabled: true,
-    command: { kind: "bundled" as const, id: "windows-mcp" },
-    args: [],
-    inheritEnv: [
-      "HTTP_PROXY",
-      "HTTPS_PROXY",
-      "npm_config_offline",
-      "PIP_NO_INDEX",
-      "UV_OFFLINE",
-    ],
-  };
-  assert.equal(
-    (
-      await callBroker(origin.ticket, "local_mcp_configure", {
-        operation: "upsert",
-        server: bundledConfig,
-      })
-    ).ok,
-    true,
-  );
-  const bundledStartup = await callBroker(origin.ticket, "local_mcp", {
-    operation: "call",
-    serverId: bundledConfig.id,
-    toolName: "missing_after_catalog_refresh",
-    arguments: {},
-  });
-  assert.equal(bundledStartup.ok, false);
-  assert.match(bundledStartup.error ?? "", /not in the cached catalog/);
-  const bundledSearch = await callBroker(origin.ticket, "local_mcp", {
-    operation: "search",
-    serverId: bundledConfig.id,
-    query: "Snapshot",
-  });
-  assert.match(textOf(bundledSearch), /Snapshot/);
-  assert.equal(
-    (
-      await callBroker(origin.ticket, "local_mcp_configure", {
-        operation: "remove",
-        serverId: bundledConfig.id,
-      })
-    ).ok,
-    true,
-  );
   origin.revoke();
   console.log("packaged Electron MCP bridge smoke: ok");
 } finally {
   if (app?.pid !== undefined) {
-    spawnSync("taskkill.exe", ["/pid", String(app.pid), "/t", "/f"], {
-      stdio: "ignore",
-    });
+    writeFileSync(exitPath, "quit");
+    const graceful = await waitForTermination(app, 10_000);
+    if (!graceful) {
+      spawnSync("taskkill.exe", ["/pid", String(app.pid), "/t", "/f"], {
+        stdio: "ignore",
+      });
+      await waitForTermination(app);
+      shutdownError = new Error("packaged Sandi did not quit gracefully");
+    }
   }
-  await waitForTermination(app);
   registry.closeAll();
   broker.stop();
   await new Promise<void>((resolveClose) => api.close(() => resolveClose()));
-  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  await removeEventually(root);
+  if (shutdownError !== undefined) throw shutdownError;
 }
 
 function readState(): string[] {
@@ -289,8 +322,13 @@ function stateCount(value: string): number { return readState().filter((entry) =
 function textOf(outcome: { content: ReadonlyArray<{ type: string; text?: string }> }): string {
   return outcome.content.map((block) => block.text ?? "").join("\n");
 }
-async function waitUntil(condition: () => boolean, label: string): Promise<void> {
-  for (let attempt = 0; attempt < 600; attempt += 1) {
+async function waitUntil(
+  condition: () => boolean,
+  label: string,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (condition()) return;
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
   }
@@ -298,7 +336,43 @@ async function waitUntil(condition: () => boolean, label: string): Promise<void>
 }
 async function waitForTermination(
   child: ReturnType<typeof spawn> | undefined,
-): Promise<void> {
-  if (!child || child.exitCode !== null) return;
-  await new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()));
+  timeoutMs?: number,
+): Promise<boolean> {
+  if (!child || child.exitCode !== null) return true;
+  if (timeoutMs === undefined) {
+    await new Promise<void>((resolveExit) =>
+      child.once("exit", () => resolveExit()),
+    );
+    return true;
+  }
+  return new Promise<boolean>((resolveExit) => {
+    const timer = setTimeout(() => {
+      child.off("exit", exited);
+      resolveExit(false);
+    }, timeoutMs);
+    const exited = (): void => {
+      clearTimeout(timer);
+      resolveExit(true);
+    };
+    child.once("exit", exited);
+  });
+}
+
+async function removeEventually(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      return;
+    } catch (error: unknown) {
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? error.code
+          : undefined;
+      if (code !== "EPERM" && code !== "EBUSY" && code !== "ENOTEMPTY") {
+        throw error;
+      }
+      await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    }
+  }
+  throw new Error(`timed out removing packaged smoke state ${path}`);
 }

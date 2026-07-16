@@ -45,6 +45,7 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  include: installer.nsh
   shortcutName: Sandi
   artifactName: ${productName}-${version}-setup.${ext}
 

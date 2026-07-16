@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { path7za } from "7zip-bin";
@@ -43,9 +43,16 @@ mkdirSync(inspectionRoot, { recursive: true });
 try {
   let expectedManifestSha256;
   for (const target of targets) {
+    const relocated = join(
+      inspectionRoot,
+      `${target.name} artifact with spaces`,
+      `relocated ${target.name}.exe`,
+    );
+    mkdirSync(resolve(relocated, ".."), { recursive: true });
+    copyFileSync(target.artifact, relocated);
     const extracted = join(inspectionRoot, `${target.name} target with spaces`);
     mkdirSync(extracted, { recursive: true });
-    run(path7za, ["x", target.artifact, `-o${extracted}`, "-y"]);
+    run(path7za, ["x", relocated, `-o${extracted}`, "-y"]);
     const runtimeRoot = join(extracted, "resources", "mcp");
     await verifyManifest(runtimeRoot, lock);
     const manifestSha256 = sha256(
@@ -68,8 +75,12 @@ try {
       {
         ...process.env,
         SANDI_PACKAGED_APP_ROOT: extracted,
+        ...(target.name === "portable"
+          ? { SANDI_PACKAGED_APP_EXE: relocated }
+          : {}),
       },
     );
+    await verifyManifest(runtimeRoot, lock);
   }
   console.log(
     `verified packaged MCP runtimes: manifest=${expectedManifestSha256} targets=${targets.length}`,

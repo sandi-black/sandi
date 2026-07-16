@@ -14,7 +14,7 @@ const serverSrc = resolve(import.meta.dirname, "../src");
 const shared = resolve(import.meta.dirname, "src/shared");
 const repoAssets = resolve(import.meta.dirname, "../assets");
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig({
   main: {
     resolve: {
       alias: {
@@ -28,16 +28,13 @@ export default defineConfig(({ mode }) => ({
       // re2-wasm ships a generated loader that Electron Vite corrupts while
       // rewriting CommonJS; electron-builder carries the declared dependency.
       rollupOptions: {
-        input:
-          mode === "mcp-smoke"
-            ? {
-                index: resolve(import.meta.dirname, "src/main/index.ts"),
-                "mcp-fixture": resolve(
-                  import.meta.dirname,
-                  "src/main/mcp/fixtures/stdio-server.mjs",
-                ),
-              }
-            : { index: resolve(import.meta.dirname, "src/main/index.ts") },
+        input: {
+          index: resolve(import.meta.dirname, "src/main/index.ts"),
+          "mcp-fixture": resolve(
+            import.meta.dirname,
+            "src/main/mcp/fixtures/stdio-server.mjs",
+          ),
+        },
         external: ["re2-wasm"],
         output: { format: "es" },
       },
@@ -92,4 +89,4 @@ export default defineConfig(({ mode }) => ({
       },
     },
   },
-}));
+});

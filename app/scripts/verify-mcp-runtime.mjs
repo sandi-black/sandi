@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { readRuntimeLock, verifyManifest } from "./mcp-runtime-lib.mjs";
+import { verifyPythonProvenance } from "./python-provenance-lib.mjs";
 
 if (process.platform !== "win32" || process.arch !== "x64") {
   throw new Error("the MCP runtime bundle is verified only on Windows x64");
@@ -118,7 +119,21 @@ try {
 
   const noticesPath = join(bundle, "THIRD_PARTY_NOTICES.json");
   assert(existsSync(noticesPath), "license index is missing");
-  verifyNotices(JSON.parse(readFileSync(noticesPath, "utf8")), lock);
+  const notices = JSON.parse(readFileSync(noticesPath, "utf8"));
+  verifyNotices(notices, lock);
+  verifyPythonProvenance(
+    JSON.parse(
+      readFileSync(
+        join(appRoot, "mcp-runtime", "windows-mcp", "provenance.json"),
+        "utf8",
+      ),
+    ),
+    readFileSync(
+      join(appRoot, "mcp-runtime", "windows-mcp", "requirements.lock"),
+      "utf8",
+    ),
+    notices.packages,
+  );
   await verifyManifest(bundle, lock);
   console.log(
     `verified MCP runtime bundle: chrome-tools=${chromeTools.length} windows-tools=${windowsTools.length}`,

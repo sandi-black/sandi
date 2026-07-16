@@ -86,16 +86,11 @@ jobs:
           node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.version=process.env.APP_VERSION; fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n');"
           echo "app/package.json version -> $(node -p "require('./package.json').version")"
 
-      - name: Build renderer and main bundles
-        run: npm run build -w app
+      - name: Build and smoke Windows artifacts
+        run: npm run verify:packaged-mcp -w app
 
-      # --publish never: this workflow attaches artifacts to the release itself
-      # (below), so electron-builder must only build, not trigger its own
-      # implicit tag-publish.
-      - name: Package Windows artifacts
-        shell: bash
-        working-directory: app
-        run: npx electron-builder --win --publish never
+      - name: Summarize bundled MCP payload
+        run: node app/scripts/report-mcp-bundle.mjs
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7

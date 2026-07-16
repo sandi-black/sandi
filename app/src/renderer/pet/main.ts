@@ -1,3 +1,4 @@
+import { SLEEP_HOLD_RANGE_MS } from "@shared/animation-manifest";
 import {
   INITIAL_PET_STATE,
   type PetEvent,
@@ -29,9 +30,23 @@ async function main(): Promise<void> {
   const bridge = window.sandiPet;
 
   let state = INITIAL_PET_STATE;
+  let wakeTimer: ReturnType<typeof setTimeout> | undefined;
   const dispatch = (event: PetEvent): void => {
+    const previousRow = state.row;
     state = reducePetState(state, event);
     player.setRow(state.row);
+    if (state.row !== "sleeping") {
+      if (wakeTimer) clearTimeout(wakeTimer);
+      wakeTimer = undefined;
+      return;
+    }
+    if (previousRow === "sleeping") return;
+    const [min, max] = SLEEP_HOLD_RANGE_MS;
+    const holdMs = min + Math.random() * (max - min);
+    wakeTimer = setTimeout(() => {
+      wakeTimer = undefined;
+      dispatch({ type: "wake" });
+    }, holdMs);
   };
 
   player.onOneShotComplete(() => dispatch({ type: "animation-complete" }));

@@ -80,7 +80,10 @@ export async function createSpritePlayer(
     spec: RowSpec,
     frame: number,
   ): void => {
-    const sx = frame * FRAME_WIDTH;
+    const sourceFrame = spec.reverse
+      ? (spec.frameOffset ?? 0) + spec.frames - frame - 1
+      : (spec.frameOffset ?? 0) + frame;
+    const sx = sourceFrame * FRAME_WIDTH;
     const sy = spec.index * FRAME_HEIGHT;
     target.clearRect(0, 0, FRAME_WIDTH, FRAME_HEIGHT);
     if (spec.mirror) {

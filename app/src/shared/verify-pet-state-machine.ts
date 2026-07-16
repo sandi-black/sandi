@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 
-import { PET_ROWS, SHEET_COLUMNS, SHEET_ROWS } from "./animation-manifest";
+import {
+  PET_ROWS,
+  SHEET_COLUMNS,
+  SHEET_ROWS,
+  SLEEP_HOLD_RANGE_MS,
+} from "./animation-manifest";
 import {
   INITIAL_PET_STATE,
   type PetEvent,
@@ -27,6 +32,10 @@ function main(): void {
       `${name} frame count fits the sheet`,
     );
     assert.ok(
+      (spec.frameOffset ?? 0) + spec.frames <= SHEET_COLUMNS,
+      `${name} frame range fits the sheet`,
+    );
+    assert.ok(
       spec.index >= 0 && spec.index < SHEET_ROWS,
       `${name} row index fits the sheet`,
     );
@@ -37,6 +46,14 @@ function main(): void {
   assert.equal(PET_ROWS.casting.loop, false, "casting is a one-shot");
   assert.equal(PET_ROWS.breathing.loop, false, "breathing is a one-shot");
   assert.equal(PET_ROWS.dozing.loop, false, "dozing is a one-shot");
+  assert.equal(PET_ROWS.sleeping.frames, 1, "sleeping holds one frame");
+  assert.equal(PET_ROWS.sleeping.frameOffset, 7, "sleeping holds the nap pose");
+  assert.equal(PET_ROWS.waking.reverse, true, "waking reverses the nap row");
+  assert.deepEqual(
+    SLEEP_HOLD_RANGE_MS,
+    [10_000, 30_000],
+    "sleep lasts between ten and thirty seconds",
+  );
   // Idle is a single held frame: a still pet, not a breathing loop.
   assert.equal(PET_ROWS.idle.frames, 1, "idle is a single static frame");
   // The two walks are one left-facing row, mirrored for rightward strolls.
@@ -118,8 +135,20 @@ function main(): void {
   state = run([{ type: "animation-complete" }], state);
   assert.deepEqual(state, INITIAL_PET_STATE, "the breath settles back to idle");
 
-  // A turn that starts mid-fidget is not lost: the fidget finishes, then the
-  // new background takes the stage.
+  // Dozing settles into the final nap frame, then wakes before returning to
+  // idle. The wake event is what the renderer's randomized hold timer sends.
+  state = run([{ type: "one-shot", row: "dozing" }]);
+  state = run([{ type: "animation-complete" }], state);
+  assert.equal(state.row, "sleeping", "dozing settles into sleep");
+  state = run([{ type: "background", background: "idle" }], state);
+  assert.equal(state.row, "sleeping", "an idle refresh does not wake her");
+  state = run([{ type: "wake" }], state);
+  assert.equal(state.row, "waking", "the sleep timer starts waking up");
+  state = run([{ type: "animation-complete" }], state);
+  assert.deepEqual(state, INITIAL_PET_STATE, "waking settles back to idle");
+
+  // A turn that starts mid-doze is not lost: she wakes up, then the new
+  // background takes the stage.
   state = run([
     { type: "one-shot", row: "dozing" },
     { type: "background", background: "waiting" },
@@ -127,7 +156,17 @@ function main(): void {
   assert.equal(state.row, "dozing", "a dozing fidget keeps playing");
   assert.equal(state.background, "waiting", "the queued turn is retained");
   state = run([{ type: "animation-complete" }], state);
-  assert.equal(state.row, "listening", "the fidget hands off to the turn");
+  assert.equal(state.row, "waking", "activity skips the sleep hold");
+  state = run([{ type: "animation-complete" }], state);
+  assert.equal(state.row, "listening", "waking hands off to the turn");
+
+  state = run([
+    { type: "one-shot", row: "dozing" },
+    { type: "animation-complete" },
+    { type: "background", background: "running" },
+  ]);
+  assert.equal(state.row, "waking", "activity wakes a sleeping pet at once");
+  assert.equal(state.background, "running", "the active phase is retained");
 
   // Wander only starts from a fully idle pet, and any activity preempts it.
   state = run([{ type: "wander", direction: "left" }]);

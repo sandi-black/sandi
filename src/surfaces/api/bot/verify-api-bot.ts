@@ -737,7 +737,7 @@ async function verifyDeviceRoutes(
   const noAuthResult = await fetch(resultUrl, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id: "x", ok: true, output: "" }),
+    body: JSON.stringify({ id: "x", ok: true, content: [] }),
   });
   assertEqual(noAuthResult.status, 401, "device result without auth is 401");
 
@@ -756,7 +756,11 @@ async function verifyDeviceRoutes(
       "content-type": "application/json",
       authorization: `Bearer ${RAW_TOKEN}`,
     },
-    body: JSON.stringify({ id: "missing", ok: true, output: "x" }),
+    body: JSON.stringify({
+      id: "missing",
+      ok: true,
+      content: [{ type: "text", text: "x" }],
+    }),
   });
   assertEqual(unknownResult.status, 404, "result for an unknown call is 404");
 
@@ -796,7 +800,7 @@ async function verifyDeviceRoutes(
           "content-type": "application/json",
           authorization: `Bearer ${RAW_TOKEN}`,
         },
-        body: JSON.stringify({ id: "revoked", ok: true, output: "" }),
+        body: JSON.stringify({ id: "revoked", ok: true, content: [] }),
       });
       assertEqual(
         revokedRequest.status,

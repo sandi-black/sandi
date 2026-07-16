@@ -6,9 +6,8 @@ import { errorMessage } from "@/lib/errors";
 import type { DesktopCredentials } from "@/surfaces/api/client/credentials";
 import { executeLocalTool } from "@/surfaces/api/client/executors";
 import { postJson } from "@/surfaces/api/client/http";
-import type { DesktopFileAttachment } from "@/surfaces/api/devices/desktop-file-transfer";
 import {
-  type DeviceImage,
+  type DeviceResult,
   RESPONSE_ATTACHMENT_EVENT,
   RESPONSE_CHUNK_EVENT,
   type ResponseAttachment,
@@ -388,7 +387,7 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
     await reportResult(conn, {
       id,
       ok: false,
-      output: "",
+      content: [],
       error: "invalid tool call",
     });
     return;
@@ -398,7 +397,7 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
     await reportResult(conn, {
       id,
       ok: false,
-      output: "",
+      content: [],
       error: `too many tool calls in flight (limit ${conn.maxInflightToolCalls})`,
     });
     return;
@@ -424,9 +423,12 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
       {
         id,
         ok: outcome.ok,
-        output: outcome.output,
+        content: outcome.content,
         ...(outcome.error !== undefined ? { error: outcome.error } : {}),
-        ...(outcome.image !== undefined ? { image: outcome.image } : {}),
+        ...(outcome.isError !== undefined ? { isError: outcome.isError } : {}),
+        ...(outcome.structuredContent !== undefined
+          ? { structuredContent: outcome.structuredContent }
+          : {}),
         ...(outcome.attachment !== undefined
           ? { attachment: outcome.attachment }
           : {}),
@@ -440,14 +442,7 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
 
 async function reportResult(
   conn: Connection,
-  result: {
-    id: string;
-    ok: boolean;
-    output: string;
-    error?: string;
-    image?: DeviceImage;
-    attachment?: DesktopFileAttachment;
-  },
+  result: DeviceResult,
   signal: AbortSignal = conn.signal,
 ): Promise<void> {
   // Invalid and over-cap dispatches never enter `inflight`, yet their refusal

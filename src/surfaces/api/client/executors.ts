@@ -110,6 +110,9 @@ export async function executeLocalTool(
         return await screenshot(call.params, signal);
       case "local_transfer_file":
         return await transferDesktopFile(call.params, context.rootDir, signal);
+      case "local_mcp":
+      case "local_mcp_configure":
+        return refused("desktop MCP requires the Sandi desktop app");
     }
   } catch (error) {
     return refused(errorMessage(error));
@@ -786,11 +789,14 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 function ok(output: string, wasTruncated = false): ToolCallOutcome {
-  return { ok: true, output: truncate(output, wasTruncated) };
+  return {
+    ok: true,
+    content: [{ type: "text", text: truncate(output, wasTruncated) }],
+  };
 }
 
 function refused(error: string): ToolCallOutcome {
-  return { ok: false, output: "", error };
+  return { ok: false, content: [], error };
 }
 
 function truncate(text: string, wasTruncated = false): string {

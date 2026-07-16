@@ -215,6 +215,8 @@ export default function localExecToolsExtension(pi: ExtensionAPI): void {
     return;
   }
 
+  pi.on("tool_result", (event) => toolResultErrorPatch(event.details));
+
   for (const spec of TOOL_SPECS) {
     pi.registerTool(
       defineTool({
@@ -264,15 +266,19 @@ export function readBroker(): Broker | undefined {
 }
 
 type ToolCallImage = {
+  type: "image";
   mimeType: string;
   dataBase64: string;
 };
 
+type ToolCallContent = { type: "text"; text: string } | ToolCallImage;
+
 type ToolCallOutcome = {
   ok: boolean;
-  output: string;
+  content: ToolCallContent[];
   error?: string;
-  image?: ToolCallImage;
+  isError?: boolean;
+  structuredContent?: Record<string, unknown>;
 };
 
 // Exported for tests: POSTs one tool call to the broker and maps the outcome to
@@ -289,26 +295,32 @@ export async function callTool(
   if (!outcome.ok) {
     // The desktop refused or could not attempt the call. Throw so pi surfaces a
     // tool error to the model instead of presenting a failure as evidence.
-    throw new Error(outcome.error ?? (outcome.output || `${tool} failed`));
+    const text = outcome.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("\n");
+    throw new Error(outcome.error ?? (text || `${tool} failed`));
   }
   // A screenshot's whole point is the image; a "successful" one without it is a
   // broken result, not evidence. Fail closed rather than hand back text alone.
-  if (tool === "local_screenshot" && outcome.image === undefined) {
+  if (
+    tool === "local_screenshot" &&
+    !outcome.content.some((block) => block.type === "image")
+  ) {
     throw new Error(
       "the desktop returned a screenshot result without an image",
     );
   }
-  const content: AgentToolResult<Record<string, unknown>>["content"] = [];
-  if (outcome.output.length > 0) {
-    content.push({ type: "text", text: outcome.output });
-  }
-  if (outcome.image) {
-    content.push({
-      type: "image",
-      data: outcome.image.dataBase64,
-      mimeType: outcome.image.mimeType,
-    });
-  }
+  const content: AgentToolResult<Record<string, unknown>>["content"] =
+    outcome.content.map((block) =>
+      block.type === "text"
+        ? block
+        : {
+            type: "image",
+            data: block.dataBase64,
+            mimeType: block.mimeType,
+          },
+    );
   // Always hand back at least one block so a tool that returned neither text nor
   // an image still reads as a completed call rather than an empty result.
   if (content.length === 0) {
@@ -316,8 +328,24 @@ export async function callTool(
   }
   return {
     content,
-    details: { tool, ok: true, hasImage: outcome.image !== undefined },
+    details: {
+      tool,
+      ok: true,
+      desktopMcpIsError: outcome.isError === true,
+      hasImage: outcome.content.some((block) => block.type === "image"),
+      ...(outcome.structuredContent !== undefined
+        ? { structuredContent: outcome.structuredContent }
+        : {}),
+    },
   };
+}
+
+export function toolResultErrorPatch(
+  details: unknown,
+): { isError: true } | undefined {
+  if (typeof details !== "object" || details === null) return undefined;
+  const record: Record<string, unknown> = { ...details };
+  return record["desktopMcpIsError"] === true ? { isError: true } : undefined;
 }
 
 function post(
@@ -482,25 +510,72 @@ function parseOutcome(raw: string): ToolCallOutcome {
   }
   const record: Record<string, unknown> = { ...parsed };
   const ok = record["ok"];
-  const output = record["output"];
-  if (typeof ok !== "boolean" || typeof output !== "string") {
+  const rawContent = record["content"];
+  if (typeof ok !== "boolean" || !Array.isArray(rawContent)) {
     throw new Error("tool broker result was malformed");
   }
+  if (rawContent.length > 32) {
+    throw new Error("tool broker returned too many content blocks");
+  }
+  const content = rawContent.map(parseContentBlock);
+  const textChars = content.reduce(
+    (sum, block) => sum + (block.type === "text" ? block.text.length : 0),
+    0,
+  );
+  const imageChars = content.reduce(
+    (sum, block) =>
+      sum + (block.type === "image" ? block.dataBase64.length : 0),
+    0,
+  );
+  if (textChars > 100_000 || imageChars > 6 * 1024 * 1024) {
+    throw new Error("tool broker result content exceeded its limit");
+  }
   const error = record["error"];
-  const image = parseImage(record["image"]);
+  const isError = record["isError"];
+  const structuredContent = parseStructuredContent(record["structuredContent"]);
   return {
     ok,
-    output,
+    content,
     ...(typeof error === "string" ? { error } : {}),
-    ...(image !== undefined ? { image } : {}),
+    ...(typeof isError === "boolean" ? { isError } : {}),
+    ...(structuredContent !== undefined ? { structuredContent } : {}),
   };
+}
+
+function parseContentBlock(value: unknown): ToolCallContent {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("tool broker returned a malformed content block");
+  }
+  const record: Record<string, unknown> = { ...value };
+  if (record["type"] === "text" && typeof record["text"] === "string") {
+    return { type: "text", text: record["text"] };
+  }
+  if (record["type"] === "image") return parseImage(record);
+  throw new Error("tool broker returned a malformed content block");
+}
+
+function parseStructuredContent(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("tool broker returned malformed structured content");
+  }
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") > 1_048_576) {
+    throw new Error("tool broker structured content exceeded 1 MiB");
+  }
+  return { ...value };
 }
 
 // The supported image types, the canonical-base64 shape, and the magic-byte
 // check, restated here (this extension cannot import the protocol module) so the
 // proxy parses an image result exactly as precisely as the protocol's
 // DeviceImageSchema does on the wire.
-const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png"]);
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
 
 function decodeCanonicalBase64(value: string): Buffer | undefined {
   if (value.length === 0 || value.length % 4 !== 0) return undefined;
@@ -545,6 +620,13 @@ function imageBytesMatchMime(mimeType: string, dataBase64: string): boolean {
       bytes[7] === 0x0a
     );
   }
+  if (mimeType === "image/webp") {
+    return (
+      bytes.length >= 12 &&
+      bytes.subarray(0, 4).toString("ascii") === "RIFF" &&
+      bytes.subarray(8, 12).toString("ascii") === "WEBP"
+    );
+  }
   return false;
 }
 
@@ -552,8 +634,7 @@ function imageBytesMatchMime(mimeType: string, dataBase64: string): boolean {
 // tools return none). A present payload must be a well-formed, supported image
 // whose bytes match its declared type: anything malformed throws so the call
 // fails closed rather than being reported successful with the image dropped.
-function parseImage(value: unknown): ToolCallImage | undefined {
-  if (value === undefined || value === null) return undefined;
+function parseImage(value: unknown): ToolCallImage {
   if (typeof value !== "object") {
     throw new Error("tool broker returned a malformed image");
   }
@@ -574,5 +655,5 @@ function parseImage(value: unknown): ToolCallImage | undefined {
   if (!imageBytesMatchMime(mimeType, dataBase64)) {
     throw new Error("tool broker image bytes do not match the declared type");
   }
-  return { mimeType, dataBase64 };
+  return { type: "image", mimeType, dataBase64 };
 }

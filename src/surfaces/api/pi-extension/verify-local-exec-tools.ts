@@ -1,7 +1,12 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 
 import { assertEqual } from "../../../lib/verification/harness";
-import { type Broker, callTool, readBroker } from "./local-exec-tools";
+import {
+  type Broker,
+  callTool,
+  readBroker,
+  toolResultErrorPatch,
+} from "./local-exec-tools";
 
 // Drives the proxy extension's network helpers against a stand-in broker so the
 // routing and the ok/refused/unavailable mapping are exercised without a real
@@ -10,6 +15,7 @@ import { type Broker, callTool, readBroker } from "./local-exec-tools";
 type ServerMode =
   | { kind: "ok"; output: string }
   | { kind: "image"; output: string; mimeType: string; dataBase64: string }
+  | { kind: "mcp-error" }
   | { kind: "refuse"; error: string }
   | { kind: "status"; status: number }
   | { kind: "partial-close" }
@@ -58,6 +64,39 @@ async function verifyLocalExecTools(): Promise<void> {
       "a screenshot result carries the image bytes",
     );
     console.log("ok an image outcome is returned as an image content block");
+
+    setMode({ kind: "mcp-error" });
+    const mcpError = await callTool(broker, "local_mcp", {
+      operation: "call",
+    });
+    assertEqual(
+      mcpError.content.map((block) => block.type).join(","),
+      "text,image,text",
+      "MCP result block order is preserved",
+    );
+    assertEqual(
+      textOf(mcpError),
+      "first\nlast",
+      "all MCP text blocks are preserved",
+    );
+    assertEqual(
+      imageOf(mcpError)?.mimeType,
+      "image/webp",
+      "MCP WebP content reaches Pi",
+    );
+    assertEqual(
+      JSON.stringify(mcpError.details["structuredContent"]),
+      JSON.stringify({ activeWindow: "Calculator" }),
+      "MCP structured content reaches Pi details",
+    );
+    assertEqual(
+      toolResultErrorPatch(mcpError.details)?.isError,
+      true,
+      "MCP tool errors reach Pi's tool-result error channel",
+    );
+    console.log(
+      "ok multi-block MCP errors preserve content, structure, and error status",
+    );
 
     setMode({ kind: "refuse", error: "permission denied" });
     await assertThrows(
@@ -220,15 +259,43 @@ async function withBroker(
     request.on("data", () => {});
     request.on("end", () => {
       if (mode.kind === "ok") {
-        respond(response, 200, { ok: true, output: mode.output });
+        respond(response, 200, {
+          ok: true,
+          content: [{ type: "text", text: mode.output }],
+        });
       } else if (mode.kind === "image") {
         respond(response, 200, {
           ok: true,
-          output: mode.output,
-          image: { mimeType: mode.mimeType, dataBase64: mode.dataBase64 },
+          content: [
+            { type: "text", text: mode.output },
+            {
+              type: "image",
+              mimeType: mode.mimeType,
+              dataBase64: mode.dataBase64,
+            },
+          ],
+        });
+      } else if (mode.kind === "mcp-error") {
+        respond(response, 200, {
+          ok: true,
+          content: [
+            { type: "text", text: "first" },
+            {
+              type: "image",
+              mimeType: "image/webp",
+              dataBase64: "UklGRgQAAABXRUJQ",
+            },
+            { type: "text", text: "last" },
+          ],
+          isError: true,
+          structuredContent: { activeWindow: "Calculator" },
         });
       } else if (mode.kind === "refuse") {
-        respond(response, 200, { ok: false, output: "", error: mode.error });
+        respond(response, 200, {
+          ok: false,
+          content: [],
+          error: mode.error,
+        });
       } else if (mode.kind === "status") {
         respond(response, mode.status, { error: "broker_error" });
       } else if (mode.kind === "partial-close") {
@@ -284,10 +351,11 @@ function respond(
 
 function textOf(result: {
   content: ReadonlyArray<{ type: string; text?: string }>;
-}): string | undefined {
-  const first = result.content[0];
-  if (first && first.type === "text") return first.text;
-  return undefined;
+}): string {
+  return result.content
+    .filter((item) => item.type === "text" && typeof item.text === "string")
+    .map((item) => item.text)
+    .join("\n");
 }
 
 function imageOf(result: {

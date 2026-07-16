@@ -709,17 +709,19 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function ok(output: string): ToolCallOutcome {
-  return { ok: true, output };
+  return { ok: true, content: [{ type: "text", text: output }] };
 }
 
 function okImage(output: string, dataBase64: string): ToolCallOutcome {
   return {
     ok: true,
-    output,
-    image: { mimeType: SCREENSHOT_MIME, dataBase64 },
+    content: [
+      { type: "text", text: output },
+      { type: "image", mimeType: SCREENSHOT_MIME, dataBase64 },
+    ],
   };
 }
 
 function refused(error: string): ToolCallOutcome {
-  return { ok: false, output: "", error };
+  return { ok: false, content: [], error };
 }

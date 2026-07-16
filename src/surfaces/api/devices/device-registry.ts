@@ -315,9 +315,12 @@ export class DeviceRegistry {
     clearTimeout(call.timer);
     call.resolve({
       ok: result.ok,
-      output: result.output,
+      content: result.content,
       ...(result.error !== undefined ? { error: result.error } : {}),
-      ...(result.image !== undefined ? { image: result.image } : {}),
+      ...(result.isError !== undefined ? { isError: result.isError } : {}),
+      ...(result.structuredContent !== undefined
+        ? { structuredContent: result.structuredContent }
+        : {}),
       ...(result.attachment !== undefined
         ? { attachment: result.attachment }
         : {}),

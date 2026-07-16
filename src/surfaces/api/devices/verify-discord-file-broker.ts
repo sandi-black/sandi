@@ -169,7 +169,7 @@ function connectTransferDevice(
       const result: DeviceResult = {
         id,
         ok: true,
-        output: "prepared file",
+        content: [{ type: "text", text: "prepared file" }],
         attachment: ATTACHMENT,
       };
       queueMicrotask(() => registry.settleResult(key, result));

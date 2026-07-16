@@ -790,7 +790,7 @@ async function readResult(
   return {
     id: result.data.id,
     ok: result.data.ok,
-    hasImage: result.data.image !== undefined,
+    hasImage: result.data.content.some((block) => block.type === "image"),
     ...(result.data.error !== undefined ? { error: result.data.error } : {}),
   };
 }

@@ -59,11 +59,16 @@ export async function transferDesktopFile(
     const attachment = parsed.data;
     return {
       ok: true,
-      output: `prepared ${attachment.name} (${attachment.size} bytes) for Discord delivery`,
+      content: [
+        {
+          type: "text",
+          text: `prepared ${attachment.name} (${attachment.size} bytes) for Discord delivery`,
+        },
+      ],
       attachment,
     };
   } catch (error) {
-    return { ok: false, output: "", error: errorMessage(error) };
+    return { ok: false, content: [], error: errorMessage(error) };
   }
 }
 

@@ -6,9 +6,9 @@ import { errorMessage } from "@/lib/errors";
 import type { DesktopCredentials } from "@/surfaces/api/client/credentials";
 import { executeLocalTool } from "@/surfaces/api/client/executors";
 import { postJson } from "@/surfaces/api/client/http";
-import type { DesktopFileAttachment } from "@/surfaces/api/devices/desktop-file-transfer";
 import {
-  type DeviceImage,
+  type BrokerCall,
+  type DeviceResult,
   RESPONSE_ATTACHMENT_EVENT,
   RESPONSE_CHUNK_EVENT,
   type ResponseAttachment,
@@ -17,6 +17,8 @@ import {
   ResponseChunkSchema,
   TOOL_CALL_EVENT,
   TOOL_CANCEL_EVENT,
+  type ToolCallOutcome,
+  ToolCallOutcomeSchema,
   ToolCancelSchema,
   ToolDispatchEnvelopeSchema,
   ToolDispatchSchema,
@@ -51,7 +53,14 @@ export type DesktopClientOptions = {
   // desktop). Optional for the same reason as onResponseChunk: the hands-only
   // `run` command has no reply stream to attach anything to.
   onResponseAttachment?: (attachment: ResponseAttachment) => void;
+  executeTool?: DesktopToolExecutor;
 };
+
+export type DesktopToolExecutor = (
+  call: BrokerCall,
+  context: { rootDir: string },
+  signal: AbortSignal,
+) => Promise<ToolCallOutcome>;
 
 // Runtime seams keep transport limits deterministic in verification without
 // weakening production defaults or adding multi-second waits to the checks.
@@ -388,7 +397,7 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
     await reportResult(conn, {
       id,
       ok: false,
-      output: "",
+      content: [],
       error: "invalid tool call",
     });
     return;
@@ -398,7 +407,7 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
     await reportResult(conn, {
       id,
       ok: false,
-      output: "",
+      content: [],
       error: `too many tool calls in flight (limit ${conn.maxInflightToolCalls})`,
     });
     return;
@@ -413,20 +422,32 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
   try {
     // dispatch.data is `{ id } & BrokerCall`, so it carries the validated tool
     // and typed params straight into the executor; no re-parsing downstream.
-    const outcome = await executeLocalTool(
+    const executeTool = conn.options.executeTool ?? executeLocalTool;
+    const rawOutcome = await executeTool(
       dispatch.data,
       { rootDir: conn.options.rootDir },
       signal,
     );
     if (signal.aborted) return;
+    const parsedOutcome = ToolCallOutcomeSchema.safeParse(rawOutcome);
+    const outcome: ToolCallOutcome = parsedOutcome.success
+      ? parsedOutcome.data
+      : {
+          ok: false,
+          content: [],
+          error: "desktop tool returned a result outside protocol limits",
+        };
     await reportResult(
       conn,
       {
         id,
         ok: outcome.ok,
-        output: outcome.output,
+        content: outcome.content,
         ...(outcome.error !== undefined ? { error: outcome.error } : {}),
-        ...(outcome.image !== undefined ? { image: outcome.image } : {}),
+        ...(outcome.isError !== undefined ? { isError: outcome.isError } : {}),
+        ...(outcome.structuredContent !== undefined
+          ? { structuredContent: outcome.structuredContent }
+          : {}),
         ...(outcome.attachment !== undefined
           ? { attachment: outcome.attachment }
           : {}),
@@ -440,14 +461,7 @@ async function runToolCall(data: string, conn: Connection): Promise<void> {
 
 async function reportResult(
   conn: Connection,
-  result: {
-    id: string;
-    ok: boolean;
-    output: string;
-    error?: string;
-    image?: DeviceImage;
-    attachment?: DesktopFileAttachment;
-  },
+  result: DeviceResult,
   signal: AbortSignal = conn.signal,
 ): Promise<void> {
   // Invalid and over-cap dispatches never enter `inflight`, yet their refusal

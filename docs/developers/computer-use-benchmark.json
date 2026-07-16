@@ -1,0 +1,792 @@
+{
+  "capturedAt": "2026-07-16T11:21:19.958Z",
+  "iterations": 5,
+  "measurement": "Warm packaged wall clock. Each parent-model turn is an executed tool phase: a fresh code-mode child for actions or a direct broker observation whose image payload reached the harness. Reset, calibration, cleanup, model inference, and machine-readable validation are excluded.",
+  "schemaVersion": 2,
+  "tasks": [
+    {
+      "failures": 0,
+      "medianDurationMs": 4368,
+      "medianMcpCalls": 6,
+      "medianParentModelTurns": 1,
+      "medianScreenshots": 0,
+      "path": "semantic",
+      "runs": [
+        {
+          "mcpCalls": 6,
+          "parentModelTurns": 1,
+          "screenshots": 0,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Shortcut"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "WaitFor"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Snapshot"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "WaitFor"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Snapshot"
+              }
+            ]
+          ],
+          "durationMs": 4156,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 6,
+          "parentModelTurns": 1,
+          "screenshots": 0,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Shortcut"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "WaitFor"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Snapshot"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "WaitFor"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Snapshot"
+              }
+            ]
+          ],
+          "durationMs": 4527,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 6,
+          "parentModelTurns": 1,
+          "screenshots": 0,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Shortcut"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "WaitFor"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Snapshot"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "WaitFor"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Snapshot"
+              }
+            ]
+          ],
+          "durationMs": 4368,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 6,
+          "parentModelTurns": 1,
+          "screenshots": 0,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Shortcut"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "WaitFor"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Snapshot"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "WaitFor"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Snapshot"
+              }
+            ]
+          ],
+          "durationMs": 4395,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 6,
+          "parentModelTurns": 1,
+          "screenshots": 0,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Shortcut"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "WaitFor"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Snapshot"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "WaitFor"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Snapshot"
+              }
+            ]
+          ],
+          "durationMs": 4308,
+          "failures": 0
+        }
+      ],
+      "task": "native"
+    },
+    {
+      "failures": 0,
+      "medianDurationMs": 8816,
+      "medianMcpCalls": 7,
+      "medianParentModelTurns": 5,
+      "medianScreenshots": 3,
+      "path": "screenshot",
+      "runs": [
+        {
+          "mcpCalls": 7,
+          "parentModelTurns": 5,
+          "screenshots": 3,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Shortcut"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ]
+          ],
+          "durationMs": 9096,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 7,
+          "parentModelTurns": 5,
+          "screenshots": 3,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Shortcut"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ]
+          ],
+          "durationMs": 8921,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 7,
+          "parentModelTurns": 5,
+          "screenshots": 3,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Shortcut"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ]
+          ],
+          "durationMs": 8816,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 7,
+          "parentModelTurns": 5,
+          "screenshots": 3,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Shortcut"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ]
+          ],
+          "durationMs": 8283,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 7,
+          "parentModelTurns": 5,
+          "screenshots": 3,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Shortcut"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ]
+          ],
+          "durationMs": 8755,
+          "failures": 0
+        }
+      ],
+      "task": "native"
+    },
+    {
+      "failures": 0,
+      "medianDurationMs": 1376,
+      "medianMcpCalls": 5,
+      "medianParentModelTurns": 1,
+      "medianScreenshots": 0,
+      "path": "semantic",
+      "runs": [
+        {
+          "mcpCalls": 5,
+          "parentModelTurns": 1,
+          "screenshots": 0,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "take_snapshot"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "fill"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "click"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "wait_for"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "take_snapshot"
+              }
+            ]
+          ],
+          "durationMs": 1330,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 5,
+          "parentModelTurns": 1,
+          "screenshots": 0,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "take_snapshot"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "fill"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "click"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "wait_for"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "take_snapshot"
+              }
+            ]
+          ],
+          "durationMs": 1376,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 5,
+          "parentModelTurns": 1,
+          "screenshots": 0,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "take_snapshot"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "fill"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "click"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "wait_for"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "take_snapshot"
+              }
+            ]
+          ],
+          "durationMs": 1315,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 5,
+          "parentModelTurns": 1,
+          "screenshots": 0,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "take_snapshot"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "fill"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "click"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "wait_for"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "take_snapshot"
+              }
+            ]
+          ],
+          "durationMs": 1448,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 5,
+          "parentModelTurns": 1,
+          "screenshots": 0,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "take_snapshot"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "fill"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "click"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "wait_for"
+              },
+              {
+                "serverId": "packaged-chrome-mcp",
+                "toolName": "take_snapshot"
+              }
+            ]
+          ],
+          "durationMs": 1494,
+          "failures": 0
+        }
+      ],
+      "task": "browser"
+    },
+    {
+      "failures": 0,
+      "medianDurationMs": 6602,
+      "medianMcpCalls": 5,
+      "medianParentModelTurns": 3,
+      "medianScreenshots": 2,
+      "path": "screenshot",
+      "runs": [
+        {
+          "mcpCalls": 5,
+          "parentModelTurns": 3,
+          "screenshots": 2,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Click"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ]
+          ],
+          "durationMs": 5679,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 5,
+          "parentModelTurns": 3,
+          "screenshots": 2,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Click"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ]
+          ],
+          "durationMs": 6453,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 5,
+          "parentModelTurns": 3,
+          "screenshots": 2,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Click"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ]
+          ],
+          "durationMs": 6602,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 5,
+          "parentModelTurns": 3,
+          "screenshots": 2,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Click"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ]
+          ],
+          "durationMs": 6793,
+          "failures": 0
+        },
+        {
+          "mcpCalls": 5,
+          "parentModelTurns": 3,
+          "screenshots": 2,
+          "turns": [
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Type"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Click"
+              },
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Wait"
+              }
+            ],
+            [
+              {
+                "serverId": "packaged-windows-mcp",
+                "toolName": "Screenshot"
+              }
+            ]
+          ],
+          "durationMs": 6676,
+          "failures": 0
+        }
+      ],
+      "task": "browser"
+    }
+  ]
+}

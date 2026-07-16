@@ -20,6 +20,8 @@ Architecture and runtime details:
 - [Surface contract](surfaces.md): how interaction surfaces share Sandi's core
   runtime.
 - [Code mode](code-mode.md): how Sandi composes local runtime helpers.
+- [Fast computer use](computer-use.md): packaged Windows and Chrome routing,
+  recovery, smoke coverage, and benchmark results.
 - [Host layout](host-layout.md): example shared-host boundaries for app, data,
   backups, and non-Sandi services.
 

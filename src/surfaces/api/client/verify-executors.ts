@@ -11,7 +11,15 @@ import { verifyDesktopFileTransfer } from "@/surfaces/api/client/verify-desktop-
 import {
   LocalBashParamsSchema,
   MAX_LOCAL_BASH_TIMEOUT_MS,
+  type ToolCallOutcome,
 } from "@/surfaces/api/devices/protocol";
+
+function text(outcome: ToolCallOutcome): string {
+  return outcome.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+}
 
 // executeLocalTool takes a validated BrokerCall (the wire boundary parses tool
 // and params together), so these cases build typed calls directly. Malformed
@@ -102,14 +110,14 @@ async function verifyWriteAndRead(context: ExecutorContext): Promise<void> {
     context,
   );
   assert(read.ok, "read succeeds");
-  assert(read.output.includes("1\talpha"), "read numbers the first line");
-  assert(read.output.includes("3\tgamma"), "read numbers the last line");
+  assert(text(read).includes("1\talpha"), "read numbers the first line");
+  assert(text(read).includes("3\tgamma"), "read numbers the last line");
 
   const sliced = await executeLocalTool(
     { tool: "local_read", params: { path: "notes.txt", offset: 1, limit: 1 } },
     context,
   );
-  assertEqual(sliced.output, "2\tbeta", "read honors offset and limit");
+  assertEqual(text(sliced), "2\tbeta", "read honors offset and limit");
   console.log("ok local_write and local_read round-trip with line numbers");
 }
 
@@ -208,8 +216,8 @@ async function verifyList(context: ExecutorContext): Promise<void> {
     context,
   );
   assert(listed.ok, "ls succeeds");
-  assert(listed.output.includes("a.txt"), "ls shows a.txt");
-  assert(listed.output.includes("b.txt"), "ls shows b.txt");
+  assert(text(listed).includes("a.txt"), "ls shows a.txt");
+  assert(text(listed).includes("b.txt"), "ls shows b.txt");
   console.log("ok local_ls lists a directory");
 }
 
@@ -230,13 +238,13 @@ async function verifyGlob(context: ExecutorContext): Promise<void> {
     context,
   );
   assert(matched.ok, "glob succeeds");
-  assert(matched.output.includes("src/x.ts"), "glob matches a top-level file");
+  assert(text(matched).includes("src/x.ts"), "glob matches a top-level file");
   assert(
-    matched.output.includes("src/nested/y.ts"),
+    text(matched).includes("src/nested/y.ts"),
     "glob ** matches across directories",
   );
   assert(
-    !matched.output.includes("src/z.md"),
+    !text(matched).includes("src/z.md"),
     "glob excludes non-matching extensions",
   );
 
@@ -285,7 +293,7 @@ async function verifyTraversalBounds(context: ExecutorContext): Promise<void> {
   );
   assert(capped.ok, "a capped glob still returns its bounded results");
   assert(
-    capped.output.includes("search stopped after 1000 results"),
+    text(capped).includes("search stopped after 1000 results"),
     "a capped glob states that its result is incomplete",
   );
   const listed = await executeLocalTool(
@@ -293,7 +301,7 @@ async function verifyTraversalBounds(context: ExecutorContext): Promise<void> {
     context,
   );
   assert(
-    listed.ok && listed.output.includes("listing truncated"),
+    listed.ok && text(listed).includes("listing truncated"),
     "a large directory listing is bounded before full materialization",
   );
   console.log("ok local traversal honors abort and reports result truncation");
@@ -330,13 +338,13 @@ async function verifyGrep(context: ExecutorContext): Promise<void> {
   );
   assert(found.ok, "grep succeeds");
   assert(
-    found.output.includes("a.txt:1:needle here"),
+    text(found).includes("a.txt:1:needle here"),
     "grep reports path:line:text",
   );
-  assert(!found.output.includes("NeEdLe"), "grep is case-sensitive by default");
-  assert(!found.output.includes("bin.dat"), "grep skips binary files");
+  assert(!text(found).includes("NeEdLe"), "grep is case-sensitive by default");
+  assert(!text(found).includes("bin.dat"), "grep skips binary files");
   assert(
-    found.output.includes("over-8388608-byte file skipped"),
+    text(found).includes("over-8388608-byte file skipped"),
     "grep reports an over-limit file instead of allocating it",
   );
 
@@ -348,7 +356,7 @@ async function verifyGrep(context: ExecutorContext): Promise<void> {
     context,
   );
   assert(
-    insensitive.output.includes("NeEdLe again"),
+    text(insensitive).includes("NeEdLe again"),
     "grep ignoreCase matches mixed case",
   );
 
@@ -360,11 +368,11 @@ async function verifyGrep(context: ExecutorContext): Promise<void> {
     context,
   );
   assert(
-    filtered.output.includes("b.md"),
+    text(filtered).includes("b.md"),
     "grep glob filter keeps matching files",
   );
   assert(
-    !filtered.output.includes("a.txt"),
+    !text(filtered).includes("a.txt"),
     "grep glob filter excludes other files",
   );
 
@@ -395,7 +403,7 @@ async function verifyBash(context: ExecutorContext): Promise<void> {
     context,
   );
   assert(echoed.ok, "bash returns a result");
-  assert(echoed.output.includes("hands-local"), "bash captures stdout");
+  assert(text(echoed).includes("hands-local"), "bash captures stdout");
 
   const failed = await executeLocalTool(
     { tool: "local_bash", params: { command: "exit 3" } },
@@ -405,7 +413,7 @@ async function verifyBash(context: ExecutorContext): Promise<void> {
     failed.ok,
     "a non-zero exit is still a returned result, not a refusal",
   );
-  assert(failed.output.includes("exit code: 3"), "bash reports the exit code");
+  assert(text(failed).includes("exit code: 3"), "bash reports the exit code");
   console.log("ok local_bash captures output and exit codes");
 }
 
@@ -421,19 +429,19 @@ async function verifyBashOutputBounds(context: ExecutorContext): Promise<void> {
   );
   assert(outcome.ok, "a noisy UTF-8 command completes");
   assert(
-    outcome.output.includes(String.fromCodePoint(0x1f600)),
+    text(outcome).includes(String.fromCodePoint(0x1f600)),
     "UTF-8 split across subprocess chunks is decoded intact",
   );
   assert(
-    !outcome.output.includes(String.fromCodePoint(0xfffd)),
+    !text(outcome).includes(String.fromCodePoint(0xfffd)),
     "split UTF-8 does not introduce replacement characters",
   );
   assert(
-    outcome.output.includes("[truncated to 100000 characters]"),
+    text(outcome).includes("[truncated to 100000 characters]"),
     "subprocess output reports its memory-bound truncation",
   );
   assert(
-    outcome.output.length < 100_100,
+    text(outcome).length < 100_100,
     "subprocess output retained in the result stays bounded",
   );
   console.log("ok local_bash bounds output and decodes split UTF-8");

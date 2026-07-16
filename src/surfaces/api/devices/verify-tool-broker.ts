@@ -69,7 +69,7 @@ async function verifyHappyPath(
   connectEchoDevice(registry, "d-happy", (dispatch) => ({
     id: dispatch.id,
     ok: true,
-    output: `ran ${dispatch.tool}`,
+    content: [{ type: "text", text: `ran ${dispatch.tool}` }],
   }));
   const controller = new AbortController();
   const lease = broker.lease({
@@ -84,7 +84,7 @@ async function verifyHappyPath(
   assertEqual(response.status, 200, "happy path returns 200");
   const body = asRecord(response.body);
   assertEqual(body?.["ok"], true, "outcome is ok");
-  assertEqual(body?.["output"], "ran local_read", "outcome carries the output");
+  assertEqual(resultText(body), "ran local_read", "outcome carries the output");
   lease.revoke();
   console.log("ok a call routes to the device and returns its outcome");
 }
@@ -155,8 +155,13 @@ async function verifyAbortRejects(
     originDevice: true,
   });
   const pending = postCall(lease.ticket.url, lease.ticket.token, {
-    tool: "local_bash",
-    params: { command: "sleep" },
+    tool: "local_mcp",
+    params: {
+      operation: "call",
+      serverId: "windows-mcp",
+      toolName: "Snapshot",
+      arguments: {},
+    },
   });
   // Abort only after the fake desktop observed the call. This barrier makes the
   // cancellation assertion independent of CI scheduling.
@@ -286,8 +291,7 @@ async function verifyListDesktops(
   assertEqual(response.status, 200, "list_desktops returns 200");
   const body = asRecord(response.body);
   assertEqual(body?.["ok"], true, "list_desktops is an ok outcome");
-  const output = body?.["output"];
-  const text = typeof output === "string" ? output : "";
+  const text = resultText(body);
   assert(
     text.includes("Connected desktops (2)"),
     "only the leasing identity's desktops are listed",
@@ -311,13 +315,21 @@ async function verifyDesktopTargeting(
   connectEchoDevice(
     registry,
     "hopper-1",
-    (dispatch) => ({ id: dispatch.id, ok: true, output: "from hopper-1" }),
+    (dispatch) => ({
+      id: dispatch.id,
+      ok: true,
+      content: [{ type: "text", text: "from hopper-1" }],
+    }),
     "hopper",
   );
   connectEchoDevice(
     registry,
     "hopper-2",
-    (dispatch) => ({ id: dispatch.id, ok: true, output: "from hopper-2" }),
+    (dispatch) => ({
+      id: dispatch.id,
+      ok: true,
+      content: [{ type: "text", text: "from hopper-2" }],
+    }),
     "hopper",
   );
   const lease = broker.lease({
@@ -326,11 +338,15 @@ async function verifyDesktopTargeting(
   });
 
   const targeted = await postCall(lease.ticket.url, lease.ticket.token, {
-    tool: "local_read",
-    params: { path: "x", desktop: "hopper-2" },
+    tool: "local_mcp",
+    params: {
+      operation: "search",
+      query: "window",
+      desktop: "hopper-2",
+    },
   });
   assertEqual(
-    asRecord(targeted.body)?.["output"],
+    resultText(asRecord(targeted.body)),
     "from hopper-2",
     "a selector routes any tool to the named desktop of the same identity",
   );
@@ -347,13 +363,21 @@ async function verifyOriginDeviceDefault(
   connectEchoDevice(
     registry,
     "curie-1",
-    (dispatch) => ({ id: dispatch.id, ok: true, output: "from curie-1" }),
+    (dispatch) => ({
+      id: dispatch.id,
+      ok: true,
+      content: [{ type: "text", text: "from curie-1" }],
+    }),
     "curie",
   );
   connectEchoDevice(
     registry,
     "curie-2",
-    (dispatch) => ({ id: dispatch.id, ok: true, output: "from curie-2" }),
+    (dispatch) => ({
+      id: dispatch.id,
+      ok: true,
+      content: [{ type: "text", text: "from curie-2" }],
+    }),
     "curie",
   );
   const lease = broker.lease({
@@ -366,7 +390,7 @@ async function verifyOriginDeviceDefault(
     params: { path: "x" },
   });
   assertEqual(
-    asRecord(response.body)?.["output"],
+    resultText(asRecord(response.body)),
     "from curie-1",
     "an origin-device turn defaults to its own desktop despite others connected",
   );
@@ -439,7 +463,11 @@ async function verifyStaleKeyFailover(
   connectEchoDevice(
     registry,
     "hopper-2",
-    (dispatch) => ({ id: dispatch.id, ok: true, output: "from hopper-2" }),
+    (dispatch) => ({
+      id: dispatch.id,
+      ok: true,
+      content: [{ type: "text", text: "from hopper-2" }],
+    }),
     "hopper",
   );
   const response = await postCall(lease.ticket.url, lease.ticket.token, {
@@ -447,7 +475,7 @@ async function verifyStaleKeyFailover(
     params: { path: "x" },
   });
   assertEqual(
-    asRecord(response.body)?.["output"],
+    resultText(asRecord(response.body)),
     "from hopper-2",
     "an unselected call resolves to the sole live desktop, not the stale lease key",
   );
@@ -511,8 +539,14 @@ async function verifyImagePassthrough(
         registry.settleResult("shot", {
           id,
           ok: true,
-          output: "captured primary monitor",
-          image: { mimeType: "image/jpeg", dataBase64: "/9j/4AAQ" },
+          content: [
+            { type: "text", text: "captured primary monitor" },
+            {
+              type: "image",
+              mimeType: "image/jpeg",
+              dataBase64: "/9j/4AAQ",
+            },
+          ],
         });
       });
       return true;
@@ -530,7 +564,10 @@ async function verifyImagePassthrough(
   });
   assertEqual(response.status, 200, "a screenshot returns 200");
   const body = asRecord(response.body);
-  const image = asRecord(body?.["image"]);
+  const content = Array.isArray(body?.["content"]) ? body["content"] : [];
+  const image = content
+    .map(asRecord)
+    .find((block) => block?.["type"] === "image");
   assertEqual(
     image?.["mimeType"],
     "image/jpeg",
@@ -794,10 +831,29 @@ async function verifyAttachmentToGoneDevice(broker: ToolBroker): Promise<void> {
 }
 
 type EchoDispatch = { id: string; tool: string };
-type EchoResult = { id: string; ok: boolean; output: string };
+type EchoResult = {
+  id: string;
+  ok: boolean;
+  content: [{ type: "text"; text: string }];
+};
 
 function okEcho(dispatch: EchoDispatch): EchoResult {
-  return { id: dispatch.id, ok: true, output: `ran ${dispatch.tool}` };
+  return {
+    id: dispatch.id,
+    ok: true,
+    content: [{ type: "text", text: `ran ${dispatch.tool}` }],
+  };
+}
+
+function resultText(result: Record<string, unknown> | undefined): string {
+  const content = result?.["content"];
+  if (!Array.isArray(content)) return "";
+  return content
+    .map(asRecord)
+    .filter((block) => block?.["type"] === "text")
+    .map((block) => block?.["text"])
+    .filter((text): text is string => typeof text === "string")
+    .join("\n");
 }
 
 // Registers a device whose SSE writes are parsed for tool calls; for each, it

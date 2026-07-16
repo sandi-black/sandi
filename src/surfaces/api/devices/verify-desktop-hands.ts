@@ -57,7 +57,7 @@ async function verifyBoundedBackpressure(): Promise<void> {
       registry.settleResult("key-slow", {
         id: dispatch.id,
         ok: true,
-        output: "done",
+        content: [{ type: "text", text: "done" }],
       }),
       "the first backpressured write was accepted and can settle",
     );

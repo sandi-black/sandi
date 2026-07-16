@@ -230,13 +230,20 @@ export class ToolBroker {
     if (binding.identityId === undefined) {
       return {
         ok: true,
-        output:
-          "No connected desktops are addressable for this turn (its desktop link is not live).",
+        content: [
+          {
+            type: "text",
+            text: "No connected desktops are addressable for this turn (its desktop link is not live).",
+          },
+        ],
       };
     }
     const desktops = this.#registry.desktopsForIdentity(binding.identityId);
     if (desktops.length === 0) {
-      return { ok: true, output: "No connected desktops." };
+      return {
+        ok: true,
+        content: [{ type: "text", text: "No connected desktops." }],
+      };
     }
     const lines = desktops.map((desktop) => {
       const current = desktop.key === binding.key ? "  (current)" : "";
@@ -248,7 +255,7 @@ export class ToolBroker {
       "",
       "Pass an id or name as the `desktop` argument to local_list_monitors, local_list_windows, or local_screenshot. Omit it to use the current desktop.",
     ].join("\n");
-    return { ok: true, output };
+    return { ok: true, content: [{ type: "text", text: output }] };
   }
 
   // Resolves a `desktop` selector to a connected desktop of the binding's
@@ -412,7 +419,7 @@ export class ToolBroker {
       if (!target.ok) {
         sendJson(response, 200, {
           ok: false,
-          output: "",
+          content: [],
           error: target.error,
         });
         return;

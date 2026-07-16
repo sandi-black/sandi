@@ -25,11 +25,14 @@ publish:
   owner: sandi-black
   repo: sandi
 
-# electron-vite bundles every runtime dependency into out/, so the packaged
-# app ships only those bundles; node_modules stays out of the artifact.
+# Electron Vite bundles most runtime dependencies into out/. Dependencies left
+# external by the main build remain declared in package.json and are collected
+# by electron-builder.
 files:
   - out/**
-  - "!node_modules/**"
+extraResources:
+  - from: build/mcp
+    to: mcp
 asar: true
 npmRebuild: false
 
@@ -42,6 +45,7 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  include: installer.nsh
   shortcutName: Sandi
   artifactName: ${productName}-${version}-setup.${ext}
 

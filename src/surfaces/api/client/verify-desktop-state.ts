@@ -9,7 +9,15 @@ import { verifyWindowEnumerationBoundary } from "@/surfaces/api/client/verify-wi
 import {
   DeviceImageSchema,
   LocalScreenshotParamsSchema,
+  type ToolCallOutcome,
 } from "@/surfaces/api/devices/protocol";
+
+function text(outcome: ToolCallOutcome): string {
+  return outcome.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+}
 
 // The desktop state tools are Windows-only and reach the real display, so this
 // check is platform-aware: on Windows it exercises the live enumeration and
@@ -91,7 +99,7 @@ async function verifyOnWindows(): Promise<void> {
   const monitors = await listMonitors();
   assert(monitors.ok, `list monitors should succeed: ${monitors.error ?? ""}`);
   assert(
-    monitors.output.includes("Monitors ("),
+    text(monitors).includes("Monitors ("),
     "the monitor listing names how many monitors were found",
   );
   console.log("ok list monitors enumerates the attached displays");
@@ -99,7 +107,7 @@ async function verifyOnWindows(): Promise<void> {
   const windows = await listWindows();
   assert(windows.ok, `list windows should succeed: ${windows.error ?? ""}`);
   const parsedWindows = WindowEnumerationResultSchema.safeParse(
-    JSON.parse(windows.output),
+    JSON.parse(text(windows)),
   );
   assert(
     parsedWindows.success,
@@ -130,22 +138,23 @@ async function verifyOnWindows(): Promise<void> {
     );
     return;
   }
+  const image = shot.content.find((block) => block.type === "image");
   assert(
-    shot.image !== undefined,
+    image !== undefined,
     "a successful screenshot carries an image payload",
   );
   assertEqual(
-    shot.image?.mimeType,
+    image?.mimeType,
     "image/jpeg",
     "the screenshot is encoded as JPEG",
   );
-  const bytes = Buffer.from(shot.image?.dataBase64 ?? "", "base64");
+  const bytes = Buffer.from(image?.dataBase64 ?? "", "base64");
   assert(
     bytes.length > 2 && bytes[0] === 0xff && bytes[1] === 0xd8,
     "the screenshot bytes begin with the JPEG magic number",
   );
   assert(
-    shot.output.includes("scaled to") && shot.output.includes("640"),
+    text(shot).includes("scaled to") && text(shot).includes("640"),
     "the screenshot is downscaled to the requested longest edge",
   );
   console.log("ok screenshot captures and downscales the primary monitor");

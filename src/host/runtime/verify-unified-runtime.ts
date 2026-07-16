@@ -37,6 +37,10 @@ function verifyEverySurfaceIsExposed(): void {
   );
   assert(typeof runtime.todo === "object", "todo helpers are exposed");
   assert(typeof runtime.maps === "object", "maps helpers are exposed");
+  assert(
+    typeof runtime.desktopMcp?.call === "function",
+    "desktopMcp helpers are exposed",
+  );
 }
 
 // On a turn that did not originate on Discord there is no current channel, so a

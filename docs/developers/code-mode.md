@@ -15,6 +15,35 @@ they are available in the active tool list. The old Exa-backed `web` runtime
 export was removed; `./sandi/runtime.ts` now focuses on Sandi-owned runtime
 helpers such as Discord, events, reminders, maps, and todo state.
 
+## Desktop MCP composition
+
+Desktop-backed turns expose the same MCP operations as the fixed Pi tools
+through `desktopMcp`. Use this when discovery and several dependent calls belong
+in one code-mode run:
+
+```ts
+import { desktopMcp } from "./sandi/runtime.ts";
+
+const matches = await desktopMcp.search({ query: "active window" });
+console.log(JSON.stringify(matches.structuredContent, null, 2));
+
+// Use an exact pair returned by search.
+const serverId = "configured-server";
+const toolName = "exact-tool-name";
+const description = await desktopMcp.describe({ serverId, toolName });
+const result = await desktopMcp.call({
+  serverId,
+  toolName,
+  arguments: {},
+});
+console.log(JSON.stringify({ description, result }, null, 2));
+```
+
+The runtime uses the current turn's broker ticket, so it is unavailable when no
+desktop was leased. Pass `desktop` to any operation when an identity has several
+connected machines. Persistent changes are also available through
+`desktopMcp.configure(...)` and are applied by the desktop host.
+
 ## Output conventions
 
 There are three separate output channels:

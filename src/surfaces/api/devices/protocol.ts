@@ -1,9 +1,12 @@
 import { z } from "zod/v4";
 import {
-  type DesktopFileAttachment,
   DesktopFileAttachmentSchema,
   DesktopFileTransferParamsSchema,
 } from "@/surfaces/api/devices/desktop-file-transfer";
+import {
+  LocalMcpConfigureParamsSchema,
+  LocalMcpParamsSchema,
+} from "@/surfaces/api/devices/mcp-protocol";
 import { MAX_LOCAL_GREP_PATTERN_CHARS } from "@/surfaces/api/devices/search-limits";
 
 export const MAX_LOCAL_BASH_TIMEOUT_MS = 600_000;
@@ -161,6 +164,11 @@ export const BrokerCallSchema = z.discriminatedUnion("tool", [
     tool: z.literal("local_transfer_file"),
     params: DesktopFileTransferParamsSchema,
   }),
+  z.object({ tool: z.literal("local_mcp"), params: LocalMcpParamsSchema }),
+  z.object({
+    tool: z.literal("local_mcp_configure"),
+    params: LocalMcpConfigureParamsSchema,
+  }),
 ]);
 export type BrokerCall = z.infer<typeof BrokerCallSchema>;
 
@@ -190,7 +198,11 @@ export const ToolDispatchEnvelopeSchema = z.object({ id: z.string().min(1) });
 // the decoded bytes carry the magic number for the declared type. A result that
 // fails any of these is rejected at the boundary rather than carried as a typed
 // image that only fails later when mapped to a model image block.
-export const SUPPORTED_IMAGE_MIME_TYPES = ["image/jpeg", "image/png"];
+export const SUPPORTED_IMAGE_MIME_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+];
 
 // V8's regexp engine can overflow its stack on multi-megabyte repeated
 // patterns. Decode and round-trip instead: this stays linear, rejects ignored
@@ -247,12 +259,19 @@ export function imageBytesMatchMime(
       bytes[7] === 0x0a
     );
   }
+  if (mimeType === "image/webp") {
+    return (
+      bytes.length >= 12 &&
+      bytes.subarray(0, 4).toString("ascii") === "RIFF" &&
+      bytes.subarray(8, 12).toString("ascii") === "WEBP"
+    );
+  }
   return false;
 }
 
 export const DeviceImageSchema = z
   .object({
-    mimeType: z.enum(["image/jpeg", "image/png"]),
+    mimeType: z.enum(["image/jpeg", "image/png", "image/webp"]),
     dataBase64: z
       .string()
       .refine(isCanonicalBase64, "must be canonical base64"),
@@ -262,6 +281,51 @@ export const DeviceImageSchema = z
     path: ["dataBase64"],
   });
 export type DeviceImage = z.infer<typeof DeviceImageSchema>;
+
+export const MAX_DEVICE_CONTENT_BLOCKS = 32;
+export const MAX_DEVICE_TEXT_CHARS = 100_000;
+export const MAX_DEVICE_IMAGE_BASE64_CHARS = 6 * 1024 * 1024;
+export const MAX_DEVICE_ERROR_CHARS = 10_000;
+
+export const DeviceContentSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("text"),
+    text: z.string(),
+  }),
+  DeviceImageSchema.extend({ type: z.literal("image") }),
+]);
+export type DeviceContent = z.infer<typeof DeviceContentSchema>;
+
+export const DeviceContentListSchema = z
+  .array(DeviceContentSchema)
+  .max(MAX_DEVICE_CONTENT_BLOCKS)
+  .superRefine((content, context) => {
+    let textChars = 0;
+    let imageChars = 0;
+    for (const block of content) {
+      if (block.type === "text") textChars += block.text.length;
+      else imageChars += block.dataBase64.length;
+    }
+    if (textChars > MAX_DEVICE_TEXT_CHARS) {
+      context.addIssue({
+        code: "custom",
+        message: `aggregate text exceeds ${MAX_DEVICE_TEXT_CHARS} characters`,
+      });
+    }
+    if (imageChars > MAX_DEVICE_IMAGE_BASE64_CHARS) {
+      context.addIssue({
+        code: "custom",
+        message: `aggregate image data exceeds ${MAX_DEVICE_IMAGE_BASE64_CHARS} base64 characters`,
+      });
+    }
+  });
+
+const StructuredContentSchema = z
+  .record(z.string(), z.unknown())
+  .refine(
+    (value) => Buffer.byteLength(JSON.stringify(value), "utf8") <= 1_048_576,
+    "structured content exceeds 1 MiB",
+  );
 
 // What the desktop POSTs back once it has run the call. `ok` is the tool's own
 // success (a shell command exiting non-zero is still `ok: true` with the exit
@@ -273,22 +337,18 @@ export type DeviceImage = z.infer<typeof DeviceImageSchema>;
 export const DeviceResultSchema = z.object({
   id: z.string().min(1),
   ok: z.boolean(),
-  output: z.string(),
-  error: z.string().optional(),
-  image: DeviceImageSchema.optional(),
+  content: DeviceContentListSchema,
+  error: z.string().max(MAX_DEVICE_ERROR_CHARS).optional(),
+  isError: z.boolean().optional(),
+  structuredContent: StructuredContentSchema.optional(),
   attachment: DesktopFileAttachmentSchema.optional(),
 });
 export type DeviceResult = z.infer<typeof DeviceResultSchema>;
 
 // The broker's reply to the pi child's /call: the result fields without the
 // correlation id (the HTTP response already pairs with the request).
-export type ToolCallOutcome = {
-  ok: boolean;
-  output: string;
-  error?: string;
-  image?: DeviceImage;
-  attachment?: DesktopFileAttachment;
-};
+export const ToolCallOutcomeSchema = DeviceResultSchema.omit({ id: true });
+export type ToolCallOutcome = z.infer<typeof ToolCallOutcomeSchema>;
 
 // SSE event name for a dispatched tool call. Heartbeats are sent as SSE comment
 // lines (": ping") which carry no event and are ignored by the client parser.

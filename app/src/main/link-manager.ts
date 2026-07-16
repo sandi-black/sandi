@@ -4,7 +4,10 @@ import {
   desktopConfigPath,
   loadDesktopCredentials,
 } from "@sandi-server/surfaces/api/client/credentials";
-import { runDesktopClient } from "@sandi-server/surfaces/api/client/desktop-client";
+import {
+  type DesktopToolExecutor,
+  runDesktopClient,
+} from "@sandi-server/surfaces/api/client/desktop-client";
 import type {
   ResponseAttachment,
   ResponseChunk,
@@ -36,6 +39,7 @@ export function createLinkManager(input: {
   events: LinkManagerEvents;
   loadCredentials?: () => ReturnType<typeof loadDesktopCredentials>;
   runClient?: typeof runDesktopClient;
+  executeTool?: DesktopToolExecutor;
 }): LinkManager {
   const loadCredentials =
     input.loadCredentials ??
@@ -90,6 +94,9 @@ export function createLinkManager(input: {
           input.events.onResponseAttachment(attachment);
         }
       },
+      ...(input.executeTool !== undefined
+        ? { executeTool: input.executeTool }
+        : {}),
     });
   };
 

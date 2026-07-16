@@ -7,6 +7,8 @@ dist/
 app/out/
 app/release/
 app/build/icons/
+app/build/mcp/
+app/build/mcp-cache/
 
 # Runtime state. Keep directory placeholders and checked-in builtin skills.
 data/**

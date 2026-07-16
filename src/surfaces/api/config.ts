@@ -65,6 +65,7 @@ export function loadApiAppConfig(): ApiAppConfig {
       extensionPaths: [
         ...core.pi.extensionPaths,
         apiLocalExecExtensionPath(),
+        apiLocalMcpExtensionPath(),
         apiResponseStreamExtensionPath(),
         apiAttachToReplyExtensionPath(),
         apiAttachDesktopFileToDiscordExtensionPath(),
@@ -78,6 +79,13 @@ function apiLocalExecExtensionPath(): string {
   return resolve(
     readEnv(["SANDI_PI_LOCAL_EXEC_EXTENSION"]) ??
       "src/surfaces/api/pi-extension/local-exec-tools.ts",
+  );
+}
+
+function apiLocalMcpExtensionPath(): string {
+  return resolve(
+    readEnv(["SANDI_PI_LOCAL_MCP_EXTENSION"]) ??
+      "src/surfaces/api/pi-extension/local-mcp-tools.ts",
   );
 }
 

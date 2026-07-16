@@ -11,6 +11,7 @@
 // resolves the tsconfig path alias against the repo, so `@/` imports are fine
 // here (unlike pi extensions, which the pi CLI loads without the alias).
 export * as maps from "@/lib/runtime/sandi/maps";
+export { desktopMcp } from "@/surfaces/api/runtime/desktop-mcp";
 export * as discord from "@/surfaces/discord/runtime/discord";
 export * as events from "@/surfaces/discord/runtime/events";
 export * as reminders from "@/surfaces/discord/runtime/reminders";

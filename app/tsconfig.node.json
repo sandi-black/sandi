@@ -2,7 +2,12 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ESNext"],
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "@/*": ["../src/*"],
+      "@sandi-server/*": ["../src/*"],
+      "@shared/*": ["./src/shared/*"]
+    }
   },
   "include": ["electron.vite.config.ts", "scripts/**/*"],
   "exclude": ["node_modules"]

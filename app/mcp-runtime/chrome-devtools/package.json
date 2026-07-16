@@ -1,0 +1,9 @@
+{
+  "name": "sandi-bundled-chrome-devtools-mcp",
+  "private": true,
+  "version": "1.0.0",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "chrome-devtools-mcp": "1.6.0"
+  }
+}

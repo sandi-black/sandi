@@ -1,7 +1,8 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 
 import { assertEqual } from "../../../lib/verification/harness";
-import { type Broker, callTool, readBroker } from "./local-exec-tools";
+import { callBrokerTool, toolResultErrorPatch } from "./pi-broker-tool";
+import { type Broker, readBroker } from "./tool-broker-client";
 
 // Drives the proxy extension's network helpers against a stand-in broker so the
 // routing and the ok/refused/unavailable mapping are exercised without a real
@@ -10,6 +11,7 @@ import { type Broker, callTool, readBroker } from "./local-exec-tools";
 type ServerMode =
   | { kind: "ok"; output: string }
   | { kind: "image"; output: string; mimeType: string; dataBase64: string }
+  | { kind: "mcp-error" }
   | { kind: "refuse"; error: string }
   | { kind: "status"; status: number }
   | { kind: "partial-close" }
@@ -19,7 +21,7 @@ async function verifyLocalExecTools(): Promise<void> {
   verifyReadBroker();
   await withBroker(async (broker, setMode, lastAuth) => {
     setMode({ kind: "ok", output: "hello from desktop" });
-    const result = await callTool(broker, "local_read", { path: "x" });
+    const result = await callBrokerTool(broker, "local_read", { path: "x" });
     assertEqual(
       textOf(result),
       "hello from desktop",
@@ -40,7 +42,7 @@ async function verifyLocalExecTools(): Promise<void> {
       mimeType: "image/jpeg",
       dataBase64: "/9j/4AAQ",
     });
-    const shot = await callTool(broker, "local_screenshot", {});
+    const shot = await callBrokerTool(broker, "local_screenshot", {});
     assertEqual(
       textOf(shot),
       "captured primary monitor",
@@ -59,9 +61,42 @@ async function verifyLocalExecTools(): Promise<void> {
     );
     console.log("ok an image outcome is returned as an image content block");
 
+    setMode({ kind: "mcp-error" });
+    const mcpError = await callBrokerTool(broker, "local_mcp", {
+      operation: "call",
+    });
+    assertEqual(
+      mcpError.content.map((block) => block.type).join(","),
+      "text,image,text",
+      "MCP result block order is preserved",
+    );
+    assertEqual(
+      textOf(mcpError),
+      "first\nlast",
+      "all MCP text blocks are preserved",
+    );
+    assertEqual(
+      imageOf(mcpError)?.mimeType,
+      "image/webp",
+      "MCP WebP content reaches Pi",
+    );
+    assertEqual(
+      JSON.stringify(mcpError.details["structuredContent"]),
+      JSON.stringify({ activeWindow: "Calculator" }),
+      "MCP structured content reaches Pi details",
+    );
+    assertEqual(
+      toolResultErrorPatch(mcpError.details)?.isError,
+      true,
+      "MCP tool errors reach Pi's tool-result error channel",
+    );
+    console.log(
+      "ok multi-block MCP errors preserve content, structure, and error status",
+    );
+
     setMode({ kind: "refuse", error: "permission denied" });
     await assertThrows(
-      () => callTool(broker, "local_bash", { command: "x" }),
+      () => callBrokerTool(broker, "local_bash", { command: "x" }),
       "permission denied",
       "a refused outcome throws with its error",
     );
@@ -69,7 +104,7 @@ async function verifyLocalExecTools(): Promise<void> {
 
     setMode({ kind: "status", status: 503 });
     await assertThrows(
-      () => callTool(broker, "local_read", { path: "x" }),
+      () => callBrokerTool(broker, "local_read", { path: "x" }),
       "not connected",
       "a 503 throws a device-unavailable error",
     );
@@ -77,7 +112,7 @@ async function verifyLocalExecTools(): Promise<void> {
 
     setMode({ kind: "status", status: 500 });
     await assertThrows(
-      () => callTool(broker, "local_read", { path: "x" }),
+      () => callBrokerTool(broker, "local_read", { path: "x" }),
       "status 500",
       "an unexpected status throws with the status",
     );
@@ -87,7 +122,7 @@ async function verifyLocalExecTools(): Promise<void> {
     await assertThrows(
       () =>
         withDeadline(
-          callTool(broker, "local_read", { path: "x" }),
+          callBrokerTool(broker, "local_read", { path: "x" }),
           "partial broker response did not settle",
         ),
       "before completion",
@@ -97,7 +132,7 @@ async function verifyLocalExecTools(): Promise<void> {
 
     setMode({ kind: "oversized" });
     await assertThrows(
-      () => callTool(broker, "local_read", { path: "x" }),
+      () => callBrokerTool(broker, "local_read", { path: "x" }),
       "exceeded 8 MiB",
       "an oversized broker response is rejected from its declared length",
     );
@@ -123,7 +158,7 @@ async function verifyAbortSignal(): Promise<void> {
   });
   const url = await listen(server);
   const controller = new AbortController();
-  const call = callTool(
+  const call = callBrokerTool(
     { url, token: "broker-token" },
     "local_read",
     { path: "x" },
@@ -220,15 +255,43 @@ async function withBroker(
     request.on("data", () => {});
     request.on("end", () => {
       if (mode.kind === "ok") {
-        respond(response, 200, { ok: true, output: mode.output });
+        respond(response, 200, {
+          ok: true,
+          content: [{ type: "text", text: mode.output }],
+        });
       } else if (mode.kind === "image") {
         respond(response, 200, {
           ok: true,
-          output: mode.output,
-          image: { mimeType: mode.mimeType, dataBase64: mode.dataBase64 },
+          content: [
+            { type: "text", text: mode.output },
+            {
+              type: "image",
+              mimeType: mode.mimeType,
+              dataBase64: mode.dataBase64,
+            },
+          ],
+        });
+      } else if (mode.kind === "mcp-error") {
+        respond(response, 200, {
+          ok: true,
+          content: [
+            { type: "text", text: "first" },
+            {
+              type: "image",
+              mimeType: "image/webp",
+              dataBase64: "UklGRgQAAABXRUJQ",
+            },
+            { type: "text", text: "last" },
+          ],
+          isError: true,
+          structuredContent: { activeWindow: "Calculator" },
         });
       } else if (mode.kind === "refuse") {
-        respond(response, 200, { ok: false, output: "", error: mode.error });
+        respond(response, 200, {
+          ok: false,
+          content: [],
+          error: mode.error,
+        });
       } else if (mode.kind === "status") {
         respond(response, mode.status, { error: "broker_error" });
       } else if (mode.kind === "partial-close") {
@@ -284,10 +347,11 @@ function respond(
 
 function textOf(result: {
   content: ReadonlyArray<{ type: string; text?: string }>;
-}): string | undefined {
-  const first = result.content[0];
-  if (first && first.type === "text") return first.text;
-  return undefined;
+}): string {
+  return result.content
+    .filter((item) => item.type === "text" && typeof item.text === "string")
+    .map((item) => item.text)
+    .join("\n");
 }
 
 function imageOf(result: {

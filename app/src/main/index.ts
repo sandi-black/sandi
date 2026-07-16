@@ -33,6 +33,10 @@ import {
 import { requireIpcOwner } from "./ipc-owner";
 import { ReplyAttachmentSchema } from "./ipc-schemas";
 import { createLinkManager } from "./link-manager";
+import { createBundledMcpCommandRegistry } from "./mcp/bundled-command-registry";
+import { createMcpHost } from "./mcp/mcp-host";
+import { createDesktopToolExecutor } from "./mcp/tool-executor";
+import { installPackagedSmokeExit } from "./packaged-smoke-exit";
 import { createPetWindow } from "./pet-window";
 import { createSettingsStore } from "./settings-store";
 import { createTranscriptStore } from "./transcript-store";
@@ -83,6 +87,7 @@ async function main(): Promise<void> {
   await app.whenReady();
   installRendererProtocols();
   installBrowserSessionPolicy(session.defaultSession);
+  installPackagedSmokeExit(app);
 
   let quitting = false;
   app.on("before-quit", () => {
@@ -123,6 +128,14 @@ async function main(): Promise<void> {
     // chat is hidden (which is also every wander tick, since wander is gated
     // off whenever the chat is open).
     onMove: () => chat.follow(pet.window.getBounds()),
+  });
+  const bundledMcpCommands = createBundledMcpCommandRegistry({
+    resourcesRoot: process.resourcesPath,
+    userDataDir: userData,
+  });
+  const mcpHost = createMcpHost({
+    userDataDir: userData,
+    resolveBundled: bundledMcpCommands.resolve,
   });
 
   // Shared by the pet's own open gesture and the tray's: interrupt both
@@ -216,6 +229,7 @@ async function main(): Promise<void> {
     // Sandi's relative tool paths resolve against the home directory; her
     // reach is the human's own, so their home is the natural anchor.
     rootDir: app.getPath("home"),
+    executeTool: createDesktopToolExecutor(mcpHost),
     events: {
       onStatus: (status: LinkStatus) => {
         tray?.setLinkStatus(status);
@@ -407,10 +421,13 @@ async function main(): Promise<void> {
 
   // Self-update: the installed app stages new releases in the background and
   // installs on quit (or from the tray); the portable exe can only point at
-  // the download page; a dev run gets no updater and no tray section.
+  // the download page; dev and packaged smoke runs get no updater or tray
+  // section. A smoke install must stay on the artifact under test instead of
+  // replacing itself from the production release feed during shutdown.
   const updateFlavor = detectUpdateFlavor();
   const updater: UpdaterController | undefined =
-    updateFlavor === "dev"
+    updateFlavor === "dev" ||
+    process.env["SANDI_PACKAGED_SMOKE_EXIT_FILE"] !== undefined
       ? undefined
       : createUpdater({
           flavor: updateFlavor,
@@ -470,32 +487,39 @@ async function main(): Promise<void> {
       message: "link loop failed; restart the app or re-pair",
     });
   });
-  // The transcript index write is debounced (see transcript-store.ts), so a
-  // quit landing inside that window must not drop it: defer the quit exactly
-  // once to flush it, then let the second before-quit through untouched. The
-  // flush races a timeout so a wedged disk write (network drive, AV lock)
-  // degrades to the old fire-and-forget behavior instead of an unquittable
-  // app.
-  let indexFlushed = false;
+  // Finish persistent transcript writes and desktop child cleanup before the
+  // second quit attempt. The existing timeout still guarantees that a wedged
+  // disk or child process cannot make the app unquittable.
+  let shutdownFinished = false;
   app.on("before-quit", (event) => {
     wanderScheduler.dispose();
     fidgetScheduler.dispose();
     updater?.dispose();
     link.stop();
-    if (indexFlushed) return;
+    if (shutdownFinished) return;
     event.preventDefault();
-    const flushTimeout = new Promise<void>((resolveTimeout) => {
+    const shutdownTimeout = new Promise<void>((resolveTimeout) => {
       setTimeout(() => {
-        console.error("transcript index flush timed out on quit");
+        console.error("desktop shutdown cleanup timed out on quit");
         resolveTimeout();
       }, 5_000).unref();
     });
-    Promise.race([store.flushIndex(), flushTimeout])
+    Promise.race([
+      Promise.all([
+        store.flushIndex().catch((error: unknown) => {
+          console.error("failed to flush the transcript index on quit", error);
+        }),
+        mcpHost.close().catch((error: unknown) => {
+          console.error("failed to close desktop MCP servers", error);
+        }),
+      ]).then(() => undefined),
+      shutdownTimeout,
+    ])
       .catch((error: unknown) => {
-        console.error("failed to flush the transcript index on quit", error);
+        console.error("failed to finish desktop shutdown cleanup", error);
       })
       .finally(() => {
-        indexFlushed = true;
+        shutdownFinished = true;
         app.quit();
       });
   });

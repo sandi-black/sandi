@@ -41,6 +41,7 @@ export type PetEvent =
   | { type: "background"; background: PetBackground }
   | { type: "one-shot"; row: PetOneShot }
   | { type: "animation-complete" }
+  | { type: "wake" }
   | { type: "wander"; direction: WanderDirection }
   | { type: "wander-stop" }
   | { type: "drag" }
@@ -54,6 +55,7 @@ const ONE_SHOT_ROWS: readonly PetRow[] = [
   "casting",
   "breathing",
   "dozing",
+  "waking",
 ];
 const WANDER_ROWS: readonly PetRow[] = ["walking-left", "walking-right"];
 
@@ -72,6 +74,10 @@ export function reducePetState(state: PetState, event: PetEvent): PetState {
       // new background takes over when they end. Anything else (including a
       // wander, which only exists while idle) yields to the new background
       // immediately.
+      if (state.row === "sleeping") {
+        if (event.background === "idle") return state;
+        return { row: "waking", background: event.background };
+      }
       if (isOneShotRow(state.row) || state.row === "dragging") {
         return { row: state.row, background: event.background };
       }
@@ -88,6 +94,12 @@ export function reducePetState(state: PetState, event: PetEvent): PetState {
       return { row: event.row, background: state.background };
     }
     case "animation-complete": {
+      if (state.row === "dozing") {
+        return {
+          row: state.background === "idle" ? "sleeping" : "waking",
+          background: state.background,
+        };
+      }
       if (isOneShotRow(state.row)) {
         return {
           row: BACKGROUND_ROW[state.background],
@@ -96,6 +108,10 @@ export function reducePetState(state: PetState, event: PetEvent): PetState {
       }
       // Looping rows do not complete; a stray completion event is a no-op.
       return state;
+    }
+    case "wake": {
+      if (state.row !== "sleeping") return state;
+      return { row: "waking", background: state.background };
     }
     case "wander": {
       // Wandering is the lowest-priority behavior: it may only start from a

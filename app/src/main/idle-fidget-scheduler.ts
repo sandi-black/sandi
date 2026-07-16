@@ -1,4 +1,4 @@
-import { PET_ROWS } from "@shared/animation-manifest";
+import { PET_ROWS, SLEEP_HOLD_RANGE_MS } from "@shared/animation-manifest";
 import type { PetDisplayEvent } from "@shared/ipc-contract";
 import type { PetOneShot } from "@shared/pet-state-machine";
 
@@ -39,11 +39,15 @@ export type IdleFidgetScheduler = {
   dispose(): void;
 };
 
-// How long a one-shot row holds the stage, from its own frame budget, so the
-// "busy" window matches what the renderer actually plays.
+// How long a one-shot row can hold the stage. Dozing includes the longest nap
+// and wake-up so wandering cannot move the window while she is still asleep.
 function rowDurationMs(row: PetOneShot): number {
   const spec = PET_ROWS[row];
-  return Math.ceil((spec.frames / spec.fps) * 1000);
+  const animationMs = Math.ceil((spec.frames / spec.fps) * 1000);
+  if (row !== "dozing") return animationMs;
+  const waking = PET_ROWS.waking;
+  const wakingMs = Math.ceil((waking.frames / waking.fps) * 1000);
+  return animationMs + SLEEP_HOLD_RANGE_MS[1] + wakingMs;
 }
 
 const DEFAULTS: Required<IdleFidgetOptions> = {

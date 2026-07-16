@@ -37,6 +37,9 @@ import {
 
 export type McpConfigChange = LocalMcpConfigureParams;
 export type BundledMcpCommand = {
+  id?: string;
+  version?: string;
+  manifestSha256?: string;
   executable: string;
   argsPrefix: string[];
   cwd?: string;
@@ -74,7 +77,9 @@ type ConnectionEntry = {
 
 export function createMcpHost(input: {
   userDataDir: string;
-  resolveBundled?: (id: string) => BundledMcpCommand | undefined;
+  resolveBundled?: (
+    id: string,
+  ) => BundledMcpCommand | undefined | Promise<BundledMcpCommand | undefined>;
   configStore?: McpConfigStore;
   catalogStore?: McpCatalogStore;
 }): McpHost {
@@ -288,7 +293,9 @@ export function createMcpHost(input: {
     );
   };
 
-  const commandFor = (config: DesktopMcpServerConfig): ResolvedMcpCommand => {
+  const commandFor = async (
+    config: DesktopMcpServerConfig,
+  ): Promise<ResolvedMcpCommand> => {
     const inheritedEnv: Record<string, string> = {};
     for (const name of config.inheritEnv) {
       const value = process.env[name];
@@ -303,7 +310,7 @@ export function createMcpHost(input: {
         protectedValues: protectedEnvironmentValues(inheritedEnv),
       };
     }
-    const resolved = input.resolveBundled?.(config.command.id);
+    const resolved = await input.resolveBundled?.(config.command.id);
     if (!resolved) {
       throw new Error(
         `bundled MCP command ${config.command.id} is unavailable in this build`,
@@ -311,7 +318,7 @@ export function createMcpHost(input: {
     }
     return {
       ...resolved,
-      env: { ...resolved.env, ...inheritedEnv },
+      env: { ...inheritedEnv, ...resolved.env },
       protectedValues: protectedEnvironmentValues(inheritedEnv),
     };
   };
@@ -324,12 +331,12 @@ export function createMcpHost(input: {
       throw new Error(`desktop MCP server ${serverId} is not configured`);
     if (!config.enabled)
       throw new Error(`desktop MCP server ${serverId} is disabled`);
-    const command = commandFor(config);
-    const protectedValues = command.protectedValues;
     const token = randomUUID();
     const controller = new AbortController();
     connectionTokens.set(serverId, token);
     const promise = (async (): Promise<LiveConnection> => {
+      const command = await commandFor(config);
+      const protectedValues = command.protectedValues;
       const callMetadata = new Map<string, ToolCallMetadata>();
       const client = new Client(
         { name: "sandi-desktop", version: "0.1.0" },

@@ -30,6 +30,9 @@ publish:
 # by electron-builder.
 files:
   - out/**
+extraResources:
+  - from: build/mcp
+    to: mcp
 asar: true
 npmRebuild: false
 

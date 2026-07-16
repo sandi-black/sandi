@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 import { apiTokenEntry, ApiTokenStore } from "../../src/surfaces/api/auth/tokens";
 import { DeviceRegistry } from "../../src/surfaces/api/devices/device-registry";
@@ -15,9 +15,12 @@ import { callBroker } from "../../src/surfaces/api/pi-extension/tool-broker-clie
 import { createMcpCatalogStore } from "../src/main/mcp/catalog-store";
 import { createMcpConfigStore } from "../src/main/mcp/config-store";
 
-const appExe = resolve("release/win-unpacked/Sandi.exe");
+const packagedRoot = resolve(
+  process.env["SANDI_PACKAGED_APP_ROOT"] ?? "release/win-unpacked",
+);
+const appExe = join(packagedRoot, "Sandi.exe");
 const fixture = join(
-  resolve("release/win-unpacked/resources/app.asar"),
+  join(packagedRoot, "resources", "app.asar"),
   "out/main/mcp-fixture.js",
 );
 const root = mkdtempSync(join(tmpdir(), "sandi-packaged-app-mcp-"));
@@ -86,6 +89,12 @@ try {
   app = spawn(appExe, [`--user-data-dir=${userData}`], {
     env: {
       ...process.env,
+      PATH: join(process.env["SystemRoot"] ?? "C:\\Windows", "System32"),
+      HTTP_PROXY: "http://127.0.0.1:9",
+      HTTPS_PROXY: "http://127.0.0.1:9",
+      npm_config_offline: "true",
+      PIP_NO_INDEX: "1",
+      UV_OFFLINE: "1",
       SANDI_DESKTOP_CONFIG: credentialsPath,
       SANDI_MCP_FIXTURE_STATE: statePath,
     },
@@ -170,10 +179,102 @@ try {
     false,
     "packaged removal deletes the cached catalog",
   );
+
+  const chromeConfig = {
+    id: "packaged-chrome-mcp",
+    label: "Packaged Chrome DevTools MCP",
+    enabled: true,
+    command: { kind: "bundled" as const, id: "chrome-devtools-mcp" },
+    args: ["--headless"],
+    inheritEnv: ["PATH", "USERPROFILE", "TEMP", "HTTP_PROXY", "HTTPS_PROXY"],
+  };
+  assert.equal(
+    (
+      await callBroker(origin.ticket, "local_mcp_configure", {
+        operation: "upsert",
+        server: chromeConfig,
+      })
+    ).ok,
+    true,
+  );
+  const chromeStartup = await callBroker(origin.ticket, "local_mcp", {
+    operation: "call",
+    serverId: chromeConfig.id,
+    toolName: "missing_after_catalog_refresh",
+    arguments: {},
+  });
+  assert.equal(chromeStartup.ok, false);
+  assert.match(chromeStartup.error ?? "", /not in the cached catalog/);
+  const chromeSearch = await callBroker(origin.ticket, "local_mcp", {
+    operation: "search",
+    serverId: chromeConfig.id,
+    query: "navigate",
+  });
+  assert.match(textOf(chromeSearch), /navigate_page/);
+  assert.equal(
+    (
+      await callBroker(origin.ticket, "local_mcp_configure", {
+        operation: "remove",
+        serverId: chromeConfig.id,
+      })
+    ).ok,
+    true,
+  );
+
+  const bundledConfig = {
+    id: "packaged-windows-mcp",
+    label: "Packaged Windows-MCP",
+    enabled: true,
+    command: { kind: "bundled" as const, id: "windows-mcp" },
+    args: [],
+    inheritEnv: [
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "npm_config_offline",
+      "PIP_NO_INDEX",
+      "UV_OFFLINE",
+    ],
+  };
+  assert.equal(
+    (
+      await callBroker(origin.ticket, "local_mcp_configure", {
+        operation: "upsert",
+        server: bundledConfig,
+      })
+    ).ok,
+    true,
+  );
+  const bundledStartup = await callBroker(origin.ticket, "local_mcp", {
+    operation: "call",
+    serverId: bundledConfig.id,
+    toolName: "missing_after_catalog_refresh",
+    arguments: {},
+  });
+  assert.equal(bundledStartup.ok, false);
+  assert.match(bundledStartup.error ?? "", /not in the cached catalog/);
+  const bundledSearch = await callBroker(origin.ticket, "local_mcp", {
+    operation: "search",
+    serverId: bundledConfig.id,
+    query: "Snapshot",
+  });
+  assert.match(textOf(bundledSearch), /Snapshot/);
+  assert.equal(
+    (
+      await callBroker(origin.ticket, "local_mcp_configure", {
+        operation: "remove",
+        serverId: bundledConfig.id,
+      })
+    ).ok,
+    true,
+  );
   origin.revoke();
   console.log("packaged Electron MCP bridge smoke: ok");
 } finally {
-  app?.kill();
+  if (app?.pid !== undefined) {
+    spawnSync("taskkill.exe", ["/pid", String(app.pid), "/t", "/f"], {
+      stdio: "ignore",
+    });
+  }
   await waitForTermination(app);
   registry.closeAll();
   broker.stop();

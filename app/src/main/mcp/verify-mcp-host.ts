@@ -536,7 +536,10 @@ async function verifyBundledEnvironment(): Promise<void> {
         ? {
             executable: process.execPath,
             argsPrefix: [fixture],
-            env: { SANDI_MCP_FIXTURE_STATE: bundledState },
+            env: {
+              PATH: "bundled-path",
+              SANDI_MCP_FIXTURE_STATE: bundledState,
+            },
           }
         : undefined,
   });
@@ -546,7 +549,7 @@ async function verifyBundledEnvironment(): Promise<void> {
       ...config,
       command: { kind: "bundled", id: "fixture" },
       args: [],
-      inheritEnv: ["SANDI_MCP_FIXTURE_SECRET"],
+      inheritEnv: ["PATH", "SANDI_MCP_FIXTURE_SECRET"],
     },
   });
   const outcome = await mcp(host, {
@@ -559,6 +562,11 @@ async function verifyBundledEnvironment(): Promise<void> {
     outcome.structuredContent?.["secretPresent"],
     true,
     "bundled commands receive configured inherited variables",
+  );
+  assert.equal(
+    outcome.structuredContent?.["pathValue"],
+    "bundled-path",
+    "bundled commands preserve registry-owned environment variables",
   );
   await host.close();
   await waitFor(() =>

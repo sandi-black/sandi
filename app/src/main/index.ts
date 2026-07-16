@@ -33,6 +33,7 @@ import {
 import { requireIpcOwner } from "./ipc-owner";
 import { ReplyAttachmentSchema } from "./ipc-schemas";
 import { createLinkManager } from "./link-manager";
+import { createBundledMcpCommandRegistry } from "./mcp/bundled-command-registry";
 import { createMcpHost } from "./mcp/mcp-host";
 import { createDesktopToolExecutor } from "./mcp/tool-executor";
 import { createPetWindow } from "./pet-window";
@@ -126,7 +127,14 @@ async function main(): Promise<void> {
     // off whenever the chat is open).
     onMove: () => chat.follow(pet.window.getBounds()),
   });
-  const mcpHost = createMcpHost({ userDataDir: userData });
+  const bundledMcpCommands = createBundledMcpCommandRegistry({
+    resourcesRoot: process.resourcesPath,
+    userDataDir: userData,
+  });
+  const mcpHost = createMcpHost({
+    userDataDir: userData,
+    resolveBundled: bundledMcpCommands.resolve,
+  });
 
   // Shared by the pet's own open gesture and the tray's: interrupt both
   // ambient schedulers, clear the reply-alert marker, greet if this is the

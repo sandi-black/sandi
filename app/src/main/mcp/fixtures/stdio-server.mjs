@@ -44,6 +44,7 @@ const tools = () => [
           const: process.env["SANDI_MCP_FIXTURE_SECRET"] ?? "",
         },
         pathPresent: { type: "boolean" },
+        pathValue: { type: "string" },
         userProfilePresent: { type: "boolean" },
         unapprovedPresent: { type: "boolean" },
       },
@@ -52,6 +53,7 @@ const tools = () => [
         "secretPresent",
         "secretEcho",
         "pathPresent",
+        "pathValue",
         "userProfilePresent",
         "unapprovedPresent",
       ],
@@ -181,6 +183,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
         secretPresent: secret.length > 0,
         secretEcho: secret,
         pathPresent: process.env["PATH"] !== undefined,
+        pathValue: process.env["PATH"] ?? "",
         userProfilePresent: process.env["USERPROFILE"] !== undefined,
         unapprovedPresent:
           process.env["SANDI_MCP_FIXTURE_UNAPPROVED"] !== undefined,

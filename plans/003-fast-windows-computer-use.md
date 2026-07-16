@@ -60,7 +60,7 @@ multi-desktop behavior, browser profile choice, and why AutoIt is not in the
 baseline. Link it from the existing desktop and surfaces guides without
 duplicating the procedure.
 
-Through the packaged app, verify approval, the UI-only Windows tool catalog,
+Through the packaged app, verify configuration, the UI-only Windows tool catalog,
 native observation and input, Chrome page interaction, routing across a browser
 and an OS dialog, disabled-server behavior, and recovery after a desktop session
 change. Keep the app and server under the same ordinary desktop user and confirm

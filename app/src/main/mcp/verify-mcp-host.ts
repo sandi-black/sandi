@@ -30,13 +30,17 @@ const closeResistantFixture = join(
 );
 const dir = mkdtempSync(join(tmpdir(), "sandi-mcp-host-"));
 const statePath = join(dir, "fixture-state.log");
+const refreshFailureMarker = join(dir, "refresh-failure.marker");
 const secret = "fixture-secret-must-not-persist";
 const previousState = process.env["SANDI_MCP_FIXTURE_STATE"];
 const previousSecret = process.env["SANDI_MCP_FIXTURE_SECRET"];
 const previousUnapproved = process.env["SANDI_MCP_FIXTURE_UNAPPROVED"];
+const previousRefreshMarker =
+  process.env["SANDI_MCP_FIXTURE_REFRESH_FAILURE_MARKER"];
 process.env["SANDI_MCP_FIXTURE_STATE"] = statePath;
 process.env["SANDI_MCP_FIXTURE_SECRET"] = secret;
 process.env["SANDI_MCP_FIXTURE_UNAPPROVED"] = "must-not-reach-child";
+process.env["SANDI_MCP_FIXTURE_REFRESH_FAILURE_MARKER"] = refreshFailureMarker;
 
 const config = {
   id: "grace-fixture",
@@ -44,7 +48,11 @@ const config = {
   enabled: true,
   command: { kind: "external" as const, executable: process.execPath },
   args: [fixture],
-  inheritEnv: ["SANDI_MCP_FIXTURE_STATE", "SANDI_MCP_FIXTURE_SECRET"],
+  inheritEnv: [
+    "SANDI_MCP_FIXTURE_STATE",
+    "SANDI_MCP_FIXTURE_SECRET",
+    "SANDI_MCP_FIXTURE_REFRESH_FAILURE_MARKER",
+  ],
 };
 
 try {
@@ -54,6 +62,7 @@ try {
   restoreEnv("SANDI_MCP_FIXTURE_STATE", previousState);
   restoreEnv("SANDI_MCP_FIXTURE_SECRET", previousSecret);
   restoreEnv("SANDI_MCP_FIXTURE_UNAPPROVED", previousUnapproved);
+  restoreEnv("SANDI_MCP_FIXTURE_REFRESH_FAILURE_MARKER", previousRefreshMarker);
   rmSync(dir, { recursive: true, force: true });
 }
 
@@ -78,73 +87,38 @@ async function verifyHost(): Promise<void> {
   await verifyRetryableTransportClose();
   await verifyOversizedCachedCatalog();
   await verifyWindowsCommandScript();
-  const approvals: boolean[] = [false, true];
-  const changes: McpConfigChange[] = [];
-  let host = createMcpHost({
-    userDataDir: dir,
-    approve: async (change) => {
-      changes.push(change);
-      return approvals.shift() ?? true;
-    },
-  });
-
-  let releaseApproval: (() => void) | undefined;
-  const approvalGate = new Promise<void>((resolve) => {
-    releaseApproval = resolve;
-  });
+  let host = createMcpHost({ userDataDir: dir });
   const cancelledHost = createMcpHost({
     userDataDir: join(dir, "cancelled-config"),
-    approve: async () => {
-      await approvalGate;
-      return true;
-    },
   });
   const configController = new AbortController();
+  configController.abort(new Error("turn cancelled before configuration"));
   const cancelledChange = configure(
     cancelledHost,
     { operation: "upsert", server: config },
     configController.signal,
   );
-  configController.abort(new Error("turn cancelled during approval"));
-  releaseApproval?.();
   assert.equal(
     (await cancelledChange).ok,
     false,
-    "a cancelled approval cannot persist configuration",
+    "a cancelled turn cannot persist configuration",
   );
   assert.equal(
     existsSync(join(dir, "cancelled-config", "mcp-servers.json")),
     false,
-    "cancellation after approval leaves config untouched",
+    "cancellation leaves config untouched",
   );
   await cancelledHost.close();
-
-  const denied = await configure(host, {
-    operation: "upsert",
-    server: config,
-  });
-  assert.equal(denied.ok, false, "denied config is returned as a refusal");
-  assert.equal(existsSync(statePath), false, "denial starts no command");
-  assert.equal(
-    existsSync(join(dir, "mcp-servers.json")),
-    false,
-    "denial writes no config",
-  );
 
   const approved = await configure(host, {
     operation: "upsert",
     server: config,
   });
-  assert.equal(approved.ok, true, "approved config is saved");
+  assert.equal(approved.ok, true, "config is saved");
   assert.equal(
     existsSync(statePath),
     false,
-    "config remains lazy after approval",
-  );
-  assert.deepEqual(
-    changes.map((change) => change.operation),
-    ["upsert", "upsert"],
-    "approval receives the exact persistent operation",
+    "config remains lazy after persistence",
   );
   await host.close();
 
@@ -167,7 +141,7 @@ async function verifyHost(): Promise<void> {
       inputSchema: { type: "object" },
     })),
   ]);
-  host = createMcpHost({ userDataDir: dir, approve: async () => true });
+  host = createMcpHost({ userDataDir: dir });
   const cached = await mcp(host, {
     operation: "search",
     query: "cached",
@@ -235,7 +209,7 @@ async function verifyHost(): Promise<void> {
   assert.equal(
     first.structuredContent?.["secretPresent"],
     true,
-    "approved environment names are resolved on the desktop",
+    "configured environment names are resolved on the desktop",
   );
   assert.equal(
     first.structuredContent?.["secretEcho"],
@@ -245,7 +219,7 @@ async function verifyHost(): Promise<void> {
   assert.equal(
     first.structuredContent?.["unapprovedPresent"],
     false,
-    "an unapproved desktop variable is absent from the child environment",
+    "an uninherited desktop variable is absent from the child environment",
   );
   assert.match(text(second), /Grace/, "concurrent calls keep their own result");
   assert.equal(
@@ -289,6 +263,41 @@ async function verifyHost(): Promise<void> {
   );
   assert.match(secretError.error ?? "", /\[redacted\]/);
 
+  const armedRefreshFailure = await mcp(host, {
+    operation: "call",
+    serverId: config.id,
+    toolName: "fail_catalog_with_secret",
+    arguments: {},
+  });
+  assert.equal(
+    armedRefreshFailure.ok,
+    true,
+    "the catalog failure fixture arms",
+  );
+  const refreshFailure = await mcp(host, {
+    operation: "call",
+    serverId: config.id,
+    toolName: "echo",
+    arguments: { message: "unreachable" },
+  });
+  assert.equal(
+    refreshFailure.ok,
+    false,
+    "a repeated catalog failure is returned",
+  );
+  assert.equal(
+    (refreshFailure.error ?? "").includes(secret),
+    false,
+    "inherited values are redacted from catalog refresh errors",
+  );
+  assert.match(refreshFailure.error ?? "", /\[redacted\]/);
+  assert.equal(
+    readFileSync(refreshFailureMarker, "utf8"),
+    "3",
+    "the regression reaches the post-reconnect refresh failure",
+  );
+  rmSync(refreshFailureMarker, { force: true });
+
   const oversized = await mcp(host, {
     operation: "call",
     serverId: config.id,
@@ -313,6 +322,8 @@ async function verifyHost(): Promise<void> {
     "catalog pagination reaches page two",
   );
 
+  const startsBeforeCrash = countState("start");
+  const exitsBeforeCrash = countState("exit");
   await mcp(host, {
     operation: "call",
     serverId: config.id,
@@ -371,7 +382,7 @@ async function verifyHost(): Promise<void> {
     toolName: "crash",
     arguments: {},
   });
-  await waitFor(() => Promise.resolve(countState("exit") >= 1));
+  await waitFor(() => Promise.resolve(countState("exit") > exitsBeforeCrash));
   const reconnected = await mcp(host, {
     operation: "call",
     serverId: config.id,
@@ -383,14 +394,20 @@ async function verifyHost(): Promise<void> {
     true,
     "a later call reconnects after transport close",
   );
-  assert.equal(countState("start"), 2, "transport close creates one new child");
+  assert.equal(
+    countState("start"),
+    startsBeforeCrash + 1,
+    "transport close creates one new child",
+  );
 
+  const exitsBeforeDisable = countState("exit");
+  const startsBeforeEnable = countState("start");
   await configure(host, {
     operation: "set_enabled",
     serverId: config.id,
     enabled: false,
   });
-  await waitFor(() => Promise.resolve(countState("exit") >= 2));
+  await waitFor(() => Promise.resolve(countState("exit") > exitsBeforeDisable));
   const disabled = await mcp(host, {
     operation: "call",
     serverId: config.id,
@@ -410,9 +427,14 @@ async function verifyHost(): Promise<void> {
     toolName: "echo",
     arguments: { message: "enabled" },
   });
-  assert.equal(countState("start"), 3, "re-enabling remains lazy until call");
+  assert.equal(
+    countState("start"),
+    startsBeforeEnable + 1,
+    "re-enabling remains lazy until call",
+  );
+  const exitsBeforeReplace = countState("exit");
   await configure(host, { operation: "upsert", server: config });
-  await waitFor(() => Promise.resolve(countState("exit") >= 3));
+  await waitFor(() => Promise.resolve(countState("exit") > exitsBeforeReplace));
   await configure(host, { operation: "remove", serverId: config.id });
   assert.equal(
     existsSync(join(dir, "mcp-catalogs", `${config.id}.json`)),
@@ -438,7 +460,7 @@ async function verifyHost(): Promise<void> {
   );
   assert.equal(
     countState("start"),
-    3,
+    startsBeforeEnable + 1,
     "unavailable bundled id starts no child",
   );
 
@@ -482,7 +504,7 @@ async function verifyHost(): Promise<void> {
 
 async function verifyConcurrentConfig(): Promise<void> {
   const root = join(dir, "concurrent-config");
-  const host = createMcpHost({ userDataDir: root, approve: async () => true });
+  const host = createMcpHost({ userDataDir: root });
   await Promise.all([
     configure(host, {
       operation: "upsert",
@@ -499,7 +521,7 @@ async function verifyConcurrentConfig(): Promise<void> {
       .map((server) => server.id)
       .sort(),
     ["ada", "grace"],
-    "concurrent approved changes serialize without stale config writes",
+    "concurrent changes serialize without stale config writes",
   );
   await host.close();
 }
@@ -509,7 +531,6 @@ async function verifyBundledEnvironment(): Promise<void> {
   const bundledState = join(root, "state.log");
   const host = createMcpHost({
     userDataDir: root,
-    approve: async () => true,
     resolveBundled: (id) =>
       id === "fixture"
         ? {
@@ -537,7 +558,7 @@ async function verifyBundledEnvironment(): Promise<void> {
   assert.equal(
     outcome.structuredContent?.["secretPresent"],
     true,
-    "bundled commands receive approved inherited variables",
+    "bundled commands receive configured inherited variables",
   );
   await host.close();
   await waitFor(() =>
@@ -552,7 +573,7 @@ async function verifyRepeatedCursor(): Promise<void> {
   const previousStatePath = process.env["SANDI_MCP_FIXTURE_STATE"];
   process.env["SANDI_MCP_FIXTURE_REPEAT_CURSOR"] = "1";
   process.env["SANDI_MCP_FIXTURE_STATE"] = repeatedState;
-  const host = createMcpHost({ userDataDir: root, approve: async () => true });
+  const host = createMcpHost({ userDataDir: root });
   try {
     await configure(host, {
       operation: "upsert",
@@ -589,7 +610,7 @@ async function verifySharedConnectCancellation(): Promise<void> {
   const previousStatePath = process.env["SANDI_MCP_FIXTURE_STATE"];
   process.env["SANDI_MCP_FIXTURE_LIST_DELAY_MS"] = "100";
   process.env["SANDI_MCP_FIXTURE_STATE"] = connectionState;
-  const host = createMcpHost({ userDataDir: root, approve: async () => true });
+  const host = createMcpHost({ userDataDir: root });
   try {
     await configure(host, {
       operation: "upsert",
@@ -647,7 +668,7 @@ async function verifyPageLimit(): Promise<void> {
   const previousStatePath = process.env["SANDI_MCP_FIXTURE_STATE"];
   process.env["SANDI_MCP_FIXTURE_UNBOUNDED_PAGES"] = "1";
   process.env["SANDI_MCP_FIXTURE_STATE"] = pageState;
-  const host = createMcpHost({ userDataDir: root, approve: async () => true });
+  const host = createMcpHost({ userDataDir: root });
   try {
     await configure(host, {
       operation: "upsert",
@@ -684,7 +705,7 @@ async function verifyDisableDuringConnect(): Promise<void> {
   const previousStatePath = process.env["SANDI_MCP_FIXTURE_STATE"];
   process.env["SANDI_MCP_FIXTURE_LIST_DELAY_MS"] = "100";
   process.env["SANDI_MCP_FIXTURE_STATE"] = connectionState;
-  const host = createMcpHost({ userDataDir: root, approve: async () => true });
+  const host = createMcpHost({ userDataDir: root });
   try {
     await configure(host, {
       operation: "upsert",
@@ -739,7 +760,7 @@ async function verifySoleConnectCancellation(): Promise<void> {
   const previousStatePath = process.env["SANDI_MCP_FIXTURE_STATE"];
   process.env["SANDI_MCP_FIXTURE_LIST_DELAY_MS"] = "100";
   process.env["SANDI_MCP_FIXTURE_STATE"] = connectionState;
-  const host = createMcpHost({ userDataDir: root, approve: async () => true });
+  const host = createMcpHost({ userDataDir: root });
   try {
     await configure(host, {
       operation: "upsert",
@@ -801,7 +822,7 @@ async function verifyOversizedStdout(): Promise<void> {
   const stdoutState = join(root, "state.log");
   const previousStatePath = process.env["SANDI_MCP_FIXTURE_STATE"];
   process.env["SANDI_MCP_FIXTURE_STATE"] = stdoutState;
-  const host = createMcpHost({ userDataDir: root, approve: async () => true });
+  const host = createMcpHost({ userDataDir: root });
   try {
     await configure(host, {
       operation: "upsert",
@@ -857,7 +878,7 @@ async function verifyMalformedFrame(): Promise<void> {
   const malformedState = join(root, "state.log");
   const previousStatePath = process.env["SANDI_MCP_FIXTURE_STATE"];
   process.env["SANDI_MCP_FIXTURE_STATE"] = malformedState;
-  const host = createMcpHost({ userDataDir: root, approve: async () => true });
+  const host = createMcpHost({ userDataDir: root });
   try {
     await configure(host, {
       operation: "upsert",
@@ -949,7 +970,7 @@ async function verifyWindowsCommandScript(): Promise<void> {
   );
   const previousStatePath = process.env["SANDI_MCP_FIXTURE_STATE"];
   process.env["SANDI_MCP_FIXTURE_STATE"] = commandState;
-  const host = createMcpHost({ userDataDir: root, approve: async () => true });
+  const host = createMcpHost({ userDataDir: root });
   try {
     await configure(host, {
       operation: "upsert",

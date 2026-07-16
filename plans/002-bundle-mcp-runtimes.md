@@ -68,7 +68,7 @@ complete diff with fresh eyes, address findings, then commit the milestone.
 Add the staged tree to both Windows package targets and implement the real
 bundled-command registry behind Plan 001's resolver. The registry should expose
 stable IDs, versions, executable paths, fixed argument prefixes, fixed
-environment, and manifest identity for approval and diagnostics.
+environment, and manifest identity for diagnostics.
 
 Test resolution from relocated resource roots, missing and corrupt components,
 paths containing spaces, and startup with machine runtimes removed from PATH

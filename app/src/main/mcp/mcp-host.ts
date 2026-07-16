@@ -42,6 +42,9 @@ export type BundledMcpCommand = {
   cwd?: string;
   env?: Record<string, string>;
 };
+type ResolvedMcpCommand = BundledMcpCommand & {
+  protectedValues: string[];
+};
 export type McpHost = {
   execute(call: BrokerCall, signal: AbortSignal): Promise<ToolCallOutcome>;
   close(): Promise<void>;
@@ -71,7 +74,6 @@ type ConnectionEntry = {
 
 export function createMcpHost(input: {
   userDataDir: string;
-  approve(change: McpConfigChange): Promise<boolean>;
   resolveBundled?: (id: string) => BundledMcpCommand | undefined;
   configStore?: McpConfigStore;
   catalogStore?: McpCatalogStore;
@@ -286,7 +288,7 @@ export function createMcpHost(input: {
     );
   };
 
-  const commandFor = (config: DesktopMcpServerConfig): BundledMcpCommand => {
+  const commandFor = (config: DesktopMcpServerConfig): ResolvedMcpCommand => {
     const inheritedEnv: Record<string, string> = {};
     for (const name of config.inheritEnv) {
       const value = process.env[name];
@@ -298,6 +300,7 @@ export function createMcpHost(input: {
         argsPrefix: [],
         ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
         env: inheritedEnv,
+        protectedValues: protectedEnvironmentValues(inheritedEnv),
       };
     }
     const resolved = input.resolveBundled?.(config.command.id);
@@ -309,6 +312,7 @@ export function createMcpHost(input: {
     return {
       ...resolved,
       env: { ...resolved.env, ...inheritedEnv },
+      protectedValues: protectedEnvironmentValues(inheritedEnv),
     };
   };
 
@@ -321,7 +325,7 @@ export function createMcpHost(input: {
     if (!config.enabled)
       throw new Error(`desktop MCP server ${serverId} is disabled`);
     const command = commandFor(config);
-    const protectedValues = protectedEnvironmentValues(command.env ?? {});
+    const protectedValues = command.protectedValues;
     const token = randomUUID();
     const controller = new AbortController();
     connectionTokens.set(serverId, token);
@@ -435,9 +439,6 @@ export function createMcpHost(input: {
     change: LocalMcpConfigureParams,
     signal: AbortSignal,
   ): Promise<ToolCallOutcome> => {
-    if (!(await input.approve(change))) {
-      return { ok: false, content: [], error: "desktop MCP change was denied" };
-    }
     signal.throwIfAborted();
     return serializeConfig(async () => {
       signal.throwIfAborted();
@@ -508,16 +509,22 @@ export function createMcpHost(input: {
         if (current?.token === live.token) await closeServer(serverId);
       });
       const reconnected = await connect(serverId, signal);
-      return {
-        live: reconnected,
-        catalog: await refreshCatalog(
-          serverId,
-          reconnected.client,
-          reconnected.protectedValues,
-          reconnected.callMetadata,
-          signal,
-        ),
-      };
+      try {
+        return {
+          live: reconnected,
+          catalog: await refreshCatalog(
+            serverId,
+            reconnected.client,
+            reconnected.protectedValues,
+            reconnected.callMetadata,
+            signal,
+          ),
+        };
+      } catch (refreshError) {
+        throw new Error(
+          boundedError(refreshError, reconnected.protectedValues),
+        );
+      }
     }
   };
 

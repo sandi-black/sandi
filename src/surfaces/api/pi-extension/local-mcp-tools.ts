@@ -81,7 +81,7 @@ const localMcpConfigureParameters = Type.Union([
 
 export const LOCAL_MCP_TOOL_NAMES = ["local_mcp", "local_mcp_configure"];
 export const LOCAL_MCP_CONFIGURE_DESCRIPTION =
-  "Add, replace, enable, disable, or remove a desktop MCP server. The desktop app shows the exact persistent change and requires human approval before starting a command or saving it.";
+  "Add, replace, enable, disable, or remove a desktop MCP server through the authenticated desktop lease.";
 
 function localMcpTool(broker: NonNullable<ReturnType<typeof readBroker>>) {
   return defineTool({

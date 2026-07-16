@@ -26,14 +26,13 @@ Pi tool or sandi_js_run
 - `local_mcp` supports server status, cached catalog search, exact tool
   description, and exact `{ serverId, toolName }` calls.
 - `local_mcp_configure` supports adding, replacing, enabling, disabling, and
-  removing a server. The desktop user approves the exact persistent change
-  before a command is started or configuration is written.
+  removing a server through the authenticated desktop lease.
 - The same operations are available as `desktopMcp` from the code-mode runtime,
   so one `sandi_js_run` can make several dependent calls without another model
   turn between them.
 - Server configuration stores either an absolute external executable or a
-  stable bundled command ID. Environment variable names may be inherited after
-  approval, but their values stay on the desktop.
+  stable bundled command ID. Environment variable names may be inherited, but
+  their values stay on the desktop.
 - The Electron main process owns configuration, cached catalogs, stdio clients,
   subprocess cleanup, cancellation, and reconnect behavior. Device-link
   reconnects do not recreate healthy MCP processes.
@@ -75,9 +74,8 @@ clients across calls, and close them on disable, replacement, removal, transport
 failure, or app quit. Use a checked-in stdio fixture to test lifecycle behavior
 without depending on Chrome or Windows-MCP.
 
-Integrate configuration approval through the Electron dialog layer. The
-headless reference client should return a clear unsupported result for MCP
-operations because it has no approval UI or persistent host.
+The headless reference client should return a clear unsupported result for MCP
+operations because it has no persistent host.
 
 Verify the Pi extension, code-mode runtime, MCP host, link manager, application
 build, and relevant existing checks. Review the complete diff with fresh eyes,
@@ -85,12 +83,12 @@ address findings, then commit the milestone.
 
 ### 3. Document and smoke-test the bridge
 
-Document the operation path, ownership boundary, configuration approval,
+Document the operation path, ownership boundary, configuration behavior,
 catalog behavior, cancellation, code-mode usage, diagnostics, and cleanup in
 the existing developer guides. Keep runtime packaging details in Plan 002.
 
-Exercise the fixture through the packaged desktop app: deny and approve config,
-search and describe from cache, call from a desktop-backed turn, verify explicit
+Exercise the fixture through the packaged desktop app: configure it, search and
+describe from cache, call from a desktop-backed turn, verify explicit
 desktop selection when several are connected, and confirm disable and removal
 close the child and clean up state.
 
@@ -107,8 +105,7 @@ and commit.
   broker ticket and one live desktop client.
 - Catalog discovery is cached and bounded; a call starts only its selected
   server.
-- Configuration changes require approval before execution or persistence, and
-  secret values do not cross the broker or enter config, catalogs, or logs.
+- Secret values do not cross the broker or enter config, catalogs, or logs.
 - Cancellation reaches an in-flight MCP request, and an interrupted mutating
   call is not retried.
 - Existing local file, shell, state, screenshot, and transfer tools continue to
@@ -118,6 +115,6 @@ and commit.
 
 ## Review focus
 
-Review process ownership, approval-before-spawn, environment filtering,
-identity isolation, result bounds, cancellation, and cleanup. Keep MCP catalog
+Review process ownership, environment filtering, identity isolation, result
+bounds, cancellation, and cleanup. Keep MCP catalog
 text, schemas, stderr, and results classified as untrusted data.

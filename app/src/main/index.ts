@@ -33,7 +33,6 @@ import {
 import { requireIpcOwner } from "./ipc-owner";
 import { ReplyAttachmentSchema } from "./ipc-schemas";
 import { createLinkManager } from "./link-manager";
-import { approveMcpChange } from "./mcp/approval";
 import { createMcpHost } from "./mcp/mcp-host";
 import { createDesktopToolExecutor } from "./mcp/tool-executor";
 import { createPetWindow } from "./pet-window";
@@ -127,10 +126,7 @@ async function main(): Promise<void> {
     // off whenever the chat is open).
     onMove: () => chat.follow(pet.window.getBounds()),
   });
-  const mcpHost = createMcpHost({
-    userDataDir: userData,
-    approve: (change) => approveMcpChange(change, chat.window),
-  });
+  const mcpHost = createMcpHost({ userDataDir: userData });
 
   // Shared by the pet's own open gesture and the tray's: interrupt both
   // ambient schedulers, clear the reply-alert marker, greet if this is the

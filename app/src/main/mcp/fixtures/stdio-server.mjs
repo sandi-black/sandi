@@ -1,4 +1,9 @@
-import { appendFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -83,6 +88,11 @@ const tools = () => [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "fail_catalog_with_secret",
+    description: "Makes later catalog refreshes expose an inherited value.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "malformed_frame",
     description: "Writes malformed JSON to stdout.",
     inputSchema: { type: "object", properties: {} },
@@ -109,6 +119,17 @@ const tools = () => [
 ];
 
 server.setRequestHandler(ListToolsRequestSchema, async (request) => {
+  const failureMarker = process.env["SANDI_MCP_FIXTURE_REFRESH_FAILURE_MARKER"];
+  if (failureMarker && existsSync(failureMarker)) {
+    const attempt = Number.parseInt(readFileSync(failureMarker, "utf8"), 10);
+    writeFileSync(failureMarker, String(attempt + 1), "utf8");
+    // Fail the existing client's refresh, allow the reconnect's initialization
+    // refresh, then fail prepareCall's immediate post-reconnect refresh. This
+    // reaches the distinct error boundary that must redact with the new client.
+    if (attempt !== 1) {
+      throw new Error(process.env["SANDI_MCP_FIXTURE_SECRET"] ?? "missing");
+    }
+  }
   record("list");
   const listDelay = Number(process.env["SANDI_MCP_FIXTURE_LIST_DELAY_MS"] ?? 0);
   if (Number.isFinite(listDelay) && listDelay > 0) {
@@ -199,6 +220,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   }
   if (name === "secret_error") {
     throw new Error(process.env["SANDI_MCP_FIXTURE_SECRET"] ?? "missing");
+  }
+  if (name === "fail_catalog_with_secret") {
+    const failureMarker = process.env["SANDI_MCP_FIXTURE_REFRESH_FAILURE_MARKER"];
+    if (failureMarker) writeFileSync(failureMarker, "0", "utf8");
+    return { content: [{ type: "text", text: "armed" }] };
   }
   if (name === "malformed_frame") {
     process.stdout.write("{malformed MCP frame}\n");

@@ -6,7 +6,7 @@ then continue.
 
 | Plan | Outcome                                                        | Depends on | Status |
 | ---- | -------------------------------------------------------------- | ---------- | ------ |
-| 001  | Desktop-hosted MCP tools are available to every Sandi turn     | none       | TODO   |
+| 001  | Desktop-hosted MCP tools are available to every Sandi turn     | none       | DONE   |
 | 002  | Supported MCP runtimes and servers ship inside the Windows app | 001        | TODO   |
 | 003  | Sandi uses semantic Windows and browser automation by default  | 001, 002   | TODO   |
 
@@ -17,8 +17,8 @@ then continue.
   desktop lease.
 - Pi exposes a fixed MCP search, describe, call, and configuration surface.
   Code mode can compose the same operations within one turn.
-- Persistent server configuration is approved on the desktop before execution
-  or storage. Secret values stay on the desktop.
+- Persistent server configuration is managed through the authenticated desktop
+  lease. Secret values stay on the desktop.
 - Supported runtimes and curated servers are packaged with the Windows app and
   resolve through stable command IDs.
 - Native Windows UI uses Windows-MCP, page content uses Chrome DevTools MCP,

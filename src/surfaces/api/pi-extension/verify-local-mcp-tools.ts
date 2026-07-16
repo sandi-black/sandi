@@ -35,13 +35,11 @@ try {
   assertEqual(
     tools.localMcpConfigure.description,
     LOCAL_MCP_CONFIGURE_DESCRIPTION,
-    "the registered configuration tool uses the reviewed approval contract",
+    "the registered configuration tool uses the desktop lease contract",
   );
   assert(
-    LOCAL_MCP_CONFIGURE_DESCRIPTION.includes("exact persistent change") &&
-      LOCAL_MCP_CONFIGURE_DESCRIPTION.includes("human approval") &&
-      LOCAL_MCP_CONFIGURE_DESCRIPTION.includes("before starting"),
-    "the configuration tool tells Pi that desktop approval precedes execution and persistence",
+    LOCAL_MCP_CONFIGURE_DESCRIPTION.includes("authenticated desktop lease"),
+    "the configuration tool tells Pi where persistent changes execute",
   );
 
   const registered: string[] = [];

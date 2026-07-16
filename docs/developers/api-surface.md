@@ -290,6 +290,44 @@ when the human has several connected, rather than silently picking the most
 recently linked one. The lease carries an `originDevice` flag for this; the
 api-surface lease sets it, the cross-surface lease leaves it false.
 
+### Desktop-hosted MCP bridge
+
+Desktop-affine MCP servers use the same lease and device link as the other local
+tools. Pi exposes two fixed tools, `local_mcp` for discovery and calls and
+`local_mcp_configure` for persistent changes. Adding MCP servers does not add Pi
+tool definitions: Sandi searches a bounded cached catalog, describes an exact
+tool, then calls it by `{ serverId, toolName }`. The headless reference client
+refuses these operations because it has no persistent MCP host.
+
+The ownership path is:
+
+```text
+Pi tool or desktopMcp
+  -> per-turn loopback broker ticket
+  -> identity-scoped device link
+  -> Electron MCP host
+  -> desktop-local stdio server
+```
+
+Electron owns the server configuration, catalog snapshots, child processes,
+and MCP clients under its `userData` directory. An external command must be an
+absolute path; packaged servers use a stable bundled command id. Configuration
+stores environment variable names only. Inherited values are resolved on the
+desktop for each start, kept out of broker traffic and persistent catalogs, and
+redacted from results and errors.
+
+Every add, replacement, enable, disable, or removal is applied by the Electron
+host through the authenticated desktop lease. Configuration remains lazy: the
+first exact call starts the selected server and refreshes its complete
+paginated catalog. Search and describe read the cache without starting a child.
+Catalog-change notifications replace the snapshot after a bounded refresh.
+
+The Electron host retains healthy clients across turns and device-link
+reconnects. Disable, replacement, removal, transport failure, and app shutdown
+close the child. A turn cancellation reaches the MCP request through the broker
+and aborts the desktop operation; a failed mutating request is returned as a
+failure and is never retried automatically.
+
 ### Transport: SSE and a loopback broker
 
 Hands-local needs the server to call back into the desktop mid-turn. One tool

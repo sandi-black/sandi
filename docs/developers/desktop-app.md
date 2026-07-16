@@ -181,9 +181,10 @@ npm run package -w app
 ```
 
 electron-builder produces an NSIS installer and a portable exe under
-`app/release/`, per `app/electron-builder.yml`. electron-vite bundles every
-runtime dependency into `out/`, so the artifact ships no `node_modules`. The
-mac and linux blocks in the config are stubs: nothing in the app is
+`app/release/`, per `app/electron-builder.yml`. electron-vite bundles most
+runtime dependencies into `out/`; dependencies deliberately left external,
+currently `re2-wasm`, are collected by electron-builder under the packaged
+app's resources. The mac and linux blocks in the config are stubs: nothing in the app is
 Windows-only beyond the packaging targets, but only Windows is built and
 smoke-tested today.
 
@@ -239,6 +240,38 @@ Existing installs pick up new releases on their own. The moving parts:
 The artifacts being unsigned does not block any of this: electron-updater
 only enforces signature checks on Windows when the installed app itself is
 signed.
+
+## Desktop MCP host
+
+The app is the process owner for desktop-hosted MCP servers. The server-side
+route and tool contract are documented in
+[`api-surface.md`](api-surface.md#desktop-hosted-mcp-bridge); code-mode usage is
+in [`code-mode.md`](code-mode.md#desktop-mcp-composition).
+
+Persistent state lives under Electron's `userData` directory:
+
+- `mcp-servers.json` contains validated command ids or absolute executables,
+  arguments, working directories, enabled state, and inherited environment
+  variable names. It never contains inherited values.
+- `mcp-catalogs/<server-id>.json` contains the bounded redacted tool snapshot
+  used by search and describe. Replacing or removing a server deletes its
+  snapshot.
+
+`local_mcp` with `operation: "servers"` is the first diagnostic: it reports
+whether each catalog is cached, missing, or connecting and includes the latest
+bounded connection error. Tool-call logs contain the server id, tool name,
+duration, cancellation state, and error status; MCP stderr and result bodies are
+not logged. Corrupt config or catalog files are moved aside with a
+`.corrupt-<id>` suffix instead of being trusted.
+
+The host starts only the server named by an exact call. Healthy processes
+survive ordinary calls and device-link reconnects, while disable, replacement,
+removal, transport failure, and app quit close them. Run
+`npm run verify:packaged-mcp -w app` after changing this boundary. It builds an
+unpacked Windows app, launches its real Electron composition root, and drives
+configuration, cached discovery, a brokered call over the authenticated device
+link, multiple-desktop selection, disable, removal, and child cleanup. The
+source bridge smoke covers the same host and broker behavior without packaging.
 
 ## Manual smoke checklist
 

@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import type { LinkStatus } from "@shared/ipc-contract";
 
 import { createLinkManager } from "./link-manager";
-import type { DesktopClientOptions } from "@sandi-server/surfaces/api/client/desktop-client";
+import type {
+  DesktopClientOptions,
+  DesktopToolExecutor,
+} from "@sandi-server/surfaces/api/client/desktop-client";
 
 type ControlledRun = {
   options: DesktopClientOptions;
@@ -12,6 +15,10 @@ type ControlledRun = {
 async function main(): Promise<void> {
   const runs: ControlledRun[] = [];
   const statuses: LinkStatus[] = [];
+  const executeTool: DesktopToolExecutor = async () => ({
+    ok: true,
+    content: [],
+  });
   const manager = createLinkManager({
     rootDir: "C:\\Users\\Ada",
     events: {
@@ -25,6 +32,7 @@ async function main(): Promise<void> {
       identityId: "ada",
       deviceId: "analytical-engine",
     }),
+    executeTool,
     runClient: (options) =>
       new Promise<void>((resolve) => {
         runs.push({ options });
@@ -42,6 +50,11 @@ async function main(): Promise<void> {
   await waitFor(() => runs.length === 1);
   const first = runs[0];
   assert.ok(first);
+  assert.equal(
+    first.options.executeTool,
+    executeTool,
+    "the app link carries its composite desktop tool executor",
+  );
   first.options.onStatus?.("linked");
   assert.equal(manager.status().state, "linked");
 

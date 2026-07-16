@@ -24,9 +24,11 @@ export default defineConfig({
       },
     },
     build: {
-      // Bundle everything (server source and zod included) so the packaged app
-      // is self-contained and there is exactly one zod instance at runtime.
+      // Bundle server source and zod so there is one zod instance at runtime.
+      // re2-wasm ships a generated loader that Electron Vite corrupts while
+      // rewriting CommonJS; electron-builder carries the declared dependency.
       rollupOptions: {
+        external: ["re2-wasm"],
         output: { format: "es" },
       },
     },

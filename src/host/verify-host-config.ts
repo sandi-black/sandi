@@ -157,6 +157,12 @@ function verifyEverySurfaceSharesOnePiConfig(): void {
         ),
         "the shared pi config loads the hands-local proxy extension",
       );
+      assert(
+        config.api.pi.extensionPaths.some((path) =>
+          path.includes("local-mcp-tools"),
+        ),
+        "the shared pi config loads the fixed desktop MCP extension",
+      );
     },
   );
 }

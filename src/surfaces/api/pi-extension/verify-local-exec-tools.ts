@@ -1,12 +1,8 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 
 import { assertEqual } from "../../../lib/verification/harness";
-import {
-  type Broker,
-  callTool,
-  readBroker,
-  toolResultErrorPatch,
-} from "./local-exec-tools";
+import { callBrokerTool, toolResultErrorPatch } from "./pi-broker-tool";
+import { type Broker, readBroker } from "./tool-broker-client";
 
 // Drives the proxy extension's network helpers against a stand-in broker so the
 // routing and the ok/refused/unavailable mapping are exercised without a real
@@ -25,7 +21,7 @@ async function verifyLocalExecTools(): Promise<void> {
   verifyReadBroker();
   await withBroker(async (broker, setMode, lastAuth) => {
     setMode({ kind: "ok", output: "hello from desktop" });
-    const result = await callTool(broker, "local_read", { path: "x" });
+    const result = await callBrokerTool(broker, "local_read", { path: "x" });
     assertEqual(
       textOf(result),
       "hello from desktop",
@@ -46,7 +42,7 @@ async function verifyLocalExecTools(): Promise<void> {
       mimeType: "image/jpeg",
       dataBase64: "/9j/4AAQ",
     });
-    const shot = await callTool(broker, "local_screenshot", {});
+    const shot = await callBrokerTool(broker, "local_screenshot", {});
     assertEqual(
       textOf(shot),
       "captured primary monitor",
@@ -66,7 +62,7 @@ async function verifyLocalExecTools(): Promise<void> {
     console.log("ok an image outcome is returned as an image content block");
 
     setMode({ kind: "mcp-error" });
-    const mcpError = await callTool(broker, "local_mcp", {
+    const mcpError = await callBrokerTool(broker, "local_mcp", {
       operation: "call",
     });
     assertEqual(
@@ -100,7 +96,7 @@ async function verifyLocalExecTools(): Promise<void> {
 
     setMode({ kind: "refuse", error: "permission denied" });
     await assertThrows(
-      () => callTool(broker, "local_bash", { command: "x" }),
+      () => callBrokerTool(broker, "local_bash", { command: "x" }),
       "permission denied",
       "a refused outcome throws with its error",
     );
@@ -108,7 +104,7 @@ async function verifyLocalExecTools(): Promise<void> {
 
     setMode({ kind: "status", status: 503 });
     await assertThrows(
-      () => callTool(broker, "local_read", { path: "x" }),
+      () => callBrokerTool(broker, "local_read", { path: "x" }),
       "not connected",
       "a 503 throws a device-unavailable error",
     );
@@ -116,7 +112,7 @@ async function verifyLocalExecTools(): Promise<void> {
 
     setMode({ kind: "status", status: 500 });
     await assertThrows(
-      () => callTool(broker, "local_read", { path: "x" }),
+      () => callBrokerTool(broker, "local_read", { path: "x" }),
       "status 500",
       "an unexpected status throws with the status",
     );
@@ -126,7 +122,7 @@ async function verifyLocalExecTools(): Promise<void> {
     await assertThrows(
       () =>
         withDeadline(
-          callTool(broker, "local_read", { path: "x" }),
+          callBrokerTool(broker, "local_read", { path: "x" }),
           "partial broker response did not settle",
         ),
       "before completion",
@@ -136,7 +132,7 @@ async function verifyLocalExecTools(): Promise<void> {
 
     setMode({ kind: "oversized" });
     await assertThrows(
-      () => callTool(broker, "local_read", { path: "x" }),
+      () => callBrokerTool(broker, "local_read", { path: "x" }),
       "exceeded 8 MiB",
       "an oversized broker response is rejected from its declared length",
     );
@@ -162,7 +158,7 @@ async function verifyAbortSignal(): Promise<void> {
   });
   const url = await listen(server);
   const controller = new AbortController();
-  const call = callTool(
+  const call = callBrokerTool(
     { url, token: "broker-token" },
     "local_read",
     { path: "x" },

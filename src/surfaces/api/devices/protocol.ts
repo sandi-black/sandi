@@ -1,6 +1,5 @@
 import { z } from "zod/v4";
 import {
-  type DesktopFileAttachment,
   DesktopFileAttachmentSchema,
   DesktopFileTransferParamsSchema,
 } from "@/surfaces/api/devices/desktop-file-transfer";
@@ -286,6 +285,7 @@ export type DeviceImage = z.infer<typeof DeviceImageSchema>;
 export const MAX_DEVICE_CONTENT_BLOCKS = 32;
 export const MAX_DEVICE_TEXT_CHARS = 100_000;
 export const MAX_DEVICE_IMAGE_BASE64_CHARS = 6 * 1024 * 1024;
+export const MAX_DEVICE_ERROR_CHARS = 10_000;
 
 export const DeviceContentSchema = z.discriminatedUnion("type", [
   z.object({
@@ -338,7 +338,7 @@ export const DeviceResultSchema = z.object({
   id: z.string().min(1),
   ok: z.boolean(),
   content: DeviceContentListSchema,
-  error: z.string().optional(),
+  error: z.string().max(MAX_DEVICE_ERROR_CHARS).optional(),
   isError: z.boolean().optional(),
   structuredContent: StructuredContentSchema.optional(),
   attachment: DesktopFileAttachmentSchema.optional(),
@@ -347,14 +347,8 @@ export type DeviceResult = z.infer<typeof DeviceResultSchema>;
 
 // The broker's reply to the pi child's /call: the result fields without the
 // correlation id (the HTTP response already pairs with the request).
-export type ToolCallOutcome = {
-  ok: boolean;
-  content: DeviceContent[];
-  error?: string;
-  isError?: boolean;
-  structuredContent?: Record<string, unknown>;
-  attachment?: DesktopFileAttachment;
-};
+export const ToolCallOutcomeSchema = DeviceResultSchema.omit({ id: true });
+export type ToolCallOutcome = z.infer<typeof ToolCallOutcomeSchema>;
 
 // SSE event name for a dispatched tool call. Heartbeats are sent as SSE comment
 // lines (": ping") which carry no event and are ignored by the client parser.

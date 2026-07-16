@@ -7,6 +7,7 @@ import {
   BrokerCallSchema,
   DeviceResultSchema,
   MAX_DEVICE_CONTENT_BLOCKS,
+  MAX_DEVICE_ERROR_CHARS,
   MAX_DEVICE_IMAGE_BASE64_CHARS,
   MAX_DEVICE_TEXT_CHARS,
 } from "@/surfaces/api/devices/protocol";
@@ -93,6 +94,15 @@ function verifyDeviceProtocol(): void {
       structuredContent: [],
     }).success,
     "structured content must be a JSON object",
+  );
+  assert(
+    !DeviceResultSchema.safeParse({
+      id: "too-much-error",
+      ok: false,
+      content: [],
+      error: "x".repeat(MAX_DEVICE_ERROR_CHARS + 1),
+    }).success,
+    "broker error text is bounded",
   );
 
   const call = BrokerCallSchema.safeParse({

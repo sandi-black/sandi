@@ -57,7 +57,7 @@ export const LocalMcpParamsSchema = z.discriminatedUnion("operation", [
 ]);
 export type LocalMcpParams = z.infer<typeof LocalMcpParamsSchema>;
 
-const DesktopMcpServerConfigSchema = z.object({
+export const DesktopMcpServerConfigSchema = z.object({
   id: IdSchema,
   label: z.string().min(1).max(MAX_LABEL_CHARS),
   sourceUrl: z.url().max(2_048).optional(),

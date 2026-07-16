@@ -15,6 +15,9 @@
     "prebuild": "node scripts/build-icons.mjs",
     "build": "electron-vite build",
     "build:mcp-smoke": "node scripts/build-icons.mjs && electron-vite build --mode mcp-smoke",
+    "prepare:mcp-runtime": "node scripts/prepare-mcp-runtime.mjs",
+    "verify:mcp-runtime": "node scripts/verify-mcp-runtime.mjs",
+    "verify:mcp-runtime-scripts": "node scripts/verify-mcp-runtime-scripts.mjs",
     "package": "npm run build && electron-builder --win",
     "verify:packaged-mcp": "npm run build:mcp-smoke && electron-builder --win --dir --publish never && tsx --tsconfig tsconfig.node.json scripts/verify-packaged-app-mcp.ts",
     "typecheck": "tsc --noEmit -p tsconfig.main.json && tsc --noEmit -p tsconfig.renderer.json && tsc --noEmit -p tsconfig.node.json",
@@ -40,7 +43,7 @@
     "verify:turn-pipeline": "tsx --tsconfig tsconfig.main.json src/main/verify-turn-pipeline.ts",
     "verify:auto-titler": "tsx --tsconfig tsconfig.main.json src/main/verify-auto-titler.ts",
     "verify:update-state": "tsx --tsconfig tsconfig.main.json src/main/verify-update-state.ts",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run verify:pet-state-machine && npm run verify:response-buffer && npm run verify:chat-store && npm run verify:anchor-position && npm run verify:renderer-url && npm run verify:window-navigation && npm run verify:ipc-schemas && npm run verify:attachment-staging && npm run verify:link-manager && npm run verify:mcp-host && npm run verify:mcp-bridge-smoke && npm run verify:transcript-store && npm run verify:turn-manager-queue && npm run verify:wander-scheduler && npm run verify:idle-fidget-scheduler && npm run verify:turn-pipeline && npm run verify:auto-titler && npm run verify:update-state"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run verify:mcp-runtime-scripts && npm run verify:pet-state-machine && npm run verify:response-buffer && npm run verify:chat-store && npm run verify:anchor-position && npm run verify:renderer-url && npm run verify:window-navigation && npm run verify:ipc-schemas && npm run verify:attachment-staging && npm run verify:link-manager && npm run verify:mcp-host && npm run verify:mcp-bridge-smoke && npm run verify:transcript-store && npm run verify:turn-manager-queue && npm run verify:wander-scheduler && npm run verify:idle-fidget-scheduler && npm run verify:turn-pipeline && npm run verify:auto-titler && npm run verify:update-state"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

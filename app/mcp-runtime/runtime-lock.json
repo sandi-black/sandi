@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "target": "win32-x64",
+  "artifacts": {
+    "node": {
+      "version": "24.18.0",
+      "url": "https://nodejs.org/dist/v24.18.0/node-v24.18.0-win-x64.zip",
+      "sha256": "0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821",
+      "archiveRoot": "node-v24.18.0-win-x64",
+      "license": {
+        "url": "https://raw.githubusercontent.com/nodejs/node/v24.18.0/LICENSE",
+        "sha256": "148eacf7863ef4329224a29398623077200a27194aa075569faf4a0a85566ca5"
+      }
+    },
+    "uv": {
+      "version": "0.11.29",
+      "url": "https://github.com/astral-sh/uv/releases/download/0.11.29/uv-x86_64-pc-windows-msvc.zip",
+      "sha256": "a047d55651bc3e0ca24595b25ec4cfcb10f9dca9fb56514e661269b37d4fae68",
+      "license": {
+        "url": "https://raw.githubusercontent.com/astral-sh/uv/0.11.29/LICENSE-APACHE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      }
+    },
+    "python": {
+      "version": "3.13.14",
+      "url": "https://www.python.org/ftp/python/3.13.14/python-3.13.14-embed-amd64.zip",
+      "sha256": "90b4e5b9898b72d744650524bff92377c367f44bd5fbd09e3148656c080ad907",
+      "license": {
+        "url": "https://raw.githubusercontent.com/python/cpython/v3.13.14/LICENSE",
+        "sha256": "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb"
+      }
+    }
+  },
+  "commands": {
+    "node": { "version": "24.18.0" },
+    "uv": { "version": "0.11.29" },
+    "python": { "version": "3.13.14" },
+    "chrome-devtools-mcp": { "version": "1.6.0" },
+    "windows-mcp": { "version": "0.8.2" }
+  }
+}

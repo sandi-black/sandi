@@ -93,6 +93,7 @@ import {
   threadTitleRequestInput,
 } from "@/surfaces/discord/bot/thread-title";
 import { TodoListManager } from "@/surfaces/discord/bot/todo-list";
+import { topLevelEngagementRoute } from "@/surfaces/discord/bot/top-level-engagement";
 import type { DiscordAppConfig } from "@/surfaces/discord/config";
 import {
   buildDiscordChannelManifest,
@@ -517,7 +518,8 @@ export class SandiBot {
     // Sandi passively reads every other message. An explicit mention or a reply
     // to one of her own messages always earns a response; anything else goes
     // through a cheap gate that decides whether the message was meant for her.
-    const mustRespond = mentioned || (await this.#isReplyToSandi(message));
+    const isReplyToSandi = await this.#isReplyToSandi(message);
+    const mustRespond = mentioned || isReplyToSandi;
     if (!mustRespond) {
       if (!(await this.#shouldRespondToPassiveMessage(message))) {
         log.info("passive reply gate chose to stay silent", {
@@ -537,7 +539,11 @@ export class SandiBot {
         message.content,
         this.#client.user?.id,
       );
-      if (this.#shouldReplyInlineInChannel(channel)) {
+      const engagementRoute = topLevelEngagementRoute({
+        isReplyToSandi,
+        isInlineReplyChannel: this.#shouldReplyInlineInChannel(channel),
+      });
+      if (engagementRoute === "inline") {
         const author = await this.#participantFromMessage(message);
         log.info("engaging top-level channel message inline", {
           messageId: message.id,

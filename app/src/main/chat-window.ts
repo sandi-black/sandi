@@ -4,6 +4,8 @@ import type { ResizeEdge } from "@shared/ipc-contract";
 import { IPC } from "@shared/ipc-contract";
 import { BrowserWindow, ipcMain, screen } from "electron";
 
+import { appRendererUrl } from "./app-url";
+import { isIpcOwner } from "./ipc-owner";
 import { ResizeEdgeSchema } from "./ipc-schemas";
 import { parseRendererDevServerUrl } from "./renderer-url";
 import type { SettingsStore } from "./settings-store";
@@ -150,7 +152,7 @@ export function createChatWindow(input: {
   });
 
   ipcMain.on(IPC.chatClose, (event) => {
-    if (event.sender !== win.webContents) return;
+    if (!isIpcOwner(event, win.webContents)) return;
     win.hide();
   });
 
@@ -164,7 +166,7 @@ export function createChatWindow(input: {
     | { edge: ResizeEdge; cursor: Point; bounds: Electron.Rectangle }
     | undefined;
   ipcMain.on(IPC.chatResizeStart, (event, payload) => {
-    if (event.sender !== win.webContents) return;
+    if (!isIpcOwner(event, win.webContents)) return;
     const parsed = ResizeEdgeSchema.safeParse(payload);
     if (!parsed.success) return;
     resizeGrip = {
@@ -174,7 +176,7 @@ export function createChatWindow(input: {
     };
   });
   ipcMain.on(IPC.chatResizeMove, (event) => {
-    if (event.sender !== win.webContents) return;
+    if (!isIpcOwner(event, win.webContents)) return;
     if (!resizeGrip) return;
     const cursor = screen.getCursorScreenPoint();
     const next = computeResizedBounds(
@@ -196,7 +198,7 @@ export function createChatWindow(input: {
     }
   });
   ipcMain.on(IPC.chatResizeEnd, (event) => {
-    if (event.sender !== win.webContents) return;
+    if (!isIpcOwner(event, win.webContents)) return;
     if (!resizeGrip) return;
     const started = resizeGrip.bounds;
     resizeGrip = undefined;
@@ -277,5 +279,5 @@ async function loadRenderer(win: BrowserWindow): Promise<void> {
     await win.loadURL(`${devUrl}/chat/index.html`);
     return;
   }
-  await win.loadFile(join(import.meta.dirname, "../renderer/chat/index.html"));
+  await win.loadURL(appRendererUrl("chat"));
 }

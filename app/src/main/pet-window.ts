@@ -5,6 +5,8 @@ import type { PetDisplayEvent, SandiPetBridge } from "@shared/ipc-contract";
 import { IPC } from "@shared/ipc-contract";
 import { BrowserWindow, ipcMain, screen } from "electron";
 
+import { appRendererUrl } from "./app-url";
+import { isIpcOwner } from "./ipc-owner";
 import { CursorPointSchema, IgnoreMouseSchema } from "./ipc-schemas";
 import { parseRendererDevServerUrl } from "./renderer-url";
 import type { SettingsStore } from "./settings-store";
@@ -102,14 +104,14 @@ export function createPetWindow(input: {
   // window by the grip offset.
   let dragOffset: { x: number; y: number } | undefined;
   ipcMain.on(IPC.petDragStart, (event) => {
-    if (event.sender !== win.webContents) return;
+    if (!isIpcOwner(event, win.webContents)) return;
     const cursor = screen.getCursorScreenPoint();
     const [x, y] = win.getPosition();
     dragOffset = { x: (x ?? 0) - cursor.x, y: (y ?? 0) - cursor.y };
     input.onDragStart?.();
   });
   ipcMain.on(IPC.petDragMove, (event, payload) => {
-    if (event.sender !== win.webContents) return;
+    if (!isIpcOwner(event, win.webContents)) return;
     // The payload cursor is advisory; the screen module is the authority.
     CursorPointSchema.optional().safeParse(payload);
     if (!dragOffset) return;
@@ -118,7 +120,7 @@ export function createPetWindow(input: {
     input.onMove?.();
   });
   ipcMain.on(IPC.petDragEnd, (event) => {
-    if (event.sender !== win.webContents) return;
+    if (!isIpcOwner(event, win.webContents)) return;
     if (!dragOffset) return;
     dragOffset = undefined;
     const [x, y] = win.getPosition();
@@ -126,12 +128,12 @@ export function createPetWindow(input: {
   });
 
   ipcMain.on(IPC.petOpenChat, (event) => {
-    if (event.sender !== win.webContents) return;
+    if (!isIpcOwner(event, win.webContents)) return;
     onOpenChat();
   });
 
   ipcMain.on(IPC.petSetIgnoreMouse, (event, payload) => {
-    if (event.sender !== win.webContents) return;
+    if (!isIpcOwner(event, win.webContents)) return;
     const parsed = IgnoreMouseSchema.safeParse(payload);
     if (!parsed.success) return;
     // forward: true keeps delivering pointer-move to the renderer while
@@ -175,7 +177,7 @@ async function loadRenderer(win: BrowserWindow): Promise<void> {
     await win.loadURL(`${devUrl}/pet/index.html`);
     return;
   }
-  await win.loadFile(join(import.meta.dirname, "../renderer/pet/index.html"));
+  await win.loadURL(appRendererUrl("pet"));
 }
 
 function restorePosition(win: BrowserWindow, settings: SettingsStore): void {

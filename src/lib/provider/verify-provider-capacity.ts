@@ -284,7 +284,7 @@ function request(
 }
 
 function response(text: string): ProviderTurnResponse {
-  return { text, deliverySideEffects: false, raw: {} };
+  return { text, deliverySideEffects: false, signals: [], raw: {} };
 }
 
 function probe(): ProviderProbe {

@@ -43,6 +43,14 @@ const systemPrompt = promptIndex >= 0 && args[promptIndex + 1]
   ? await readFile(args[promptIndex + 1], "utf8")
   : undefined;
 
+if (process.env.SANDI_TURN_SIGNAL_FILE) {
+  await writeFile(
+    process.env.SANDI_TURN_SIGNAL_FILE,
+    JSON.stringify({ kind: "test:route", value: "thread" }) + "\\n",
+    "utf8",
+  );
+}
+
 await writeFile(
   process.env.FAKE_PI_RECORD_PATH,
   JSON.stringify(
@@ -55,6 +63,7 @@ await writeFile(
         PI_PACKAGE_DIR: process.env.PI_PACKAGE_DIR,
         SANDI_CONVERSATION_ID: process.env.SANDI_CONVERSATION_ID,
         SANDI_SESSION_MODE: process.env.SANDI_SESSION_MODE,
+        SANDI_TURN_SIGNAL_FILE: process.env.SANDI_TURN_SIGNAL_FILE,
         SANDI_TOOL_BROKER_URL: process.env.SANDI_TOOL_BROKER_URL,
         SANDI_TOOL_BROKER_TOKEN: process.env.SANDI_TOOL_BROKER_TOKEN,
       },
@@ -113,6 +122,12 @@ process.stdout.write("fake model output\\n");
       response.text === "fake model output",
       "provider should return stdout",
     );
+    assert(
+      response.signals.length === 1 &&
+        response.signals[0]?.kind === "test:route" &&
+        response.signals[0]?.value === "thread",
+      "provider should return turn signals recorded by extensions",
+    );
     const record = parseRecord(await readFile(recordPath, "utf8"));
     assert(
       !record.args.includes("--no-extensions"),
@@ -160,6 +175,13 @@ process.stdout.write("fake model output\\n");
       promptCleaned = true;
     }
     assert(promptCleaned, "turn-scoped system prompt payload is cleaned up");
+    let signalFileCleaned = false;
+    try {
+      await readFile(record.env.SANDI_TURN_SIGNAL_FILE ?? "", "utf8");
+    } catch {
+      signalFileCleaned = true;
+    }
+    assert(signalFileCleaned, "turn signal files are cleaned up");
     assert(
       !record.args.includes("hello from stdin"),
       "user input should not be passed as an argv argument",
@@ -313,6 +335,7 @@ type FakePiRecord = {
     PI_PACKAGE_DIR?: string;
     SANDI_CONVERSATION_ID?: string;
     SANDI_SESSION_MODE?: string;
+    SANDI_TURN_SIGNAL_FILE?: string;
     SANDI_TOOL_BROKER_URL?: string;
     SANDI_TOOL_BROKER_TOKEN?: string;
   };
@@ -337,6 +360,7 @@ function parseRecord(raw: string): FakePiRecord {
   assignOptionalString(parsedEnv, "PI_PACKAGE_DIR", env);
   assignOptionalString(parsedEnv, "SANDI_CONVERSATION_ID", env);
   assignOptionalString(parsedEnv, "SANDI_SESSION_MODE", env);
+  assignOptionalString(parsedEnv, "SANDI_TURN_SIGNAL_FILE", env);
   assignOptionalString(parsedEnv, "SANDI_TOOL_BROKER_URL", env);
   assignOptionalString(parsedEnv, "SANDI_TOOL_BROKER_TOKEN", env);
   return {

@@ -71,7 +71,7 @@ class FakeProvider implements ModelProviderClient {
       request.instructions === ENCODE_SYSTEM_PROMPT
         ? "Garden planning chat.\nThey prefer raised beds and watering in the morning."
         : "Consolidated what mattered.";
-    return { text, deliverySideEffects: false, raw: {} };
+    return { text, deliverySideEffects: false, signals: [], raw: {} };
   }
 }
 

@@ -354,7 +354,7 @@ function providerCapturing(
       request: ProviderTurnRequest,
     ): Promise<ProviderTurnResponse> {
       sink.push(request);
-      return { text, deliverySideEffects: false, raw: null };
+      return { text, deliverySideEffects: false, signals: [], raw: null };
     },
   };
 }
@@ -568,7 +568,7 @@ class BlockingProvider implements ModelProviderClient {
       this.#complete = (text) => {
         signal.removeEventListener("abort", onAbort);
         this.#complete = undefined;
-        resolve({ text, deliverySideEffects: false, raw: null });
+        resolve({ text, deliverySideEffects: false, signals: [], raw: null });
       };
       if (signal.aborted) onAbort();
     });
@@ -687,6 +687,7 @@ function providerReturningText(text: string): ModelProviderClient {
       return {
         text,
         deliverySideEffects: false,
+        signals: [],
         raw: null,
       };
     },

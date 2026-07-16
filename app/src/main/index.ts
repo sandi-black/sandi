@@ -11,11 +11,15 @@ import {
   createResponseBuffer,
   type ResponseBuffer,
 } from "@shared/response-buffer";
-import { app, dialog, ipcMain, screen, shell } from "electron";
+import { app, dialog, ipcMain, screen, session, shell } from "electron";
 
-import { installAssetProtocol, registerAssetScheme } from "./asset-protocol";
+import {
+  installRendererProtocols,
+  registerRendererSchemes,
+} from "./app-protocol";
 import { createAttachmentStaging } from "./attachment-staging";
 import { createAutoTitler } from "./auto-titler";
+import { installBrowserSessionPolicy } from "./browser-session-policy";
 import { createChatWindow } from "./chat-window";
 import { registerAttachmentHandlers } from "./handlers/attachment-handlers";
 import { registerFileHandlers } from "./handlers/file-handlers";
@@ -63,7 +67,7 @@ let tray: TrayController | undefined;
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  registerAssetScheme();
+  registerRendererSchemes();
   main().catch((error: unknown) => {
     // Startup failed outright (settings unreadable, a window refused to
     // build): surface it and exit rather than leaving a half-alive tray-less
@@ -77,7 +81,8 @@ if (!app.requestSingleInstanceLock()) {
 
 async function main(): Promise<void> {
   await app.whenReady();
-  installAssetProtocol();
+  installRendererProtocols();
+  installBrowserSessionPolicy(session.defaultSession);
 
   let quitting = false;
   app.on("before-quit", () => {

@@ -80,6 +80,12 @@ Main owns all state; the renderers are pure UI over typed IPC.
   `computeOffsetPosition` and `clampSizeIntoWorkArea`) without rewriting the
   saved values, so a temporary small display does not erase the intent.
   Programmatic placements set a guard flag so only real gestures are recorded.
+- Packaged renderers load from the fixed `sandi-app://app` origin; development
+  keeps electron-vite's parsed loopback origin for HMR. Both pages use CSP to
+  load only bundled code and local `sandi-asset://` images. Markdown links open
+  in the operating system browser, and remote markdown images never receive a
+  source. IPC accepts only each window's main frame, and the shared Chromium
+  session denies browser permissions and automatic downloads.
 - The tray is the pet's only conventional chrome. Left click toggles her
   visibility; the context menu has open chat, wander, start-with-Windows, the
   link status line, the update section (packaged builds only: status line,

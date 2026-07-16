@@ -13,16 +13,6 @@ import { LocalPathSchema } from "./ipc-schemas";
 
 export const ASSET_SCHEME = "sandi-asset";
 
-// Must run before app.whenReady.
-export function registerAssetScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    {
-      scheme: ASSET_SCHEME,
-      privileges: { standard: false, stream: true, bypassCSP: false },
-    },
-  ]);
-}
-
 export function installAssetProtocol(): void {
   protocol.handle(ASSET_SCHEME, (request) => {
     const path = decodeAssetUrl(request.url);

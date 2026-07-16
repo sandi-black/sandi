@@ -1,9 +1,11 @@
 import { type JSX, memo } from "react";
-import Markdown, { defaultUrlTransform } from "react-markdown";
+import type { UrlTransform } from "react-markdown";
+import Markdown, { type Components, defaultUrlTransform } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
 import { assetUrl, isLocalAbsolutePath } from "./asset-url";
+import { ExternalLink } from "./ExternalLink";
 
 // Sandi's replies as markdown. Local absolute paths in image references are
 // routed through the sandi-asset protocol so a screenshot she just wrote to
@@ -18,12 +20,18 @@ import { assetUrl, isLocalAbsolutePath } from "./asset-url";
 
 const EMPTY_REHYPE_PLUGINS: [] = [];
 const HIGHLIGHT_REHYPE_PLUGINS = [rehypeHighlight];
+const MARKDOWN_COMPONENTS = { a: ExternalLink } satisfies Components;
 
-function transformUrl(url: string): string {
+const transformUrl: UrlTransform = (url, _key, node) => {
+  if (node.tagName === "img") {
+    if (url.startsWith("sandi-asset://")) return url;
+    if (isLocalAbsolutePath(url)) return assetUrl(url);
+    return undefined;
+  }
   if (url.startsWith("sandi-asset://")) return url;
   if (isLocalAbsolutePath(url)) return assetUrl(url);
   return defaultUrlTransform(url);
-}
+};
 
 export const MarkdownMessage = memo(function MarkdownMessage({
   text,
@@ -38,6 +46,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({
   return (
     <div className="md">
       <Markdown
+        components={MARKDOWN_COMPONENTS}
         remarkPlugins={[remarkGfm]}
         rehypePlugins={
           highlight ? HIGHLIGHT_REHYPE_PLUGINS : EMPTY_REHYPE_PLUGINS

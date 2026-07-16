@@ -23,6 +23,17 @@ export function redactValue(
     return value.map((item) => redactValue(item, protectedValues));
   }
   if (typeof value !== "object" || value === null) return value;
+  const imageData = "data" in value ? value.data : undefined;
+  if (
+    "type" in value &&
+    value.type === "image" &&
+    typeof imageData === "string" &&
+    protectedValues.some((protectedValue) => imageData.includes(protectedValue))
+  ) {
+    throw new Error(
+      "desktop MCP image contained a protected environment value",
+    );
+  }
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       redactText(key, protectedValues),

@@ -8,7 +8,7 @@ then continue.
 | ---- | -------------------------------------------------------------- | ---------- | ------ |
 | 001  | Desktop-hosted MCP tools are available to every Sandi turn     | none       | DONE   |
 | 002  | Supported MCP runtimes and servers ship inside the Windows app | 001        | DONE   |
-| 003  | Sandi uses semantic Windows and browser automation by default  | 001, 002   | TODO   |
+| 003  | Sandi uses semantic Windows and browser automation by default  | 001, 002   | DONE   |
 
 ## Decisions shared by all plans
 

@@ -6,6 +6,7 @@
     "includes": [
       "src/**/*.ts",
       "src/**/*.tsx",
+      "scripts/**/*.ts",
       "scripts/**/*.mjs",
       "electron.vite.config.ts",
       "*.json"

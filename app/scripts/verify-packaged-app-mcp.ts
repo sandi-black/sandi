@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { spawn, spawnSync } from "node:child_process";
 
-import { apiTokenEntry, ApiTokenStore } from "../../src/surfaces/api/auth/tokens";
+import {
+  ApiTokenStore,
+  apiTokenEntry,
+} from "../../src/surfaces/api/auth/tokens";
 import { DeviceRegistry } from "../../src/surfaces/api/devices/device-registry";
 import { DeviceRoutes } from "../../src/surfaces/api/devices/device-routes";
 import { ToolDispatchSchema } from "../../src/surfaces/api/devices/protocol";
@@ -15,6 +24,7 @@ import { bearerToken, sendJson } from "../../src/surfaces/api/http/respond";
 import { callBroker } from "../../src/surfaces/api/pi-extension/tool-broker-client";
 import { createMcpCatalogStore } from "../src/main/mcp/catalog-store";
 import { createMcpConfigStore } from "../src/main/mcp/config-store";
+import { runPackagedComputerUseSmoke } from "./packaged-computer-use-smoke";
 
 const packagedRoot = resolve(
   process.env["SANDI_PACKAGED_APP_ROOT"] ?? "release/win-unpacked",
@@ -53,7 +63,7 @@ writeFileSync(
 );
 writeFileSync(
   wrapperPath,
-  `@set ELECTRON_RUN_AS_NODE=1\r\n@\"${packagedAppExe}\" \"${fixture}\" %*\r\n`,
+  `@set ELECTRON_RUN_AS_NODE=1\r\n@"${packagedAppExe}" "${fixture}" %*\r\n`,
 );
 
 const registry = new DeviceRegistry();
@@ -62,7 +72,9 @@ const tokenStore = new ApiTokenStore(tokensPath, 0);
 const routes = new DeviceRoutes(registry, tokenStore);
 const api = createServer(async (request, response) => {
   const presented = bearerToken(request.headers.authorization);
-  const authenticated = presented ? await tokenStore.verify(presented) : undefined;
+  const authenticated = presented
+    ? await tokenStore.verify(presented)
+    : undefined;
   if (!authenticated) {
     sendJson(response, 401, { error: "unauthorized" });
     return;
@@ -80,6 +92,7 @@ const api = createServer(async (request, response) => {
 
 let app: ReturnType<typeof spawn> | undefined;
 let shutdownError: Error | undefined;
+let runError: unknown;
 try {
   await broker.start();
   await new Promise<void>((resolveListen, rejectListen) => {
@@ -153,9 +166,16 @@ try {
   });
   assert.equal(approved.ok, true, "the packaged app saves the configuration");
   createMcpCatalogStore(join(userData, "mcp-catalogs")).save(config.id, [
-    { name: "cached_tool", description: "Cached before spawn.", inputSchema: { type: "object" } },
+    {
+      name: "cached_tool",
+      description: "Cached before spawn.",
+      inputSchema: { type: "object" },
+    },
   ]);
-  const search = await callBroker(origin.ticket, "local_mcp", { operation: "search", query: "cached" });
+  const search = await callBroker(origin.ticket, "local_mcp", {
+    operation: "search",
+    query: "cached",
+  });
   assert.match(textOf(search), /cached_tool/);
   assert.equal(readState().length, 0, "cached discovery starts no child");
   const called = await callBroker(origin.ticket, "local_mcp", {
@@ -166,20 +186,44 @@ try {
   });
   assert.equal(called.ok, true);
   assert.match(textOf(called), /packaged Electron link/);
-  const identity = broker.lease({ key: entry.tokenSha256, signal: new AbortController().signal });
-  const ambiguous = await callBroker(identity.ticket, "local_mcp", { operation: "servers" });
+  const identity = broker.lease({
+    key: entry.tokenSha256,
+    signal: new AbortController().signal,
+  });
+  const ambiguous = await callBroker(identity.ticket, "local_mcp", {
+    operation: "servers",
+  });
   assert.equal(ambiguous.ok, false);
-  const selected = await callBroker(identity.ticket, "local_mcp", { operation: "servers", desktop: "Grace workstation" });
+  const selected = await callBroker(identity.ticket, "local_mcp", {
+    operation: "servers",
+    desktop: "Grace workstation",
+  });
   assert.match(textOf(selected), /selected Grace workstation/);
   identity.revoke();
-  const disabled = await callBroker(origin.ticket, "local_mcp_configure", { operation: "set_enabled", serverId: config.id, enabled: false });
+  const disabled = await callBroker(origin.ticket, "local_mcp_configure", {
+    operation: "set_enabled",
+    serverId: config.id,
+    enabled: false,
+  });
   assert.equal(disabled.ok, true);
   await waitUntil(() => stateCount("exit") >= 1, "disable child exit");
-  const enabled = await callBroker(origin.ticket, "local_mcp_configure", { operation: "set_enabled", serverId: config.id, enabled: true });
+  const enabled = await callBroker(origin.ticket, "local_mcp_configure", {
+    operation: "set_enabled",
+    serverId: config.id,
+    enabled: true,
+  });
   assert.equal(enabled.ok, true);
-  await callBroker(origin.ticket, "local_mcp", { operation: "call", serverId: config.id, toolName: "echo", arguments: { message: "remove live" } });
+  await callBroker(origin.ticket, "local_mcp", {
+    operation: "call",
+    serverId: config.id,
+    toolName: "echo",
+    arguments: { message: "remove live" },
+  });
   await waitUntil(() => stateCount("start") >= 2, "second child start");
-  const removed = await callBroker(origin.ticket, "local_mcp_configure", { operation: "remove", serverId: config.id });
+  const removed = await callBroker(origin.ticket, "local_mcp_configure", {
+    operation: "remove",
+    serverId: config.id,
+  });
   assert.equal(removed.ok, true);
   await waitUntil(() => stateCount("exit") >= 2, "removal child exit");
   assert.deepEqual(
@@ -198,7 +242,10 @@ try {
     label: "Packaged Chrome DevTools MCP",
     enabled: true,
     command: { kind: "bundled" as const, id: "chrome-devtools-mcp" },
-    args: ["--headless"],
+    args:
+      process.env["SANDI_COMPUTER_USE_SMOKE"] === "1"
+        ? ["--isolated", "--chrome-arg=--force-renderer-accessibility"]
+        : ["--headless"],
     inheritEnv: [
       "PATH",
       "USERPROFILE",
@@ -206,7 +253,6 @@ try {
       "HTTP_PROXY",
       "HTTPS_PROXY",
       "NODE_OPTIONS",
-      "SANDI_MCP_OFFLINE_TEST",
     ],
   };
   assert.equal(
@@ -243,14 +289,7 @@ try {
       enabled: true,
       command: { kind: "bundled" as const, id: "windows-mcp" },
       args: [],
-      inheritEnv: [
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "npm_config_offline",
-        "PIP_NO_INDEX",
-        "UV_OFFLINE",
-        "SANDI_MCP_OFFLINE_TEST",
-      ],
+      inheritEnv: ["HTTP_PROXY", "HTTPS_PROXY"],
     };
     assert.equal(
       (
@@ -275,6 +314,15 @@ try {
       query: "Snapshot",
     });
     assert.match(textOf(bundledSearch), /Snapshot/);
+    assert(app.pid !== undefined);
+    await runPackagedComputerUseSmoke({
+      appPid: app.pid,
+      broker: origin.ticket,
+      chromeServerId: chromeConfig.id,
+      reconnectKey: entry.tokenSha256,
+      registry,
+      windowsServerId: bundledConfig.id,
+    });
     assert.equal(
       (
         await callBroker(origin.ticket, "local_mcp_configure", {
@@ -296,6 +344,8 @@ try {
   );
   origin.revoke();
   console.log("packaged Electron MCP bridge smoke: ok");
+} catch (error) {
+  runError = error;
 } finally {
   if (app?.pid !== undefined) {
     writeFileSync(exitPath, "quit");
@@ -312,14 +362,23 @@ try {
   broker.stop();
   await new Promise<void>((resolveClose) => api.close(() => resolveClose()));
   await removeEventually(root);
-  if (shutdownError !== undefined) throw shutdownError;
+  runError ??= shutdownError;
 }
+if (runError !== undefined) throw runError;
 
 function readState(): string[] {
-  try { return readFileSync(statePath, "utf8").split(/\r?\n/).filter(Boolean); } catch { return []; }
+  try {
+    return readFileSync(statePath, "utf8").split(/\r?\n/).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
-function stateCount(value: string): number { return readState().filter((entry) => entry === value).length; }
-function textOf(outcome: { content: ReadonlyArray<{ type: string; text?: string }> }): string {
+function stateCount(value: string): number {
+  return readState().filter((entry) => entry === value).length;
+}
+function textOf(outcome: {
+  content: ReadonlyArray<{ type: string; text?: string }>;
+}): string {
   return outcome.content.map((block) => block.text ?? "").join("\n");
 }
 async function waitUntil(

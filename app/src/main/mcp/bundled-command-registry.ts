@@ -179,6 +179,9 @@ async function commandEnvironment(
     ].join(";"),
     PYTHONDONTWRITEBYTECODE: "1",
     SANDI_MCP_STATE_DIR: state,
+    ...(process.env["SANDI_MCP_OFFLINE_TEST"] === "1"
+      ? { SANDI_MCP_OFFLINE_TEST: "1" }
+      : {}),
     SystemRoot: systemRoot,
     TEMP: temp,
     TMP: temp,

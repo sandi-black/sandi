@@ -15,7 +15,11 @@ import { createMcpCatalogStore } from "./catalog-store";
 import { createMcpConfigStore } from "./config-store";
 import { ExactStdioTransport } from "./exact-stdio-transport";
 import { createMcpHost, type McpConfigChange, type McpHost } from "./mcp-host";
-import { protectedEnvironmentValues, redactText } from "./secret-redaction";
+import {
+  protectedEnvironmentValues,
+  redactText,
+  redactValue,
+} from "./secret-redaction";
 
 const fixture = join(import.meta.dirname, "fixtures", "stdio-server.mjs");
 const oversizedStdoutFixture = join(
@@ -74,6 +78,19 @@ async function verifyHost(): Promise<void> {
     ),
     "[redacted]",
     "overlapping inherited values are redacted longest-first",
+  );
+  assert.equal(
+    redactText("abc123", protectedEnvironmentValues({ short: "abc" })),
+    "[redacted]123",
+    "short inherited values remain protected inside larger strings",
+  );
+  assert.throws(
+    () =>
+      redactValue({ type: "image", data: "a1+/=", mimeType: "image/png" }, [
+        "1",
+      ]),
+    /image contained a protected environment value/,
+    "images that contain protected values fail closed",
   );
   await verifyConcurrentConfig();
   await verifyBundledEnvironment();

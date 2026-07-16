@@ -119,7 +119,8 @@ connected so she can pick the right one.
   link, the turn leases a per-turn broker ticket for that desktop (resolved by
   identity, never another human's machine) and the hands-local `local_*` proxy
   tools run file and shell work on that desktop. This works from Discord and
-  GitHub turns, not only desktop turns.
+  GitHub turns, not only desktop turns. Native and browser computer-use routing
+  is documented in [`computer-use.md`](computer-use.md).
 
 `sandi_js_run` (server-side code execution) is enabled on every surface, matching
 Discord turns in the same deployment. The desktop surface keeps pi's built-in file

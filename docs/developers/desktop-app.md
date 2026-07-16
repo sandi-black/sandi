@@ -247,7 +247,9 @@ signed.
 The app is the process owner for desktop-hosted MCP servers. The server-side
 route and tool contract are documented in
 [`api-surface.md`](api-surface.md#desktop-hosted-mcp-bridge); code-mode usage is
-in [`code-mode.md`](code-mode.md#desktop-mcp-composition).
+in [`code-mode.md`](code-mode.md#desktop-mcp-composition). Configuration,
+semantic routing, recovery, and the real-desktop benchmark are in
+[`computer-use.md`](computer-use.md).
 
 Persistent state lives under Electron's `userData` directory:
 
@@ -302,7 +304,7 @@ The checked-in sources of truth are under `app/mcp-runtime`. To update a pin:
 2. For Chrome DevTools MCP, update its exact dependency in `package.json` and
    regenerate that directory's npm lock. For Windows-MCP, update
    `requirements.in` and regenerate `requirements.lock` with the `uv pip
-   compile` command recorded at the top of the lock file.
+compile` command recorded at the top of the lock file.
 3. On Windows x64, run `npm run prepare:mcp-runtime -w app`. Preparation
    downloads into the local cache, verifies every source, and atomically
    replaces `app/build/mcp` only after the new bundle passes. After a Python

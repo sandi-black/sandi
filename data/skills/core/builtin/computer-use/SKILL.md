@@ -79,14 +79,14 @@ return to Chrome DevTools MCP to verify the page result.
    condition, and observe again to verify the requested result.
 4. Print only compact evidence needed to judge success.
 
-A native flow normally calls Windows `Snapshot` with vision off, acts by element
-label, calls `WaitFor`, then calls `Snapshot` again. A browser-only flow uses the
-Chrome page snapshot, page input or click tools, a page wait, and a final page
-snapshot. If semantic state omits the target, leave the code-mode loop, request
-a fresh `Screenshot` through `local_mcp` so the image is visible, act on current
-coordinates, then request a second fresh `Screenshot` to verify the visual
-result. Return to semantic state only when the target exposes useful semantic
-state after the action.
+A native flow normally calls Windows `Snapshot` with vision off, acts at current
+coordinates or by label when one is exposed, calls `WaitFor`, then calls
+`Snapshot` again. A browser-only flow uses the Chrome page snapshot, page input
+or click tools, a page wait, and a final page snapshot. If semantic state omits
+the target, leave the code-mode loop, request a fresh `Screenshot` through
+`local_mcp` so the image is visible, act on current coordinates, then request a
+second fresh `Screenshot` to verify the visual result. Return to semantic state
+only when the target exposes useful semantic state after the action.
 
 Do not use a fixed sleep when `WaitFor` or a Chrome page condition can detect the
 real state. After any mutating call, verify the user-visible effect. If a

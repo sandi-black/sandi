@@ -31,9 +31,10 @@ input, application selection, display inventory, screenshot fallback, and wait
 operations; it does not need shell, filesystem, clipboard, process, registry, or
 scraping capabilities already covered elsewhere.
 
-Chrome uses the isolated packaged configuration by default. Connecting to an
-existing profile is an explicit operator choice and still goes through Chrome's
-own remote-debugging consent.
+Chrome connects to the user's running default profile because this interface is
+reserved for requests that require work in the user's browser. Chrome's own
+remote-debugging consent still gates the connection. Generic web searches use
+Sandi's existing web tools.
 
 ## Milestones
 
@@ -88,8 +89,8 @@ and commit.
   normal observation path.
 - The packaged curated servers start offline and expose only the capabilities
   needed by the routing policy.
-- Existing-profile Chrome access requires explicit operator choice and Chrome
-  consent.
+- Chrome DevTools MCP defaults to the user's running Chrome profile and remains
+  gated by Chrome's remote-debugging consent.
 - Benchmarks show lower median time and fewer parent-model turns without more
   failures.
 - AutoIt remains a later option for a stable application workflow that semantic

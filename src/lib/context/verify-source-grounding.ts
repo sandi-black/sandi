@@ -96,8 +96,11 @@ async function verifyComputerUseHinting(root: string): Promise<void> {
     "../../../data/skills/core/builtin/computer-use/SKILL.md",
   );
   const destination = join(skillsRoot, "computer-use", "SKILL.md");
+  const computerUseSkill = await readFile(source, "utf8");
+  assert.match(computerUseSkill, /args: \["--autoConnect"\]/);
+  assert.doesNotMatch(computerUseSkill, /args: \["--isolated"\]/);
   await mkdir(join(destination, ".."), { recursive: true });
-  await writeFile(destination, await readFile(source, "utf8"), "utf8");
+  await writeFile(destination, computerUseSkill, "utf8");
   await writeSkill({
     root: skillsRoot,
     name: "recipes",

@@ -12,21 +12,22 @@ Sandi can configure both servers herself through `desktopMcp.configure`; there
 is no user approval dialog. The normal configuration uses these bundled command
 ids:
 
-| Server              | Bundled command id    | Arguments    |
-| ------------------- | --------------------- | ------------ |
-| Windows UI          | `windows-mcp`         | none         |
-| Isolated page tools | `chrome-devtools-mcp` | `--isolated` |
+| Server       | Bundled command id    | Arguments       |
+| ------------ | --------------------- | --------------- |
+| Windows UI   | `windows-mcp`         | none            |
+| User browser | `chrome-devtools-mcp` | `--autoConnect` |
 
 The Windows command always appends its fixed UI catalog after user arguments,
 so a configuration cannot re-enable PowerShell, filesystem, clipboard, process,
 registry, notification, or scraping tools. File and command work stays in
 Sandi's existing local tools.
 
-The Chrome default creates a temporary isolated profile. Connecting to an
-existing profile is an operator choice because it exposes that profile's tabs
-and authenticated sessions. Only replace `--isolated` with `--autoConnect` or a
-specific debugging endpoint when the operator asks for that profile and accepts
-Chrome's remote-debugging consent.
+The Chrome default connects to the user's running default Chrome profile because
+this interface is for requests that require work in the user's browser. Chrome
+must be running with remote debugging enabled at
+`chrome://inspect/#remote-debugging`, and Chrome asks the user to allow the
+connection. Generic searches and research continue to use Sandi's existing web
+tools.
 
 ## Route and execute
 
@@ -75,9 +76,10 @@ fresh call if the transport closed. Do not replay an ambiguous mutating action.
 
 ## Packaged smoke
 
-The real-desktop smoke is opt-in because it briefly opens an isolated Chrome
-window and the Run dialog. It types only fixture markers and dismisses the dialog
-without executing them. Run it from an unlocked, unelevated Windows session:
+The real-desktop smoke is opt-in because it overrides the normal Chrome
+configuration with an isolated test profile and briefly opens the Run dialog. It
+types only fixture markers and dismisses the dialog without executing them. Run
+it from an unlocked, unelevated Windows session:
 
 ```powershell
 cd app

@@ -11,8 +11,9 @@ new model turn between each step.
 
 ## Setup
 
-Import `desktopMcp` from `./sandi/runtime.ts`. List configured servers first. If
-either bundled server is missing, configure it directly:
+Import `desktopMcp` from `./sandi/runtime.ts`. List configured servers first.
+Ensure both bundled servers use the recommended configuration below. Update an
+older Chrome entry that still uses `--isolated`.
 
 ```ts
 import { desktopMcp } from "./sandi/runtime.ts";
@@ -34,11 +35,11 @@ await desktopMcp.configure({
   operation: "upsert",
   server: {
     id: "chrome-devtools",
-    label: "Isolated Chrome DevTools",
+    label: "Chrome DevTools",
     sourceUrl: "https://github.com/ChromeDevTools/chrome-devtools-mcp",
     enabled: true,
     command: { kind: "bundled", id: "chrome-devtools-mcp" },
-    args: ["--isolated"],
+    args: ["--autoConnect"],
     inheritEnv: [],
   },
 });
@@ -50,10 +51,11 @@ The bundled Windows command has a fixed UI-only catalog: `Snapshot`,
 registry, notification, and scraping tools are unavailable. Use Sandi's existing
 local tools for files and commands.
 
-The default Chrome server launches an isolated temporary profile. Access to an
-existing Chrome profile is a separate operator choice. Do not replace
-`--isolated` with `--autoConnect` or a debugging endpoint unless the operator
-asks for that profile and completes Chrome's remote-debugging consent.
+The default Chrome server connects to the user's running default Chrome profile.
+Chrome must be running with remote debugging enabled at
+`chrome://inspect/#remote-debugging`, and Chrome asks the user to allow the
+connection. Use this server when the user asks Sandi to work in their browser;
+use Sandi's existing web tools for generic searches and research.
 
 ## Route by target
 

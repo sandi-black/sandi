@@ -8,7 +8,7 @@
 > the index.
 >
 > **Drift check (run first)**:
-> `git diff --stat 734da42..HEAD -- package.json package-lock.json .env.example src/surfaces/api src/host/runtime app docs/developers`
+> `git diff --stat 0565d5a..HEAD -- package.json package-lock.json .env.example src/surfaces/api src/host/runtime app docs/developers`
 > If any in-scope file changed since this plan was written, compare the
 > "Current state" excerpts against the live code before proceeding. A mismatch
 > is a STOP condition.
@@ -20,7 +20,7 @@
 - **Risk**: HIGH
 - **Depends on**: none
 - **Category**: direction
-- **Planned at**: commit `734da42`, 2026-07-15
+- **Planned at**: commit `0565d5a`, 2026-07-15
 
 ## Why this matters
 
@@ -92,6 +92,8 @@ turns through the same identity boundary as the current `local_*` tools.
   contains commands rather than UI preferences and must use its own file.
 - `app/electron.vite.config.ts` bundles main-process dependencies and imported
   server source into `out/`; `app/electron-builder.yml` packages only `out/**`.
+  The app does not currently ship Node, Python, uv, npm, npx, or any MCP server
+  payload as an executable resource.
 - The production MCP TypeScript SDK is `@modelcontextprotocol/sdk@1.29.0`.
   The split v2 packages are still beta as of this plan. Version 1.29 supports
   the stable 2025-11-25 protocol, stdio clients, pagination, cancellation, and
@@ -194,6 +196,9 @@ MCP session on the server.
   literal secret values in desktop MCP configuration.
 - MCP resources, prompts, sampling, elicitation, roots, and experimental tasks.
 - Windows ODR discovery or MSIX packaging.
+- Runtime archives, curated server dependency locks, `extraResources`, package
+  workflow changes, or real Chrome and Windows MCP payloads. Plan 002 owns the
+  self-contained installer.
 - Registering each discovered MCP tool as a separate Pi tool.
 - Per-invocation approval prompts. Pairing already grants Sandi local shell and
   file access. Persistent server configuration requires approval because it
@@ -246,7 +251,7 @@ type DesktopMcpServerConfig = {
   label: string;
   sourceUrl?: string;
   enabled: boolean;
-  command: string;
+  command: { kind: "external"; executable: string } | { kind: "bundled"; id: string };
   args: string[];
   cwd?: string;
   inheritEnv: string[];
@@ -254,10 +259,16 @@ type DesktopMcpServerConfig = {
 ```
 
 Bound IDs, names, query text, argument JSON, config arrays, and serialized
-payloads. Put each limit beside its schema and test the limit. Do not permit
-literal environment values or credentials. `inheritEnv` names environment
-variables whose values the Electron process resolves locally after approval;
-the values never enter the broker request, model context, config file, or logs.
+payloads. Put each limit beside its schema and test the limit. An external
+executable must be an absolute path; do not search `PATH`. A bundled command ID
+is a stable symbolic reference resolved by the desktop app from its packaged
+runtime registry. Reject an unknown or unavailable bundled ID before spawn. Do
+not permit literal environment values or credentials. `inheritEnv` names
+environment variables whose values the Electron process resolves locally after
+approval; the values never enter the broker request, model context, config
+file, or logs. Bundled commands may add only the fixed environment and argument
+prefix declared by their packaged application release, never values supplied
+by the model.
 
 Replace the public result's `output` plus single `image` shape with one bounded
 content model used by every desktop tool:
@@ -361,8 +372,9 @@ lifecycle, search, result conversion, and the composite desktop executor. Do not
 put the host in the renderer or preload. Add `verify:mcp-host` to the app
 manifest and its `check` sequence.
 
-Persist config at `join(app.getPath("userData"), "mcp.json")` with this top-level
-shape:
+Persist config at `join(app.getPath("userData"), "mcp.json")` with this
+top-level shape. The bundled command is a stable ID rather than an installation
+path, so an NSIS update or portable-app move cannot stale the config:
 
 ```json
 {
@@ -373,20 +385,18 @@ shape:
       "label": "Chrome DevTools",
       "sourceUrl": "https://github.com/ChromeDevTools/chrome-devtools-mcp",
       "enabled": true,
-      "command": "cmd.exe",
-      "args": [
-        "/c",
-        "npx",
-        "-y",
-        "chrome-devtools-mcp@1.6.0",
-        "--no-usage-statistics",
-        "--no-performance-crux"
-      ],
-      "inheritEnv": ["SystemRoot", "PROGRAMFILES"]
+      "command": { "kind": "bundled", "id": "chrome-devtools-mcp" },
+      "args": ["--no-usage-statistics", "--no-performance-crux"],
+      "inheritEnv": []
     }
   }
 }
 ```
+
+Plan 001 defines and tests the bundled-command resolver interface with a fixture
+entry. Plan 002 supplies the packaged runtime registry and the real
+`chrome-devtools-mcp` and `windows-mcp` entries. Until Plan 002 lands, a real
+bundled ID reports unavailable and no real server smoke is required.
 
 Use the settings-store pattern for schema validation, atomic temp-file rename,
 and corrupt-file quarantine. Store validated catalog snapshots separately under
@@ -421,6 +431,9 @@ resource problem.
 Use the SDK's default safe stdio environment plus only the names in
 `inheritEnv`. Refuse an upsert when a requested name is absent from the Electron
 process environment. Resolve all environment values after the approval prompt.
+For a bundled command, merge the resolver's fixed environment after filtering
+the inherited environment; config cannot override it. For an external command,
+the resolver contributes nothing.
 The stdio child may log to stderr; capture a bounded rolling diagnostic string
 for status, but never treat stderr alone as a failure and never expose it to the
 model as instructions.
@@ -487,6 +500,8 @@ or writing anything. Parent the prompt to the chat window when available. Show:
 - operation and server ID;
 - label and source URL;
 - exact command, arguments, and working directory;
+- for a bundled command, its stable ID, component version, resolved executable,
+  fixed argument prefix, and package-manifest digest;
 - inherited environment variable names, without values;
 - whether the change adds, replaces, enables, disables, or removes a persistent
   executable configuration;
@@ -509,7 +524,7 @@ restart does not recreate the host, and stop aborts in-flight dispatch. Inspect
 the Electron main bundle and confirm it contains the SDK implementation rather
 than an unresolved runtime import.
 
-### Step 5: Document and smoke-test Chrome and Windows MCP
+### Step 5: Document and smoke-test the generic bridge
 
 Update `docs/developers/api-surface.md` with the operation path, result content
 shape, identity and desktop selection, cancellation, and why the server does not
@@ -521,38 +536,31 @@ desktop. Update `docs/developers/desktop-app.md` with:
 - lazy process and catalog behavior;
 - the exact approval boundary and the no-secret-values rule;
 - status, search, describe, call, and code-mode examples;
-- the Chrome DevTools MCP pinned config from Step 3;
-- a Windows-MCP example using `uvx windows-mcp serve` after installing its
-  documented prerequisites;
+- the external-command and bundled-command config forms;
+- the fact that Plan 002 packages and registers the curated Chrome and Windows
+  commands;
 - how to update or remove a configured server through Sandi;
 - diagnostics and cleanup after a failed server start.
 
-For Chrome, document that the server can inspect and modify all data in its
-browser instance. Keep `--no-usage-statistics` and `--no-performance-crux` in
-the recommended config. Use an exact package version; updating it is another
-approved config replacement. The optional `--autoConnect` path exposes an
-existing Chrome profile and requires Chrome's own remote-debugging consent, so
-present it as a deliberate choice, not the default.
+Run a manual installed-app smoke with the checked-in fixture server:
 
-Run a manual installed-app smoke on Windows:
-
-1. Ask Sandi to configure the pinned Chrome server and deny the first prompt.
+1. Ask Sandi to configure the fixture as an external command and deny the first
+   prompt.
    Confirm no config, catalog, or child process appears.
 2. Repeat and approve. Confirm the catalog is cached and the child exits when
    the probe completes.
-3. Ask Sandi to search for page navigation, describe the selected tool, open a
-   non-sensitive page, and take a screenshot. Confirm the result reaches the
-   model without a server-side Chrome process.
-4. Restart Sandi. Search the cached Chrome catalog and confirm Chrome MCP is not
+3. Ask Sandi to search, describe, and call the fixture's harmless tools. Confirm
+   the result reaches the model without a server-side MCP process.
+4. Restart Sandi. Search the cached fixture catalog and confirm it is not
    spawned until a call.
-5. From a mapped Discord turn, call one Chrome tool on the connected desktop.
+5. From a mapped Discord turn, call one fixture tool on the connected desktop.
    With two desktops connected, omit `desktop` and confirm the broker asks Sandi
    to select one instead of guessing.
-6. Configure Windows-MCP with `uvx windows-mcp serve`, search its catalog, and
-   execute one harmless UI-state call. Confirm the process runs under the
-   desktop app, not beside Pi.
-7. Disable both servers and confirm their child processes close. Remove them and
-   confirm config and catalog entries disappear.
+6. Configure the fixture through its test bundled-command entry and confirm the
+   resolver supplies the fixed executable and argument prefix shown in the
+   approval prompt.
+7. Disable the fixture and confirm its child closes. Remove it and confirm the
+   config and catalog entries disappear.
 
 **Verify**: `npm run format && npm run check` -> exit 0. Then run
 `git diff --check` -> exit 0 and no whitespace errors.
@@ -592,11 +600,15 @@ Run a manual installed-app smoke on Windows:
       identity-scoped broker; commands, environment values, and MCP sessions do not.
 - [ ] Every persistent config mutation requires approval of the exact command
       and environment variable names.
+- [ ] Config stores external absolute paths or stable bundled command IDs, never
+      paths derived from the current installed or portable app location.
+- [ ] Unknown bundled IDs fail before spawn; the fixture bundled ID resolves
+      relative to the injected test resource root.
 - [ ] No secret values appear in config, catalog, logs, broker test captures, or
       model-visible management results.
 - [ ] Cancellation reaches an in-flight MCP request and no mutating call is
       retried after transport loss.
-- [ ] Chrome DevTools MCP and Windows-MCP pass the manual desktop smoke.
+- [ ] The checked-in fixture passes external and bundled-command manual smoke.
 - [ ] `git diff --check` exits 0.
 - [ ] No files outside the in-scope list are modified.
 - [ ] `plans/README.md` marks Plan 001 DONE.
@@ -611,8 +623,8 @@ Stop and report if any condition occurs:
   programmatic API would need a different security boundary.
 - The stable SDK cannot bundle into the Electron main output without shipping
   `node_modules`, native binaries, or the v2 beta packages.
-- Chrome DevTools MCP or Windows-MCP requires a non-stdio transport for the
-  documented use case.
+- The bundled-command resolver cannot use the same stdio host lifecycle as an
+  external command.
 - SDK cancellation cannot be connected to an AbortSignal without changing the
   MCP server or retrying tool calls.
 - Supporting the MCP result requires raising the existing 8 MiB device-result
@@ -629,6 +641,9 @@ Stop and report if any condition occurs:
 - The desktop host intentionally implements stdio tools only. Add Streamable
   HTTP as a new desktop transport when a real desktop-affine server requires it;
   remote servers with no desktop affinity belong beside Pi.
+- Plan 002 owns runtime downloads, dependency locks, license notices,
+  `extraResources`, packaged command entries, and real Chrome and Windows MCP
+  smoke tests. Do not pull packaging concerns back into this bridge plan.
 - Windows ODR may become the preferred catalog and consent source after it is
   stable and Sandi has package identity. Replace the config/catalog source
   inside the Electron host; keep the broker operation contract unchanged.

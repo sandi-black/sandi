@@ -421,10 +421,13 @@ async function main(): Promise<void> {
 
   // Self-update: the installed app stages new releases in the background and
   // installs on quit (or from the tray); the portable exe can only point at
-  // the download page; a dev run gets no updater and no tray section.
+  // the download page; dev and packaged smoke runs get no updater or tray
+  // section. A smoke install must stay on the artifact under test instead of
+  // replacing itself from the production release feed during shutdown.
   const updateFlavor = detectUpdateFlavor();
   const updater: UpdaterController | undefined =
-    updateFlavor === "dev"
+    updateFlavor === "dev" ||
+    process.env["SANDI_PACKAGED_SMOKE_EXIT_FILE"] !== undefined
       ? undefined
       : createUpdater({
           flavor: updateFlavor,

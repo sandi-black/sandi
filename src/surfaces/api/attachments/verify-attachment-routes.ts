@@ -729,7 +729,12 @@ class RecordingProvider implements ModelProviderClient {
     this.callCount += 1;
     this.lastRequest = request;
     this.onGenerateTurn?.(request);
-    return { text: this.responseText, deliverySideEffects: false, raw: null };
+    return {
+      text: this.responseText,
+      deliverySideEffects: false,
+      signals: [],
+      raw: null,
+    };
   }
 }
 

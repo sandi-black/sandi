@@ -1,7 +1,6 @@
 import {
   type CoreConfig,
   loadCoreConfig,
-  readCsvEnv,
   readEnv,
   requireEnv,
 } from "@/lib/config/env";
@@ -14,8 +13,6 @@ export type DiscordConfig = {
   forumChannelName: string;
   statusChannelId?: string;
   statusChannelName: string;
-  inlineReplyChannelIds: string[];
-  inlineReplyChannelNames: string[];
 };
 
 export type DiscordAppConfig = CoreConfig & {
@@ -31,10 +28,6 @@ export function loadDiscordConfig(): DiscordConfig {
     guildId: requireEnv(["DISCORD_GUILD_ID"]),
     forumChannelName: readEnv(["SANDI_FORUM_CHANNEL_NAME"]) ?? "sandi",
     statusChannelName: readEnv(["SANDI_STATUS_CHANNEL_NAME"]) ?? "status",
-    inlineReplyChannelIds: readCsvEnv(["SANDI_INLINE_REPLY_CHANNEL_IDS"]) ?? [],
-    inlineReplyChannelNames: (
-      readCsvEnv(["SANDI_INLINE_REPLY_CHANNEL_NAMES"]) ?? []
-    ).map((name) => name.toLowerCase()),
   };
   if (forumChannelId) config.forumChannelId = forumChannelId;
   if (statusChannelId) config.statusChannelId = statusChannelId;

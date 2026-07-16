@@ -93,6 +93,15 @@ import {
   threadTitleRequestInput,
 } from "@/surfaces/discord/bot/thread-title";
 import { TodoListManager } from "@/surfaces/discord/bot/todo-list";
+import {
+  countReplyChainUpTo,
+  defaultTopLevelEngagementRoute,
+  requestedTopLevelEngagementRoute,
+  resolveTopLevelEngagementRoute,
+  TOP_LEVEL_THREAD_SUGGESTION_LENGTH,
+  type TopLevelEngagementRoute,
+  topLevelEngagementInstructions,
+} from "@/surfaces/discord/bot/top-level-engagement";
 import type { DiscordAppConfig } from "@/surfaces/discord/config";
 import {
   buildDiscordChannelManifest,
@@ -138,7 +147,7 @@ const HELP_MESSAGE = [
   "`/sandi reminders list`: list interactive human reminders for this conversation.",
   "`/sandi reminders list scope: All reminders`: list every interactive reminder Sandi can see.",
   "",
-  "Sandi reads the channels she can see and chimes in when a message seems meant for her. Mention her or reply to one of her messages to be sure she answers; when she replies in a busy channel she opens a thread to keep things tidy.",
+  "Sandi reads the channels she can see and chimes in when a message seems meant for her. Mention her or reply to one of her messages to be sure she answers. Top-level responses stay inline by default; add `:thread:` to request a thread. Sandi can override either route when the conversation calls for it.",
 ].join("\n");
 const MAX_EVENTS_DISPLAYED = 10;
 const MAX_INTERACTION_RESPONSE_CHARS = 2_000;
@@ -146,11 +155,12 @@ const TYPING_TIMEOUT_MS = 3_000;
 const TYPING_INTERVAL_MS = 9_000;
 const TYPING_FALLBACK_COOLDOWN_MS = 15_000;
 const ACTIVITY_FALLBACK_EMOJI = "👀";
-const DEFAULT_MENTION_THREAD_AUTO_ARCHIVE = ThreadAutoArchiveDuration.OneDay;
+const DEFAULT_MESSAGE_THREAD_AUTO_ARCHIVE = ThreadAutoArchiveDuration.OneDay;
 const TODO_CHANNEL_PREFIXES = ["todo-", "tasks-"];
 const RECENT_THREAD_CONTEXT_FETCH_LIMIT = 20;
 const RECENT_THREAD_CONTEXT_DISPLAY_LIMIT = 8;
 const RECENT_THREAD_MESSAGE_MAX_LENGTH = 260;
+const TOP_LEVEL_BRANCH_SUMMARY_MAX_LENGTH = 2_000;
 const PASSIVE_GATE_CONTEXT_FETCH_LIMIT = 12;
 const PASSIVE_GATE_CONTEXT_DISPLAY_LIMIT = 6;
 const MAX_TYPING_COOLDOWNS = 512;
@@ -215,12 +225,19 @@ type RunTurnInput = {
   input: string;
   metadata: string;
   toolContext: DiscordToolContext;
+  topLevelDelivery?: TopLevelTurnDelivery;
   replyToMessageId?: string;
   signal?: AbortSignal;
   suppressFinalResponse?: boolean;
   reactOnTypingFailure?: boolean;
   failureReplyToMessageId?: string | false;
   rethrowFailures?: boolean;
+};
+
+type TopLevelTurnDelivery = {
+  originMessage: Message;
+  defaultRoute: TopLevelEngagementRoute;
+  replyChainLength: number;
 };
 
 export class SandiBot {
@@ -517,7 +534,8 @@ export class SandiBot {
     // Sandi passively reads every other message. An explicit mention or a reply
     // to one of her own messages always earns a response; anything else goes
     // through a cheap gate that decides whether the message was meant for her.
-    const mustRespond = mentioned || (await this.#isReplyToSandi(message));
+    const isReplyToSandi = await this.#isReplyToSandi(message);
+    const mustRespond = mentioned || isReplyToSandi;
     if (!mustRespond) {
       if (!(await this.#shouldRespondToPassiveMessage(message))) {
         log.info("passive reply gate chose to stay silent", {
@@ -528,43 +546,38 @@ export class SandiBot {
       }
     }
 
-    // Sandi has decided to engage. Create an on-demand thread for a busy
-    // top-level channel so the reply stays grouped, unless that channel is
-    // configured to keep Sandi conversation inline.
+    // Sandi decides the final delivery route after generating her response.
+    // Until then, the top-level channel owns the turn and its conversation
+    // context.
     const channel = asConversationChannel(message.channel);
     if (channel && !thread) {
       const strippedContent = stripBotMention(
         message.content,
         this.#client.user?.id,
       );
-      if (this.#shouldReplyInlineInChannel(channel)) {
-        const author = await this.#participantFromMessage(message);
-        log.info("engaging top-level channel message inline", {
-          messageId: message.id,
-          channelId: channel.id,
-          mustRespond,
-        });
-        await this.#enqueueChannelTurn({
-          channel,
-          author,
-          messageId: message.id,
-          input: strippedContent,
-          metadata: await messageMetadata(message),
-          toolContext: toolContextFromMessage(message, author),
-          title: channel.name,
-          replyToMessageId: message.id,
-        });
-        return;
-      }
-      log.info("engaging top-level channel message via on-demand thread", {
+      const author = await this.#participantFromMessage(message);
+      const defaultRoute = defaultTopLevelEngagementRoute(message.content);
+      const replyChainLength = await topLevelReplyChainLength(message);
+      log.info("engaging top-level channel message", {
         messageId: message.id,
         channelId: channel.id,
         mustRespond,
+        defaultRoute,
+        replyChainLength,
       });
-      await this.#startThreadForChannelMessage({
-        message,
+      await this.#enqueueChannelTurn({
         channel,
-        strippedContent,
+        author,
+        messageId: message.id,
+        input: strippedContent,
+        metadata: await messageMetadata(message),
+        toolContext: toolContextFromMessage(message, author),
+        title: channel.name,
+        topLevelDelivery: {
+          originMessage: message,
+          defaultRoute,
+          replyChainLength,
+        },
       });
       return;
     }
@@ -604,15 +617,6 @@ export class SandiBot {
       ? message.channel["parentId"]
       : undefined;
     return typeof parentId === "string" && ignored.has(parentId);
-  }
-
-  #shouldReplyInlineInChannel(channel: ConversationDiscordChannel): boolean {
-    if (this.#config.discord.inlineReplyChannelIds.includes(channel.id)) {
-      return true;
-    }
-    return this.#config.discord.inlineReplyChannelNames.includes(
-      channel.name.toLowerCase(),
-    );
   }
 
   async #shouldRespondToPassiveMessage(message: Message): Promise<boolean> {
@@ -878,82 +882,81 @@ export class SandiBot {
     });
   }
 
-  async #startThreadForChannelMessage(input: {
-    message: Message;
+  async #createThreadForTopLevelResponse(input: {
+    delivery: TopLevelTurnDelivery;
     channel: ConversationDiscordChannel;
-    strippedContent: string;
-  }): Promise<void> {
-    if (!input.message.inGuild()) {
+    conversation: ConversationManifest;
+    author: ConversationParticipant;
+    prompt: string;
+    responseContent: string;
+  }): Promise<AnyThreadChannel | undefined> {
+    const originMessage = input.delivery.originMessage;
+    if (!originMessage.inGuild()) {
       log.warn("cannot create Sandi message thread outside a guild", {
-        messageId: input.message.id,
-        channelId: input.message.channelId,
+        messageId: originMessage.id,
+        channelId: originMessage.channelId,
       });
-      return;
+      return undefined;
     }
 
-    const prompt =
-      input.strippedContent || "Sandi engaged without additional text.";
-    const author = await this.#participantFromMessage(input.message);
-    let thread = asThread(input.message.thread);
+    let thread = asThread(originMessage.thread);
     let createdThread = false;
 
     if (!thread) {
       try {
-        thread = await input.message.startThread({
+        thread = await originMessage.startThread({
           name: MENTION_THREAD_PLACEHOLDER_TITLE,
-          autoArchiveDuration: DEFAULT_MENTION_THREAD_AUTO_ARCHIVE,
-          reason: `Sandi conversation requested by ${input.message.author.tag}`,
+          autoArchiveDuration: DEFAULT_MESSAGE_THREAD_AUTO_ARCHIVE,
+          reason: `Sandi routed a response for ${originMessage.author.tag}`,
         });
         createdThread = true;
       } catch (error) {
         log.error("failed to create Sandi message thread", {
-          messageId: input.message.id,
+          messageId: originMessage.id,
           channelId: input.channel.id,
           error: errorMessage(error),
         });
-        await sendThreadCreationFailureNotice(input.message, error);
-        return;
+        await sendThreadCreationFailureNotice(originMessage, error);
+        return undefined;
       }
     }
 
     const source: DiscordThreadConversationSource = {
-      kind: "message_thread",
+      kind: "channel_branch",
+      parentConversationId: input.conversation.canonicalId,
       originChannelId: input.channel.id,
-      originMessageId: input.message.id,
-      originMessageUrl: input.message.url,
-      starterMessage: prompt,
-      createdByUserId: author.platformUserId,
+      originMessageId: originMessage.id,
+      originMessageUrl: originMessage.url,
+      starterMessage: input.prompt,
+      bridgeSummary: topLevelBranchSummary({
+        prompt: input.prompt,
+        response: input.responseContent,
+      }),
+      createdByUserId: input.author.platformUserId,
     };
 
     const title = createdThread
       ? await this.#titleCreatedMessageThread({
           thread,
-          originMessage: input.message,
+          originMessage,
           originChannel: input.channel,
-          prompt,
-          author,
+          prompt: input.prompt,
+          author: input.author,
         })
       : thread.name;
 
-    await this.#enqueueThreadTurn({
+    const manifest = await this.#loadThreadManifest(
       thread,
-      author,
-      messageId: input.message.id,
-      input: prompt,
-      metadata: await messageThreadStarterMetadata({
-        originMessage: input.message,
-        thread,
-      }),
-      toolContext: toolContextFromThreadStarter({
-        originMessage: input.message,
-        thread,
-        author,
-      }),
       title,
+      input.author,
       source,
-      reactOnTypingFailure: false,
-      failureReplyToMessageId: false,
+    );
+    await this.#conversations.addParticipant({
+      storageId: discordConversationStorageId(manifest),
+      manifest,
+      participant: input.author,
     });
+    return thread;
   }
 
   async #titleCreatedMessageThread(input: {
@@ -1172,6 +1175,7 @@ export class SandiBot {
     metadata: string;
     toolContext: DiscordToolContext;
     title: string;
+    topLevelDelivery?: TopLevelTurnDelivery;
     replyToMessageId?: string;
     suppressFinalResponse?: boolean;
   }): Promise<void> {
@@ -1198,6 +1202,9 @@ export class SandiBot {
           metadata: input.metadata,
           toolContext: input.toolContext,
           signal,
+          ...(input.topLevelDelivery
+            ? { topLevelDelivery: input.topLevelDelivery }
+            : {}),
         };
         const turnInput = input.suppressFinalResponse
           ? { ...baseTurnInput, suppressFinalResponse: true }
@@ -1254,10 +1261,19 @@ export class SandiBot {
     }, TYPING_INTERVAL_MS);
 
     try {
+      const deliveryInstructions = input.topLevelDelivery
+        ? [
+            DISCORD_DELIVERY_INSTRUCTIONS,
+            topLevelEngagementInstructions({
+              defaultRoute: input.topLevelDelivery.defaultRoute,
+              replyChainLength: input.topLevelDelivery.replyChainLength,
+            }),
+          ].join("\n\n")
+        : DISCORD_DELIVERY_INSTRUCTIONS;
       const [instructions, metadata] = await Promise.all([
         this.#contextCompiler.compile({
           conversation: input.conversation,
-          deliveryInstructions: DISCORD_DELIVERY_INSTRUCTIONS,
+          deliveryInstructions,
           skillHintQuery: input.input,
         }),
         this.#metadataWithReactionDigest({
@@ -1311,6 +1327,19 @@ export class SandiBot {
             responseLength: response.text.length,
           });
         }
+        return;
+      }
+
+      if (input.topLevelDelivery) {
+        await this.#sendTopLevelProviderResponse({
+          channel: input.channel,
+          conversation: input.conversation,
+          author: input.author,
+          prompt: input.input,
+          response,
+          delivery: input.topLevelDelivery,
+          idempotencyKey: `discord:response:${input.messageId}`,
+        });
         return;
       }
 
@@ -1616,9 +1645,66 @@ export class SandiBot {
     }
   }
 
+  async #sendTopLevelProviderResponse(input: {
+    channel: ConversationDiscordChannel;
+    conversation: ConversationManifest;
+    author: ConversationParticipant;
+    prompt: string;
+    response: ProviderTurnResponse;
+    delivery: TopLevelTurnDelivery;
+    idempotencyKey: string;
+  }): Promise<void> {
+    if (input.response.deliverySideEffects) return;
+
+    const content = input.response.text.trim();
+    if (!content) return;
+    const requestedRoute = requestedTopLevelEngagementRoute(
+      input.response.signals,
+    );
+    const route = resolveTopLevelEngagementRoute({
+      defaultRoute: input.delivery.defaultRoute,
+      ...(requestedRoute ? { requestedRoute } : {}),
+    });
+    log.info("resolved top-level response route", {
+      messageId: input.delivery.originMessage.id,
+      channelId: input.channel.id,
+      defaultRoute: input.delivery.defaultRoute,
+      requestedRoute: requestedRoute ?? "default",
+      route,
+    });
+
+    if (route === "inline") {
+      await this.#sendProviderResponse({
+        channel: input.channel,
+        response: input.response,
+        content,
+        idempotencyKey: input.idempotencyKey,
+        replyToMessageId: input.delivery.originMessage.id,
+      });
+      return;
+    }
+
+    const thread = await this.#createThreadForTopLevelResponse({
+      delivery: input.delivery,
+      channel: input.channel,
+      conversation: input.conversation,
+      author: input.author,
+      prompt: input.prompt,
+      responseContent: content,
+    });
+    if (!thread) return;
+    await this.#sendProviderResponse({
+      channel: thread,
+      response: input.response,
+      content,
+      idempotencyKey: input.idempotencyKey,
+    });
+  }
+
   async #sendProviderResponse(input: {
     channel: FailureNoticeChannel;
     response: ProviderTurnResponse;
+    content?: string;
     idempotencyKey: string;
     replyToMessageId?: string;
   }): Promise<void> {
@@ -1626,7 +1712,7 @@ export class SandiBot {
     // marker as runtime evidence to suppress the automatic final-text post.
     if (input.response.deliverySideEffects) return;
 
-    const content = input.response.text.trim();
+    const content = input.content?.trim() ?? input.response.text.trim();
     if (!content) return;
 
     await enqueueDiscordMessage({
@@ -2067,6 +2153,16 @@ function inlineCode(value: string): string {
   return `\`${limitText(compact || "unknown provider error", 300)}\``;
 }
 
+function topLevelBranchSummary(input: {
+  prompt: string;
+  response: string;
+}): string {
+  return limitText(
+    [`User: ${input.prompt}`, `Sandi: ${input.response}`].join("\n"),
+    TOP_LEVEL_BRANCH_SUMMARY_MAX_LENGTH,
+  );
+}
+
 function limitText(value: string, maxLength: number): string {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength - 3)}...`;
@@ -2299,7 +2395,7 @@ async function sendThreadCreationFailureNotice(
   if (!message.channel.isSendable()) return;
   try {
     await message.reply({
-      content: `I couldn't start a thread for that Sandi turn, so I didn't run it. ${inlineCode(errorMessage(error))}`,
+      content: `I couldn't start a thread for that response, so I didn't post it. ${inlineCode(errorMessage(error))}`,
       allowedMentions: { parse: [], repliedUser: false },
     });
   } catch (noticeError) {
@@ -2487,21 +2583,34 @@ async function messageMetadata(message: Message): Promise<string> {
   return lines.join("\n");
 }
 
-async function messageThreadStarterMetadata(input: {
-  originMessage: Message;
-  thread: AnyThreadChannel;
-}): Promise<string> {
-  return [
-    await messageMetadata(input.originMessage),
-    "",
-    "sandi_message_thread:",
-    "  note: This top-level Discord message created the current Sandi-managed thread conversation.",
-    `  thread_id: ${input.thread.id}`,
-    `  thread_name: ${input.thread.name}`,
-    `  parent_channel_id: ${input.thread.parentId ?? input.originMessage.channelId}`,
-    `  origin_message_id: ${input.originMessage.id}`,
-    `  origin_message_url: ${input.originMessage.url}`,
-  ].join("\n");
+async function topLevelReplyChainLength(message: Message): Promise<number> {
+  try {
+    return await countReplyChainUpTo({
+      start: {
+        id: message.id,
+        ...(message.reference?.messageId
+          ? { referencedMessageId: message.reference.messageId }
+          : {}),
+      },
+      maximumLength: TOP_LEVEL_THREAD_SUGGESTION_LENGTH,
+      fetchReferencedMessage: async (messageId) => {
+        const referenced = await message.channel.messages.fetch(messageId);
+        return {
+          id: referenced.id,
+          ...(referenced.reference?.messageId
+            ? { referencedMessageId: referenced.reference.messageId }
+            : {}),
+        };
+      },
+    });
+  } catch (error) {
+    log.warn("failed to inspect top-level reply chain", {
+      messageId: message.id,
+      channelId: message.channelId,
+      error: errorMessage(error),
+    });
+    return 1;
+  }
 }
 
 async function recentThreadContextMetadata(
@@ -2712,26 +2821,6 @@ function toolContextFromMessage(
     context.threadId = thread.id;
     if (thread.parentId) context.parentChannelId = thread.parentId;
   }
-  return context;
-}
-
-function toolContextFromThreadStarter(input: {
-  originMessage: Message;
-  thread: AnyThreadChannel;
-  author?: ConversationParticipant;
-}): DiscordToolContext {
-  const context: DiscordToolContext = {
-    platform: "discord",
-    channelId: input.thread.id,
-    messageId: input.originMessage.id,
-    threadId: input.thread.id,
-  };
-  const guildId = input.originMessage.guildId ?? input.thread.guildId;
-  if (guildId) context.guildId = guildId;
-  const parentChannelId =
-    input.thread.parentId ?? input.originMessage.channelId;
-  if (parentChannelId) context.parentChannelId = parentChannelId;
-  if (input.author) context.author = toolContextAuthor(input.author);
   return context;
 }
 

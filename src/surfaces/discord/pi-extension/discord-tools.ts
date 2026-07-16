@@ -37,6 +37,8 @@ import { ChannelType, type REST, Routes } from "discord.js";
 import { isMissingPathError } from "../../../lib/fs-errors";
 import { assetsRoot, dataRoot } from "../../../lib/pi-extension/roots";
 import { recordDeliverySideEffect } from "../../../lib/provider/side-effects";
+import { recordTurnSignal } from "../../../lib/provider/turn-signals";
+import { TOP_LEVEL_RESPONSE_ROUTE_SIGNAL } from "../bot/top-level-engagement";
 import { readDiscordPlatformContext } from "../runtime/context";
 import {
   allowedMentions,
@@ -339,6 +341,35 @@ export default function discordToolsExtension(pi: ExtensionAPI): void {
         return textResult(formatSearchResult(result), {
           guildId,
           totalResults: result.total_results ?? 0,
+        });
+      },
+    }),
+  );
+
+  pi.registerTool(
+    defineTool({
+      name: "discord_route_response",
+      label: "Route Discord Response",
+      description:
+        "Choose whether the current top-level Discord response is posted inline or in a new managed thread.",
+      promptSnippet:
+        "Use discord_route_response only when the current turn's system instructions allow Sandi to override automatic top-level response routing.",
+      promptGuidelines: [
+        "This records a route for the automatic final response; it does not post a message or create a thread immediately.",
+        "Omit this tool when the default route in the current system instructions is correct.",
+      ],
+      parameters: Type.Object({
+        route: Type.Union([Type.Literal("inline"), Type.Literal("thread")], {
+          description: "Where the automatic final response should be posted.",
+        }),
+      }),
+      async execute(_toolCallId, params) {
+        await recordTurnSignal({
+          kind: TOP_LEVEL_RESPONSE_ROUTE_SIGNAL,
+          value: params.route,
+        });
+        return textResult(`Response route set to ${params.route}.`, {
+          route: params.route,
         });
       },
     }),
@@ -766,6 +797,7 @@ export default function discordToolsExtension(pi: ExtensionAPI): void {
       promptGuidelines: [
         "If invoked from inside a forum post and no channel is provided, parent targets the parent forum channel.",
         "Use messageId to create a thread from a specific message in a text channel.",
+        "For routing the current automatic top-level response, use discord_route_response instead so the host registers the new thread as a managed conversation.",
       ],
       parameters: Type.Object({
         channel: ChannelRefParam,

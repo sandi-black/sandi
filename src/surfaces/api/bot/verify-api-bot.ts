@@ -1081,6 +1081,7 @@ class RecordingProvider implements ModelProviderClient {
     return {
       text: this.responseText,
       deliverySideEffects: false,
+      signals: [],
       raw: null,
     };
   }

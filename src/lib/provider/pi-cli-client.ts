@@ -29,6 +29,11 @@ import {
   spawnCommandWithPipeStdin,
   terminateCommandProcess,
 } from "@/lib/provider/spawn-command";
+import {
+  readTurnSignals,
+  TURN_SIGNAL_FILE_ENV,
+  type TurnSignal,
+} from "@/lib/provider/turn-signals";
 import type { SandiSurfaceContext } from "@/lib/surface-context";
 import { isRecord } from "@/lib/type-guards";
 
@@ -85,6 +90,7 @@ export type ProviderTurnRequest = {
 export type ProviderTurnResponse = {
   text: string;
   deliverySideEffects: boolean;
+  signals: TurnSignal[];
   raw: unknown;
 };
 
@@ -292,8 +298,14 @@ export class PiCliClient implements ModelProviderClient {
       "turn-side-effects",
       `${conversationFileKey(request.conversationId)}-${turnId}.jsonl`,
     );
+    const turnSignalFile = join(
+      this.#sessionDir,
+      "turn-signals",
+      `${conversationFileKey(request.conversationId)}-${turnId}.jsonl`,
+    );
     const stopFile = stopFilePath(this.#sessionDir, request.conversationId);
     await mkdir(dirname(deliverySideEffectFile), { recursive: true });
+    await mkdir(dirname(turnSignalFile), { recursive: true });
     await mkdir(dirname(stopFile), { recursive: true });
     await rm(stopFile, { force: true });
     const systemPromptFile = await writeSystemPromptPayload(
@@ -315,6 +327,7 @@ export class PiCliClient implements ModelProviderClient {
         feedbackRoot: this.#feedbackRoot,
         skillsRoot: this.#skillsRoot,
         deliverySideEffectFile,
+        turnSignalFile,
         stopFile,
         usageMetadata: {
           conversationId: request.conversationId,
@@ -362,6 +375,7 @@ export class PiCliClient implements ModelProviderClient {
       const deliverySideEffects = await deliverySideEffectFileHasEntries(
         deliverySideEffectFile,
       );
+      const signals = await readTurnSignals(turnSignalFile);
       log.info("provider account route completed", {
         ...auditFields,
         exitCode: result.exitCode,
@@ -371,6 +385,7 @@ export class PiCliClient implements ModelProviderClient {
       return {
         text: result.stdout.trim(),
         deliverySideEffects,
+        signals,
         raw: {
           exitCode: result.exitCode,
           stderr: result.stderr,
@@ -380,6 +395,7 @@ export class PiCliClient implements ModelProviderClient {
     } finally {
       await cleanupTurnFiles([
         deliverySideEffectFile,
+        turnSignalFile,
         stopFile,
         systemPromptFile,
       ]);
@@ -561,6 +577,7 @@ type RunOptions = {
   feedbackRoot?: string | undefined;
   skillsRoot?: string | undefined;
   deliverySideEffectFile?: string | undefined;
+  turnSignalFile?: string | undefined;
   stopFile?: string | undefined;
   usageMetadata?: TokenUsageMetadata | undefined;
   account?: PiExecutionAccount | undefined;
@@ -582,6 +599,7 @@ type ChildEnvOptions = Pick<
   | "feedbackRoot"
   | "skillsRoot"
   | "deliverySideEffectFile"
+  | "turnSignalFile"
   | "stopFile"
   | "usageMetadata"
   | "account"
@@ -794,6 +812,7 @@ function childEnv(options: ChildEnvOptions): NodeJS.ProcessEnv {
     feedbackRoot,
     skillsRoot,
     deliverySideEffectFile,
+    turnSignalFile,
     stopFile,
     usageMetadata,
     account,
@@ -818,6 +837,7 @@ function childEnv(options: ChildEnvOptions): NodeJS.ProcessEnv {
   delete env["SANDI_POLICY_ROOT"];
   delete env["SANDI_POLICY_ROOTS"];
   delete env["SANDI_FEEDBACK_ROOT"];
+  delete env[TURN_SIGNAL_FILE_ENV];
   // Names are duplicated as string literals on the extension side on purpose:
   // the pi child loads extensions without the tsconfig path alias, so it cannot
   // import the shared constant. This and the proxy extension are the two ends of
@@ -884,6 +904,9 @@ function childEnv(options: ChildEnvOptions): NodeJS.ProcessEnv {
   }
   if (deliverySideEffectFile) {
     env[DELIVERY_SIDE_EFFECT_FILE_ENV] = deliverySideEffectFile;
+  }
+  if (turnSignalFile) {
+    env[TURN_SIGNAL_FILE_ENV] = turnSignalFile;
   }
   if (stopFile) {
     env["SANDI_PI_STOP_FILE"] = stopFile;

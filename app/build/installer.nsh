@@ -1,8 +1,7 @@
 !macro failSilentUninstall
-  IfErrors 0 +4
+  IfErrors 0 +3
     DetailPrint "Uninstall was not successful. Not able to launch uninstaller."
-    SetErrorLevel 2
-    Quit
+    Return
 
   ${if} $R0 != 0
     ${IfNot} ${Silent}

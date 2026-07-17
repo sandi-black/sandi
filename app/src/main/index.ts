@@ -33,7 +33,10 @@ import {
 import { requireIpcOwner } from "./ipc-owner";
 import { ReplyAttachmentSchema } from "./ipc-schemas";
 import { createLinkManager } from "./link-manager";
-import { createBundledMcpCommandRegistry } from "./mcp/bundled-command-registry";
+import {
+  createBundledMcpCommandRegistry,
+  resolveRealLocalAppData,
+} from "./mcp/bundled-command-registry";
 import { createMcpHost } from "./mcp/mcp-host";
 import { createDesktopToolExecutor } from "./mcp/tool-executor";
 import { installPackagedSmokeExit } from "./packaged-smoke-exit";
@@ -132,6 +135,7 @@ async function main(): Promise<void> {
   const bundledMcpCommands = createBundledMcpCommandRegistry({
     resourcesRoot: process.resourcesPath,
     userDataDir: userData,
+    realLocalAppData: resolveRealLocalAppData(process.env),
   });
   const mcpHost = createMcpHost({
     userDataDir: userData,

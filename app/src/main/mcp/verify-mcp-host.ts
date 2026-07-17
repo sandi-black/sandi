@@ -548,8 +548,13 @@ async function verifyBundledEnvironment(): Promise<void> {
   const bundledState = join(root, "state.log");
   const host = createMcpHost({
     userDataDir: root,
-    resolveBundled: (id) =>
-      id === "fixture"
+    resolveBundled: (id, configuredArgs) => {
+      assert.deepEqual(
+        configuredArgs,
+        ["--tools", "PowerShell"],
+        "bundled resolution receives configured arguments",
+      );
+      return id === "fixture"
         ? {
             executable: process.execPath,
             argsPrefix: [fixture],
@@ -559,7 +564,8 @@ async function verifyBundledEnvironment(): Promise<void> {
               SANDI_MCP_FIXTURE_STATE: bundledState,
             },
           }
-        : undefined,
+        : undefined;
+    },
   });
   await configure(host, {
     operation: "upsert",

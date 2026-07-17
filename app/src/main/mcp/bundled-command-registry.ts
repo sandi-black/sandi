@@ -73,6 +73,7 @@ const definitions: Record<string, CommandDefinition> = {
     requiredFiles: [
       "autoit/AutoIt3_x64.exe",
       "autoit/Include/AutoItConstants.au3",
+      "autoit/Include/SandiAutoIt.au3",
     ],
   },
 };

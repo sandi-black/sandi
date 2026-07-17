@@ -161,8 +161,8 @@ try {
 
   const autoitRun = await callBroker(origin.ticket, "local_autoit_run", {
     code: [
-      "#include <AutoItConstants.au3>",
-      'ConsoleWrite(@AutoItVersion & "|" & @AutoItX64 & "|" & $BI_ENABLE & @CRLF)',
+      "#include <SandiAutoIt.au3>",
+      'ConsoleWrite(@AutoItVersion & "|" & @AutoItX64 & "|" & $SANDI_UIA_BUTTON & @CRLF)',
     ].join("\n"),
   });
   const expectedBundledError = process.env["SANDI_EXPECT_BUNDLED_ERROR"];
@@ -177,7 +177,7 @@ try {
       true,
       autoitRun.error ?? "local_autoit_run failed",
     );
-    assert.match(textOf(autoitRun), /3\.3\.18\.0\|1\|0/);
+    assert.match(textOf(autoitRun), /3\.3\.18\.0\|1\|50000/);
     assert.equal(autoitRun.structuredContent?.["runtime"], "autoit");
     assert.equal(autoitRun.structuredContent?.["exitCode"], 0);
     const config = {

@@ -283,7 +283,8 @@ The source bridge smoke covers the host and broker behavior without packaging.
 
 The Windows artifacts include one immutable payload at `resources/mcp`:
 
-- `autoit/` contains pinned AutoIt x64 plus its standard include files.
+- `autoit/` contains pinned AutoIt x64, its standard include files, and the
+  first-party `SandiAutoIt.au3` scoped UIA and guarded-input facade.
 - `servers/chrome-devtools/` contains the complete pinned server dependency
   tree. It and `local_js_run` use the packaged Electron executable in documented
   `ELECTRON_RUN_AS_NODE` mode, so no separate Node runtime is downloaded or
@@ -305,8 +306,8 @@ The checked-in sources of truth are under `app/mcp-runtime`. To update a pin:
    license hash in `runtime-lock.json`.
 2. For Chrome DevTools MCP, update its exact dependency in `package.json` and
    regenerate that directory's npm lock. For AutoIt, pin the official portable
-   archive and license hashes; preparation copies only `AutoIt3_x64.exe` and the
-   standard `Include` directory.
+   archive and license hashes. Preparation copies `AutoIt3_x64.exe` and the
+   standard `Include` directory, then adds the checked-in first-party include.
 3. On Windows x64, run `npm run prepare:mcp-runtime -w app`. Preparation
    downloads into the local cache, verifies every source, and atomically
    replaces `app/build/mcp` only after the new bundle passes.

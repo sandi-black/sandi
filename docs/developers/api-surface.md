@@ -246,6 +246,13 @@ in the desktop app's interactive session. Both capture stdout and stderr as
 untrusted evidence, return structured exit and timeout metadata, and kill
 descendants on cancellation or timeout.
 
+The packaged AutoIt include provides bounded HWND/PID-scoped UIA operations and
+guarded global-input helpers. Submitted scripts may use Control* and the UIA
+facade directly. Raw global input and dynamic/native dispatch fail closed;
+global fallback must use `SandiInput_*` with `#RequireAdmin` so the supervised
+elevation path owns input release during normal completion, timeout, and
+cancellation.
+
 Only the builtin file and shell tools are disabled on a desktop turn.
 `sandi_js_run` stays enabled and the desktop surface points its runtime entry at
 the unified runtime, so a desktop turn can compose Discord, GitHub, and the other

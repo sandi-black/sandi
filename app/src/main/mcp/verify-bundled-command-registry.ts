@@ -107,6 +107,22 @@ try {
       }).resolve("autoit", []),
     /component autoit\/Include\/AutoItConstants.au3 is unavailable/,
   );
+
+  const missingSandiInclude = join(root, "missing Sandi include");
+  writeBundle(missingSandiInclude);
+  rmSync(
+    join(missingSandiInclude, "mcp", "autoit", "Include", "SandiAutoIt.au3"),
+  );
+  await assert.rejects(
+    () =>
+      createBundledMcpCommandRegistry({
+        resourcesRoot: missingSandiInclude,
+        userDataDir: join(root, "missing Sandi include user"),
+        realLocalAppData: undefined,
+        electronExecutable,
+      }).resolve("autoit", []),
+    /component autoit\/Include\/SandiAutoIt\.au3 is unavailable/,
+  );
   const noRealProfile = createBundledMcpCommandRegistry({
     resourcesRoot: resources,
     userDataDir: join(root, "no real profile user"),
@@ -195,6 +211,7 @@ function writeBundle(resourcesRoot: string): void {
   const files: Record<string, string> = {
     "autoit/AutoIt3_x64.exe": "autoit",
     "autoit/Include/AutoItConstants.au3": "constants",
+    "autoit/Include/SandiAutoIt.au3": "sandi include",
     "servers/chrome-devtools/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js":
       "chrome",
   };

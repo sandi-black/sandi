@@ -42,7 +42,10 @@ browser session.
 1. Observe current state through Chrome's page snapshot, AutoIt window/control
    queries, or a fresh `local_screenshot` when semantic state is unavailable.
 2. Act through Chrome for page content or one `local_autoit_run` script for a
-   native flow. Do file and process work with the matching local tools.
+   native flow. For native work, keep HWND/PID and use Control* first, the
+   bundled `SandiAutoIt.au3` UIA facade second, and guarded `SandiInput_*`
+   fallback helpers third. Do file and process work with the matching local
+   tools.
 3. Wait on the real state change and observe again. Never repeat an ambiguous
    mutating action without first checking whether it happened.
 

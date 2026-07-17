@@ -16,59 +16,93 @@ no MCP server or persistent subprocess.
 | Interfaces without useful controls or DOM state | Fresh `local_screenshot` observations |
 
 Chrome uses the bundled `chrome-devtools-mcp` command with `--autoConnect` for
-the user's running default profile. Chrome must have remote debugging enabled at
-`chrome://inspect/#remote-debugging`, and the user must allow the connection.
-Generic web research does not need this server.
+the user's running profile. The server receives that real profile path as an
+argument while its process environment remains isolated. Chrome must have
+remote debugging enabled at `chrome://inspect/#remote-debugging`, and the user
+must allow the connection. Generic web research does not need this server.
 
-Native work should fit in one AutoIt script: discover and retain PID/HWND, act
-through `ControlSetText`, `ControlClick`, or `ControlCommand`, wait on the real
-state change, verify it, and print concise evidence. Modern controls may require
-an audited task-local UI Automation include. Sandi does not bundle a UIA facade
-because the available UDF families are large and have incompatible constants
-and maintenance paths.
+## Native execution model
 
-Global `Send` and mouse input are the last fallback. Each short chunk must first
-revalidate its target, register exit cleanup, and successfully call
-`BlockInput(1)`. It must call `BlockInput(0)` immediately afterward and recheck
-state before another chunk. Current Windows versions normally require elevation
-for input blocking, so guarded global-input scripts should include
-`#RequireAdmin`. The directive is an explicit, on-demand elevation request:
-`local_autoit_run` shows UAC and supervises the elevated process, while ordinary
-control-targeted scripts remain unelevated. The user may approve or decline the
-prompt, and Sandi must not automate that decision.
+Keep native work in one observe-act-wait-verify AutoIt script. Discover and
+retain PID/HWND, then use this order:
 
-## Desktop routing and cancellation
+1. Use `ControlSetText`, `ControlClick`, or `ControlCommand` with a stable
+   control id.
+2. Include `<SandiAutoIt.au3>` and use its scoped UIA facade for controls that
+   do not expose a useful Win32 control interface.
+3. Use the facade's guarded `SandiInput_*` keyboard or mouse helpers only when
+   neither targeted path can perform the action.
+
+The first-party UIA facade resolves from a validated HWND/PID root. Searches
+are bounded, skip document subtrees, and match control type with AutomationId
+and accessible name when those properties exist. Zero and ambiguous matches
+fail with candidate identities. Invoke, toggle, select, get-value, and set-value
+operations resolve the selector again before acting, so callers cannot mutate
+through a stale UIA element. Chrome DevTools remains the browser DOM path.
+
+Raw `Send`, `Mouse*`, `Call`, `Execute`, `Eval`, and native dispatch are rejected
+in submitted AutoIt source. Guarded helpers own `BlockInput`, validate the
+foreground HWND/PID after blocking, and revalidate before every short chunk.
+Keyboard helpers also compare the focused UIA element with the requested
+control. Focus or identity loss stops the remaining input rather than
+redirecting it.
+
+Guarded global fallback requires `#RequireAdmin`, which is an explicit,
+on-demand elevation request. `local_autoit_run` pre-elevates its supervisor, so
+the actual script inherits administrator rights without AutoIt's detached
+relaunch. The user may approve or decline UAC, and Sandi must not automate that
+decision. Control* and UIA scripts do not need elevation.
+
+The supervisor captures output and exit status, enforces timeout and
+cancellation, kills descendants, and releases blocked input and pressed mouse
+buttons during cleanup. Windows also releases `BlockInput` when the blocking
+thread exits unexpectedly.
+
+## Desktop routing and results
 
 Every local tool accepts the optional `desktop` selector. A desktop-originated
 turn defaults to that machine; a cross-surface turn with several connected
 desktops must call `local_list_desktops` and choose one. The broker binds each
-dispatch to the turn's abort signal. Cancellation or timeout kills the runtime
-process and its descendants. Raw AutoIt `#RequireAdmin` normally relaunches as a
-detached elevated process, which loses the broker's output and lifecycle
-tracking. The local tool detects the directive and pre-elevates a
-file-supervised wrapper instead; the real script then inherits administrator
-rights without another relaunch.
+dispatch to the turn's abort signal.
 
-`local_js_run` defaults `cwd` to the desktop tool root. A supplied relative
-`cwd` resolves from that root. AutoIt runs with the same root as its process
-working directory, while `@ScriptDir` names the unique persisted run artifact.
-Both tools return separate bounded stdout and stderr as untrusted evidence plus
-runtime version, artifact path, cwd, exit code, signal, timeout, truncation,
-duration, and elevation metadata.
+`local_js_run` defaults `cwd` to the desktop tool root. A relative `cwd` resolves
+from that root. AutoIt uses the same root as its process working directory,
+while `@ScriptDir` identifies the unique persisted run artifact. Both tools
+return separate bounded stdout and stderr as untrusted evidence plus runtime
+version, artifact path, cwd, exit code, signal, timeout, truncation, duration,
+and elevation metadata.
 
-## Packaged verification
+## Verification
 
-Run the release-boundary check on Windows x64:
+The normal Windows runtime gate is non-elevated and includes a real separate
+AutoIt GUI fixture. It verifies background UIA value and invoke behavior,
+toggle, selection, exact AutomationId selectors, duplicate-name ambiguity,
+stale selector refusal, wrong PID, stale HWND, and bundled include resolution.
+
+```powershell
+npm run prepare:mcp-runtime -w app
+npm run verify:mcp-runtime -w app
+```
+
+The guarded-input behavior gate is deliberately separate. It never requests
+elevation and refuses unless its terminal is already elevated. Run it only when
+interactive input blocking is safe:
+
+```powershell
+npm run verify:autoit-guarded-input -w app
+```
+
+That gate changes focus during chunked input, cancels multiline input while it
+is active, checks that remaining input is not redirected, and sends a fresh
+input probe after supervisor cleanup. The packaged release-boundary check
+verifies the manifest-hashed include through a real brokered `local_autoit_run`
+call:
 
 ```powershell
 npm run verify:packaged-mcp -w app
 ```
 
-It prepares the pinned AutoIt and Chrome payload, verifies every staged file's
-size and SHA256, builds the NSIS and portable targets, relocates and extracts
-both, launches the real Electron composition root, and runs brokered JavaScript
-and AutoIt through the packaged app without a runtime download. The focused
-runtime checks also cover syntax and nonzero exits, bounded output, timeout,
-cancellation, and descendant cleanup. Native interaction with third-party apps,
-UAC prompts, locked sessions, and remote-desktop reconnection remain manual
-checks because release automation cannot safely mutate those interfaces.
+The packaged check prepares the pinned AutoIt and Chrome payload, verifies each
+staged file's size and SHA256, builds the NSIS and portable targets, relocates
+and extracts both, launches the real Electron composition root, and runs
+brokered JavaScript and AutoIt without downloading a runtime at execution time.

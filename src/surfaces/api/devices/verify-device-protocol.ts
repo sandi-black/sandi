@@ -10,6 +10,7 @@ import {
   MAX_DEVICE_ERROR_CHARS,
   MAX_DEVICE_IMAGE_BASE64_CHARS,
   MAX_DEVICE_TEXT_CHARS,
+  MAX_LOCAL_SCRIPT_SOURCE_CHARS,
 } from "@/surfaces/api/devices/protocol";
 
 function verifyDeviceProtocol(): void {
@@ -110,12 +111,40 @@ function verifyDeviceProtocol(): void {
     params: {
       operation: "call",
       desktop: "Ada's workstation",
-      serverId: "windows-mcp",
+      serverId: "grace-fixture",
       toolName: "Snapshot",
       arguments: { window: "Calculator" },
     },
   });
   assert(call.success, "the broker accepts a bounded exact MCP tool call");
+  assert(
+    BrokerCallSchema.safeParse({
+      tool: "local_js_run",
+      params: { desktop: "Ada's workstation", code: "console.log(42)" },
+    }).success,
+    "the broker accepts desktop-routed inline JavaScript",
+  );
+  assert(
+    BrokerCallSchema.safeParse({
+      tool: "local_autoit_run",
+      params: { code: 'ConsoleWrite("Ada")', timeoutMs: 1_000 },
+    }).success,
+    "the broker accepts bounded inline AutoIt",
+  );
+  assert(
+    !BrokerCallSchema.safeParse({
+      tool: "local_autoit_run",
+      params: { code: "x".repeat(MAX_LOCAL_SCRIPT_SOURCE_CHARS + 1) },
+    }).success,
+    "the broker rejects oversized inline scripts",
+  );
+  assert(
+    !BrokerCallSchema.safeParse({
+      tool: "local_js_run",
+      params: { code: "console.log(42)", timeoutMs: 600_001 },
+    }).success,
+    "the broker rejects an out-of-range script timeout",
+  );
   assert(
     LocalMcpParamsSchema.safeParse({
       operation: "search",
@@ -127,7 +156,7 @@ function verifyDeviceProtocol(): void {
   assert(
     !LocalMcpParamsSchema.safeParse({
       operation: "call",
-      serverId: "windows-mcp",
+      serverId: "grace-fixture",
       toolName: "Snapshot",
       arguments: { input: "x".repeat(1_048_576) },
     }).success,

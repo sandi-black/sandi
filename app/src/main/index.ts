@@ -136,6 +136,7 @@ async function main(): Promise<void> {
     resourcesRoot: process.resourcesPath,
     userDataDir: userData,
     realLocalAppData: resolveRealLocalAppData(process.env),
+    electronExecutable: process.execPath,
   });
   const mcpHost = createMcpHost({
     userDataDir: userData,
@@ -233,7 +234,26 @@ async function main(): Promise<void> {
     // Sandi's relative tool paths resolve against the home directory; her
     // reach is the human's own, so their home is the natural anchor.
     rootDir: app.getPath("home"),
-    executeTool: createDesktopToolExecutor(mcpHost),
+    executeTool: createDesktopToolExecutor(mcpHost, {
+      runRoot: join(userData, "local-runs"),
+      javascript: {
+        executable: process.execPath,
+        version: process.versions.node,
+        env: { ELECTRON_RUN_AS_NODE: "1" },
+      },
+      ...(app.isPackaged
+        ? {
+            autoit: async () => {
+              const command = await bundledMcpCommands.resolve("autoit", []);
+              if (!command) return undefined;
+              return {
+                executable: command.executable,
+                version: command.version ?? "unknown",
+              };
+            },
+          }
+        : {}),
+    }),
     events: {
       onStatus: (status: LinkStatus) => {
         tray?.setLinkStatus(status);

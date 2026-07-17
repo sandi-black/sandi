@@ -65,7 +65,7 @@ try {
     "the extension installs its error hook",
   );
   const patched = Reflect.apply(errorHook, undefined, [
-    { details: { desktopMcpIsError: true } },
+    { details: { isError: true } },
   ]);
   assert(
     typeof patched === "object" &&

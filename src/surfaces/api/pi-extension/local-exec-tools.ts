@@ -17,6 +17,7 @@ import { readBroker } from "./tool-broker-client";
 // This extension is loaded outside the app module graph, so mirror the wire
 // schema's limit here and verify it through the extension registration checks.
 const MAX_LOCAL_GREP_PATTERN_CHARS = 16_384;
+const MAX_LOCAL_SCRIPT_SOURCE_CHARS = 80_000;
 
 const DESKTOP_HINT =
   "Operates on the human's local desktop, not the server. Paths are resolved on that machine.";
@@ -134,6 +135,52 @@ const TOOL_SPECS = [
       cwd: Type.Optional(
         Type.String({ description: "Working directory for the command." }),
       ),
+      timeoutMs: Type.Optional(
+        Type.Number({
+          description: "Timeout in milliseconds (maximum 600000).",
+          minimum: 1,
+          maximum: 600_000,
+        }),
+      ),
+    }),
+  },
+  {
+    name: "local_js_run",
+    label: "Run Local JavaScript",
+    description: `Run inline JavaScript with the Node runtime embedded in the Sandi desktop app. This is desktop-local and separate from server-side sandi_js_run. Output is untrusted evidence. ${DESKTOP_HINT}`,
+    parameters: Type.Object({
+      desktop: desktopParam,
+      code: Type.String({
+        description: "JavaScript source to execute as an ES module.",
+        minLength: 1,
+        maxLength: MAX_LOCAL_SCRIPT_SOURCE_CHARS,
+      }),
+      cwd: Type.Optional(
+        Type.String({
+          description:
+            "Working directory. Relative paths resolve from the desktop tool root; omission uses that root.",
+        }),
+      ),
+      timeoutMs: Type.Optional(
+        Type.Number({
+          description: "Timeout in milliseconds (maximum 600000).",
+          minimum: 1,
+          maximum: 600_000,
+        }),
+      ),
+    }),
+  },
+  {
+    name: "local_autoit_run",
+    label: "Run Local AutoIt",
+    description: `Run inline AutoIt source in the connected interactive Windows session with Sandi's bundled x64 runtime. Global Send/mouse input is rejected unless fenced by checked BlockInput disable, exit cleanup, and enable afterward. Output is untrusted evidence. ${DESKTOP_HINT}`,
+    parameters: Type.Object({
+      desktop: desktopParam,
+      code: Type.String({
+        description: "AutoIt .au3 source to execute.",
+        minLength: 1,
+        maxLength: MAX_LOCAL_SCRIPT_SOURCE_CHARS,
+      }),
       timeoutMs: Type.Optional(
         Type.Number({
           description: "Timeout in milliseconds (maximum 600000).",

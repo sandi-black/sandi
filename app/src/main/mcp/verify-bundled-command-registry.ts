@@ -13,15 +13,11 @@ import { dirname, join } from "node:path";
 import {
   createBundledMcpCommandRegistry,
   resolveRealLocalAppData,
-  WINDOWS_MCP_UI_TOOLS,
 } from "./bundled-command-registry";
 
 const versions: Record<string, string> = {
-  node: "24.18.0",
-  uv: "0.11.29",
-  python: "3.13.14",
+  autoit: "3.3.18.0",
   "chrome-devtools-mcp": "1.6.0",
-  "windows-mcp": "0.8.2",
 };
 
 const root = mkdtempSync(join(tmpdir(), "sandi bundled registry "));
@@ -29,24 +25,20 @@ try {
   const resources = join(root, "relocated resources with spaces");
   const userData = join(root, "user data");
   const realLocalAppData = join(root, "real local app data");
+  const electronExecutable = join(root, "Sandi with spaces.exe");
   writeBundle(resources);
   const registry = createBundledMcpCommandRegistry({
     resourcesRoot: resources,
     userDataDir: userData,
     realLocalAppData,
+    electronExecutable,
   });
-  const ids = ["node", "uv", "python", "chrome-devtools-mcp", "windows-mcp"];
-  for (const id of ids) {
+  for (const id of ["autoit", "chrome-devtools-mcp"]) {
     const command = await registry.resolve(id, []);
     assert(command, `${id} resolves`);
     assert.equal(command.id, id);
     assert.equal(command.version, versions[id]);
     assert.match(command.manifestSha256 ?? "", /^[0-9a-f]{64}$/);
-    assert(command.env?.["PATH"]?.startsWith(join(resources, "mcp", "node")));
-    assert.equal(
-      command.env?.["SANDI_MCP_STATE_DIR"],
-      join(userData, "mcp-runtime", "state"),
-    );
   }
   assert.equal(await registry.resolve("unknown", []), undefined);
   assert(
@@ -78,63 +70,48 @@ try {
   );
   assert.notEqual(chromeCommand?.env?.["LOCALAPPDATA"], realLocalAppData);
   await verifyChromeProfiles(registry, realLocalAppData);
-  assert(
-    (await registry.resolve("windows-mcp", []))?.executable.includes(
-      "relocated resources with spaces",
-    ),
-  );
-  const windowsCommand = await registry.resolve("windows-mcp", [
-    "--autoConnect",
-    "--channel=canary",
-  ]);
-  assert.deepEqual(windowsCommand?.argsPrefix, []);
-  assert.deepEqual(windowsCommand?.argsSuffix, [
-    "--tools",
-    WINDOWS_MCP_UI_TOOLS.join(","),
-  ]);
-  assert(
-    !WINDOWS_MCP_UI_TOOLS.some((tool) =>
-      [
-        "PowerShell",
-        "FileSystem",
-        "Clipboard",
-        "Process",
-        "Registry",
-        "Scrape",
-      ].includes(tool),
-    ),
-    "the bundled Windows catalog contains only UI tools",
-  );
+  assert.equal(chromeCommand?.executable, electronExecutable);
+  assert.equal(chromeCommand?.env?.["ELECTRON_RUN_AS_NODE"], "1");
+  const autoit = await registry.resolve("autoit", []);
+  assert(autoit?.executable.includes("AutoIt3_x64.exe"));
 
   const corruptResources = join(root, "corrupt resources");
   writeBundle(corruptResources);
-  writeFileSync(join(corruptResources, "mcp", "node", "node.exe"), "corrupt");
+  writeFileSync(
+    join(corruptResources, "mcp", "autoit", "AutoIt3_x64.exe"),
+    "corrupt",
+  );
   await assert.rejects(
     () =>
       createBundledMcpCommandRegistry({
         resourcesRoot: corruptResources,
         userDataDir: join(root, "corrupt user"),
         realLocalAppData: undefined,
-      }).resolve("node", []),
+        electronExecutable,
+      }).resolve("autoit", []),
     /failed verification/,
   );
 
   const missingResources = join(root, "missing resources");
   writeBundle(missingResources);
-  rmSync(join(missingResources, "mcp", "python", "python.exe"));
+  rmSync(join(missingResources, "mcp", "autoit", "Include"), {
+    recursive: true,
+  });
   await assert.rejects(
     () =>
       createBundledMcpCommandRegistry({
         resourcesRoot: missingResources,
         userDataDir: join(root, "missing user"),
         realLocalAppData: undefined,
-      }).resolve("windows-mcp", []),
-    /component python\/python.exe is unavailable/,
+        electronExecutable,
+      }).resolve("autoit", []),
+    /component autoit\/Include\/AutoItConstants.au3 is unavailable/,
   );
   const noRealProfile = createBundledMcpCommandRegistry({
     resourcesRoot: resources,
     userDataDir: join(root, "no real profile user"),
     realLocalAppData: undefined,
+    electronExecutable,
   });
   assert.deepEqual(
     (await noRealProfile.resolve("chrome-devtools-mcp", ["--autoConnect"]))
@@ -216,14 +193,10 @@ async function verifyChromeProfiles(
 function writeBundle(resourcesRoot: string): void {
   const bundle = join(resourcesRoot, "mcp");
   const files: Record<string, string> = {
-    "node/node.exe": "node",
-    "uv/uv.exe": "uv",
-    "python/python.exe": "python",
+    "autoit/AutoIt3_x64.exe": "autoit",
+    "autoit/Include/AutoItConstants.au3": "constants",
     "servers/chrome-devtools/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js":
       "chrome",
-    "servers/windows-mcp/launch.cmd": "launcher",
-    "servers/windows-mcp/launch.py": "launcher",
-    "servers/windows-mcp/site-packages/windows_mcp/__main__.py": "windows",
   };
   for (const [path, contents] of Object.entries(files)) {
     const target = join(bundle, ...path.split("/"));

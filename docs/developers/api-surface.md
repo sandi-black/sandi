@@ -229,13 +229,22 @@ agents.
 An api-surface turn runs pi with `--no-builtin-tools`, which disables its seven
 native file and shell tools (read, write, edit, bash, grep, find, ls) because
 those operate on the server's disk, the wrong machine. In their place, an
-api-only extension (`pi-extension/local-exec-tools.ts`) registers seven proxy
+api-only extension (`pi-extension/local-exec-tools.ts`) registers nine proxy
 tools (`local_read`, `local_write`, `local_edit`, `local_ls`, `local_glob`,
-`local_grep`, `local_bash`) under distinct names, so pi's name-based exclusion
-never catches them. The flag is carried by `SandiSurfaceContext.disableBuiltinTools`,
-set on `API_SURFACE_CONTEXT`. Sandi's own extension tools (memory, skills,
-`sandi_js_run`, and the rest) stay server-side and unchanged; only the proxy
-file and shell tools run on the desktop.
+`local_grep`, `local_bash`, `local_js_run`, and `local_autoit_run`) under distinct
+names, so pi's name-based exclusion never catches them. The flag is carried by
+`SandiSurfaceContext.disableBuiltinTools`, set on `API_SURFACE_CONTEXT`. Sandi's
+own extension tools (memory, skills, `sandi_js_run`, and the rest) stay
+server-side and unchanged; only the proxy file and shell tools run on the
+desktop.
+
+The inline scripting tools use unique persisted artifacts and one bounded
+process owner. `local_js_run` invokes the Node runtime embedded in the packaged
+Electron executable through `ELECTRON_RUN_AS_NODE`; it never resolves system
+Node or Bun. `local_autoit_run` invokes the manifest-verified AutoIt x64 runtime
+in the desktop app's interactive session. Both capture stdout and stderr as
+untrusted evidence, return structured exit and timeout metadata, and kill
+descendants on cancellation or timeout.
 
 Only the builtin file and shell tools are disabled on a desktop turn.
 `sandi_js_run` stays enabled and the desktop surface points its runtime entry at

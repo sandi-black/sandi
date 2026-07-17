@@ -22,13 +22,7 @@ export function readRuntimeLock(path) {
       throw new Error(`${name} version is missing`);
     }
   }
-  const requiredCommands = [
-    "node",
-    "uv",
-    "python",
-    "chrome-devtools-mcp",
-    "windows-mcp",
-  ];
+  const requiredCommands = ["autoit", "chrome-devtools-mcp"];
   for (const id of requiredCommands) {
     if (typeof lock.commands?.[id]?.version !== "string") {
       throw new Error(`MCP runtime lock is missing command ${id}`);

@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { path7za } from "7zip-bin";
@@ -17,7 +24,7 @@ const packageJson = JSON.parse(
   readFileSync(join(appRoot, "package.json"), "utf8"),
 );
 const lock = readRuntimeLock(join(appRoot, "mcp-runtime", "runtime-lock.json"));
-const inspectionRoot = join(appRoot, "build", "packaged runtime inspection");
+const inspectionRoot = mkdtempSync(join(tmpdir(), "sandi-packaged-runtime-"));
 const tsxCli = resolve(appRoot, "..", "node_modules", "tsx", "dist", "cli.mjs");
 const targets = [
   {
@@ -38,8 +45,6 @@ const targets = [
   },
 ];
 
-rmSync(inspectionRoot, { recursive: true, force: true });
-mkdirSync(inspectionRoot, { recursive: true });
 try {
   let expectedManifestSha256;
   for (const target of targets) {
@@ -86,12 +91,7 @@ try {
     `verified packaged MCP runtimes: manifest=${expectedManifestSha256} targets=${targets.length}`,
   );
 } finally {
-  rmSync(inspectionRoot, {
-    recursive: true,
-    force: true,
-    maxRetries: 200,
-    retryDelay: 100,
-  });
+  await removeEventually(inspectionRoot);
 }
 
 function run(command, args, env = process.env) {
@@ -109,4 +109,17 @@ function run(command, args, env = process.env) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+async function removeEventually(path) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!["EPERM", "EBUSY", "ENOTEMPTY"].includes(error?.code)) throw error;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    }
+  }
+  throw new Error(`timed out removing packaged inspection ${path}`);
 }

@@ -24,7 +24,6 @@ import { bearerToken, sendJson } from "../../src/surfaces/api/http/respond";
 import { callBroker } from "../../src/surfaces/api/pi-extension/tool-broker-client";
 import { createMcpCatalogStore } from "../src/main/mcp/catalog-store";
 import { createMcpConfigStore } from "../src/main/mcp/config-store";
-import { runPackagedComputerUseSmoke } from "./packaged-computer-use-smoke";
 
 const packagedRoot = resolve(
   process.env["SANDI_PACKAGED_APP_ROOT"] ?? "release/win-unpacked",
@@ -152,129 +151,151 @@ try {
     signal: new AbortController().signal,
     originDevice: true,
   });
-  const config = {
-    id: "packaged-fixture",
-    label: "Packaged Grace Hopper fixture",
-    enabled: true,
-    command: { kind: "external" as const, executable: wrapperPath },
-    args: [],
-    inheritEnv: ["SANDI_MCP_FIXTURE_STATE"],
-  };
-  const approved = await callBroker(origin.ticket, "local_mcp_configure", {
-    operation: "upsert",
-    server: config,
+  const jsRun = await callBroker(origin.ticket, "local_js_run", {
+    code: 'console.log(JSON.stringify({ runtime: "electron-node", answer: 42 }))',
   });
-  assert.equal(approved.ok, true, "the packaged app saves the configuration");
-  createMcpCatalogStore(join(userData, "mcp-catalogs")).save(config.id, [
-    {
-      name: "cached_tool",
-      description: "Cached before spawn.",
-      inputSchema: { type: "object" },
-    },
-  ]);
-  const search = await callBroker(origin.ticket, "local_mcp", {
-    operation: "search",
-    query: "cached",
-  });
-  assert.match(textOf(search), /cached_tool/);
-  assert.equal(readState().length, 0, "cached discovery starts no child");
-  const called = await callBroker(origin.ticket, "local_mcp", {
-    operation: "call",
-    serverId: config.id,
-    toolName: "echo",
-    arguments: { message: "packaged Electron link" },
-  });
-  assert.equal(called.ok, true);
-  assert.match(textOf(called), /packaged Electron link/);
-  const identity = broker.lease({
-    key: entry.tokenSha256,
-    signal: new AbortController().signal,
-  });
-  const ambiguous = await callBroker(identity.ticket, "local_mcp", {
-    operation: "servers",
-  });
-  assert.equal(ambiguous.ok, false);
-  const selected = await callBroker(identity.ticket, "local_mcp", {
-    operation: "servers",
-    desktop: "Grace workstation",
-  });
-  assert.match(textOf(selected), /selected Grace workstation/);
-  identity.revoke();
-  const disabled = await callBroker(origin.ticket, "local_mcp_configure", {
-    operation: "set_enabled",
-    serverId: config.id,
-    enabled: false,
-  });
-  assert.equal(disabled.ok, true);
-  await waitUntil(() => stateCount("exit") >= 1, "disable child exit");
-  const enabled = await callBroker(origin.ticket, "local_mcp_configure", {
-    operation: "set_enabled",
-    serverId: config.id,
-    enabled: true,
-  });
-  assert.equal(enabled.ok, true);
-  await callBroker(origin.ticket, "local_mcp", {
-    operation: "call",
-    serverId: config.id,
-    toolName: "echo",
-    arguments: { message: "remove live" },
-  });
-  await waitUntil(() => stateCount("start") >= 2, "second child start");
-  const removed = await callBroker(origin.ticket, "local_mcp_configure", {
-    operation: "remove",
-    serverId: config.id,
-  });
-  assert.equal(removed.ok, true);
-  await waitUntil(() => stateCount("exit") >= 2, "removal child exit");
-  assert.deepEqual(
-    createMcpConfigStore(join(userData, "mcp-servers.json")).list(),
-    [],
-    "packaged removal deletes the persistent config entry",
-  );
-  assert.equal(
-    existsSync(join(userData, "mcp-catalogs", `${config.id}.json`)),
-    false,
-    "packaged removal deletes the cached catalog",
-  );
+  assert.equal(jsRun.ok, true, jsRun.error ?? "local_js_run failed");
+  assert.match(textOf(jsRun), /electron-node/);
+  assert.equal(jsRun.structuredContent?.["runtime"], "node");
+  assert.equal(jsRun.structuredContent?.["exitCode"], 0);
 
-  const chromeConfig = {
-    id: "packaged-chrome-mcp",
-    label: "Packaged Chrome DevTools MCP",
-    enabled: true,
-    command: { kind: "bundled" as const, id: "chrome-devtools-mcp" },
-    args:
-      process.env["SANDI_COMPUTER_USE_SMOKE"] === "1"
-        ? ["--isolated", "--chrome-arg=--force-renderer-accessibility"]
-        : ["--headless"],
-    inheritEnv: [
-      "PATH",
-      "USERPROFILE",
-      "TEMP",
-      "HTTP_PROXY",
-      "HTTPS_PROXY",
-      "NODE_OPTIONS",
-    ],
-  };
-  assert.equal(
-    (
-      await callBroker(origin.ticket, "local_mcp_configure", {
-        operation: "upsert",
-        server: chromeConfig,
-      })
-    ).ok,
-    true,
-  );
-  const chromeStartup = await callBroker(origin.ticket, "local_mcp", {
-    operation: "call",
-    serverId: chromeConfig.id,
-    toolName: "missing_after_catalog_refresh",
-    arguments: {},
+  const autoitRun = await callBroker(origin.ticket, "local_autoit_run", {
+    code: [
+      "#include <AutoItConstants.au3>",
+      'ConsoleWrite(@AutoItVersion & "|" & @AutoItX64 & "|" & $BI_ENABLE & @CRLF)',
+    ].join("\n"),
   });
-  assert.equal(chromeStartup.ok, false);
   const expectedBundledError = process.env["SANDI_EXPECT_BUNDLED_ERROR"];
   if (expectedBundledError) {
-    assert.match(chromeStartup.error ?? "", new RegExp(expectedBundledError));
+    assert.equal(autoitRun.ok, false);
+    assert.match(autoitRun.error ?? "", new RegExp(expectedBundledError));
+    origin.revoke();
+    console.log("packaged runtime corruption refusal: ok");
   } else {
+    assert.equal(
+      autoitRun.ok,
+      true,
+      autoitRun.error ?? "local_autoit_run failed",
+    );
+    assert.match(textOf(autoitRun), /3\.3\.18\.0\|1\|0/);
+    assert.equal(autoitRun.structuredContent?.["runtime"], "autoit");
+    assert.equal(autoitRun.structuredContent?.["exitCode"], 0);
+    const config = {
+      id: "packaged-fixture",
+      label: "Packaged Grace Hopper fixture",
+      enabled: true,
+      command: { kind: "external" as const, executable: wrapperPath },
+      args: [],
+      inheritEnv: ["SANDI_MCP_FIXTURE_STATE"],
+    };
+    const approved = await callBroker(origin.ticket, "local_mcp_configure", {
+      operation: "upsert",
+      server: config,
+    });
+    assert.equal(approved.ok, true, "the packaged app saves the configuration");
+    createMcpCatalogStore(join(userData, "mcp-catalogs")).save(config.id, [
+      {
+        name: "cached_tool",
+        description: "Cached before spawn.",
+        inputSchema: { type: "object" },
+      },
+    ]);
+    const search = await callBroker(origin.ticket, "local_mcp", {
+      operation: "search",
+      query: "cached",
+    });
+    assert.match(textOf(search), /cached_tool/);
+    assert.equal(readState().length, 0, "cached discovery starts no child");
+    const called = await callBroker(origin.ticket, "local_mcp", {
+      operation: "call",
+      serverId: config.id,
+      toolName: "echo",
+      arguments: { message: "packaged Electron link" },
+    });
+    assert.equal(called.ok, true);
+    assert.match(textOf(called), /packaged Electron link/);
+    const identity = broker.lease({
+      key: entry.tokenSha256,
+      signal: new AbortController().signal,
+    });
+    const ambiguous = await callBroker(identity.ticket, "local_mcp", {
+      operation: "servers",
+    });
+    assert.equal(ambiguous.ok, false);
+    const selected = await callBroker(identity.ticket, "local_mcp", {
+      operation: "servers",
+      desktop: "Grace workstation",
+    });
+    assert.match(textOf(selected), /selected Grace workstation/);
+    identity.revoke();
+    const disabled = await callBroker(origin.ticket, "local_mcp_configure", {
+      operation: "set_enabled",
+      serverId: config.id,
+      enabled: false,
+    });
+    assert.equal(disabled.ok, true);
+    await waitUntil(() => stateCount("exit") >= 1, "disable child exit");
+    const enabled = await callBroker(origin.ticket, "local_mcp_configure", {
+      operation: "set_enabled",
+      serverId: config.id,
+      enabled: true,
+    });
+    assert.equal(enabled.ok, true);
+    await callBroker(origin.ticket, "local_mcp", {
+      operation: "call",
+      serverId: config.id,
+      toolName: "echo",
+      arguments: { message: "remove live" },
+    });
+    await waitUntil(() => stateCount("start") >= 2, "second child start");
+    const removed = await callBroker(origin.ticket, "local_mcp_configure", {
+      operation: "remove",
+      serverId: config.id,
+    });
+    assert.equal(removed.ok, true);
+    await waitUntil(() => stateCount("exit") >= 2, "removal child exit");
+    assert.deepEqual(
+      createMcpConfigStore(join(userData, "mcp-servers.json")).list(),
+      [],
+      "packaged removal deletes the persistent config entry",
+    );
+    assert.equal(
+      existsSync(join(userData, "mcp-catalogs", `${config.id}.json`)),
+      false,
+      "packaged removal deletes the cached catalog",
+    );
+
+    const chromeConfig = {
+      id: "packaged-chrome-mcp",
+      label: "Packaged Chrome DevTools MCP",
+      enabled: true,
+      command: { kind: "bundled" as const, id: "chrome-devtools-mcp" },
+      args: ["--headless"],
+      inheritEnv: [
+        "PATH",
+        "USERPROFILE",
+        "TEMP",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NODE_OPTIONS",
+      ],
+    };
+    assert.equal(
+      (
+        await callBroker(origin.ticket, "local_mcp_configure", {
+          operation: "upsert",
+          server: chromeConfig,
+        })
+      ).ok,
+      true,
+    );
+    const chromeStartup = await callBroker(origin.ticket, "local_mcp", {
+      operation: "call",
+      serverId: chromeConfig.id,
+      toolName: "missing_after_catalog_refresh",
+      arguments: {},
+    });
+    assert.equal(chromeStartup.ok, false);
     assert.match(chromeStartup.error ?? "", /not in the cached catalog/);
     const chromeSearch = await callBroker(origin.ticket, "local_mcp", {
       operation: "search",
@@ -282,68 +303,18 @@ try {
       query: "navigate",
     });
     assert.match(textOf(chromeSearch), /navigate_page/);
-
-    const bundledConfig = {
-      id: "packaged-windows-mcp",
-      label: "Packaged Windows-MCP",
-      enabled: true,
-      command: { kind: "bundled" as const, id: "windows-mcp" },
-      args: [],
-      inheritEnv: ["HTTP_PROXY", "HTTPS_PROXY"],
-    };
-    assert.equal(
-      (
-        await callBroker(origin.ticket, "local_mcp_configure", {
-          operation: "upsert",
-          server: bundledConfig,
-        })
-      ).ok,
-      true,
-    );
-    const bundledStartup = await callBroker(origin.ticket, "local_mcp", {
-      operation: "call",
-      serverId: bundledConfig.id,
-      toolName: "missing_after_catalog_refresh",
-      arguments: {},
-    });
-    assert.equal(bundledStartup.ok, false);
-    assert.match(bundledStartup.error ?? "", /not in the cached catalog/);
-    const bundledSearch = await callBroker(origin.ticket, "local_mcp", {
-      operation: "search",
-      serverId: bundledConfig.id,
-      query: "Snapshot",
-    });
-    assert.match(textOf(bundledSearch), /Snapshot/);
-    assert(app.pid !== undefined);
-    await runPackagedComputerUseSmoke({
-      appPid: app.pid,
-      broker: origin.ticket,
-      chromeServerId: chromeConfig.id,
-      reconnectKey: entry.tokenSha256,
-      registry,
-      windowsServerId: bundledConfig.id,
-    });
     assert.equal(
       (
         await callBroker(origin.ticket, "local_mcp_configure", {
           operation: "remove",
-          serverId: bundledConfig.id,
+          serverId: chromeConfig.id,
         })
       ).ok,
       true,
     );
+    origin.revoke();
+    console.log("packaged Electron MCP bridge smoke: ok");
   }
-  assert.equal(
-    (
-      await callBroker(origin.ticket, "local_mcp_configure", {
-        operation: "remove",
-        serverId: chromeConfig.id,
-      })
-    ).ok,
-    true,
-  );
-  origin.revoke();
-  console.log("packaged Electron MCP bridge smoke: ok");
 } catch (error) {
   runError = error;
 } finally {

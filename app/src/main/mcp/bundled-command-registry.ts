@@ -20,13 +20,14 @@ const ManifestSchema = z.object({
 
 type Manifest = z.infer<typeof ManifestSchema>;
 type CommandDefinition = {
-  executable: (root: string) => string;
+  executable: (root: string, electronExecutable: string) => string;
   argsPrefix: (root: string) => string[];
   argsSuffix?: (
     root: string,
     configuredArgs: readonly string[],
     realLocalAppData: string | undefined,
   ) => string[];
+  env?: Record<string, string>;
   requiredFiles: string[];
 };
 
@@ -50,27 +51,9 @@ const CHROME_CONNECTION_OPTIONS = [
   "-w",
 ] as const;
 
-export const WINDOWS_MCP_UI_TOOLS = [
-  "Snapshot",
-  "Screenshot",
-  "Click",
-  "Type",
-  "Scroll",
-  "Move",
-  "Shortcut",
-  "Wait",
-  "WaitFor",
-  "App",
-  "MultiSelect",
-  "MultiEdit",
-] as const;
-
 const definitions: Record<string, CommandDefinition> = {
-  node: bundledExecutable("node/node.exe"),
-  uv: bundledExecutable("uv/uv.exe"),
-  python: bundledExecutable("python/python.exe"),
   "chrome-devtools-mcp": {
-    executable: (root) => bundledPath(root, "node/node.exe"),
+    executable: (_root, electronExecutable) => electronExecutable,
     argsPrefix: (root) => [
       bundledPath(
         root,
@@ -80,19 +63,16 @@ const definitions: Record<string, CommandDefinition> = {
     argsSuffix: (_root, configuredArgs, realLocalAppData) =>
       chromeAutoConnectProfileArgs(configuredArgs, realLocalAppData),
     requiredFiles: [
-      "node/node.exe",
       "servers/chrome-devtools/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js",
     ],
+    env: { ELECTRON_RUN_AS_NODE: "1" },
   },
-  "windows-mcp": {
-    executable: (root) => bundledPath(root, "servers/windows-mcp/launch.cmd"),
+  autoit: {
+    executable: (root) => bundledPath(root, "autoit/AutoIt3_x64.exe"),
     argsPrefix: () => [],
-    argsSuffix: () => ["--tools", WINDOWS_MCP_UI_TOOLS.join(",")],
     requiredFiles: [
-      "python/python.exe",
-      "servers/windows-mcp/launch.cmd",
-      "servers/windows-mcp/launch.py",
-      "servers/windows-mcp/site-packages/windows_mcp/__main__.py",
+      "autoit/AutoIt3_x64.exe",
+      "autoit/Include/AutoItConstants.au3",
     ],
   },
 };
@@ -108,6 +88,7 @@ export function createBundledMcpCommandRegistry(input: {
   resourcesRoot: string;
   userDataDir: string;
   realLocalAppData: string | undefined;
+  electronExecutable: string;
 }): BundledMcpCommandRegistry {
   const root = join(input.resourcesRoot, "mcp");
   let verified:
@@ -135,12 +116,12 @@ export function createBundledMcpCommandRegistry(input: {
           );
         }
       }
-      const env = await commandEnvironment(input.userDataDir, root);
+      const env = await commandEnvironment(input.userDataDir);
       return {
         id,
         version: command.version,
         manifestSha256: result.manifestSha256,
-        executable: definition.executable(root),
+        executable: definition.executable(root, input.electronExecutable),
         argsPrefix: definition.argsPrefix(root),
         argsSuffix:
           definition.argsSuffix?.(
@@ -148,7 +129,7 @@ export function createBundledMcpCommandRegistry(input: {
             configuredArgs,
             input.realLocalAppData,
           ) ?? [],
-        env,
+        env: { ...env, ...definition.env },
       };
     },
   };
@@ -235,7 +216,6 @@ async function verifyBundle(root: string): Promise<{
 
 async function commandEnvironment(
   userDataDir: string,
-  root: string,
 ): Promise<Record<string, string>> {
   const profile = join(userDataDir, "mcp-runtime", "profile");
   const local = join(profile, "Local");
@@ -251,12 +231,7 @@ async function commandEnvironment(
   return {
     APPDATA: roaming,
     LOCALAPPDATA: local,
-    PATH: [
-      join(root, "node"),
-      join(root, "uv"),
-      join(systemRoot, "System32"),
-    ].join(";"),
-    PYTHONDONTWRITEBYTECODE: "1",
+    PATH: [join(systemRoot, "System32")].join(";"),
     SANDI_MCP_STATE_DIR: state,
     ...(process.env["SANDI_MCP_OFFLINE_TEST"] === "1"
       ? { SANDI_MCP_OFFLINE_TEST: "1" }
@@ -266,14 +241,6 @@ async function commandEnvironment(
     TMP: temp,
     USERPROFILE: profile,
     WINDIR: systemRoot,
-  };
-}
-
-function bundledExecutable(path: string): CommandDefinition {
-  return {
-    executable: (root) => bundledPath(root, path),
-    argsPrefix: () => [],
-    requiredFiles: [path],
   };
 }
 

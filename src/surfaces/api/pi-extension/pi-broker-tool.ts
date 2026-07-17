@@ -54,7 +54,7 @@ function outcomeDetails(
   return {
     tool,
     ok: true,
-    desktopMcpIsError: outcome.isError === true,
+    isError: outcome.isError === true,
     hasImage: outcome.content.some((block) => block.type === "image"),
     ...(outcome.structuredContent !== undefined
       ? { structuredContent: outcome.structuredContent }
@@ -67,5 +67,5 @@ export function toolResultErrorPatch(
 ): { isError: true } | undefined {
   if (typeof details !== "object" || details === null) return undefined;
   const record: Record<string, unknown> = { ...details };
-  return record["desktopMcpIsError"] === true ? { isError: true } : undefined;
+  return record["isError"] === true ? { isError: true } : undefined;
 }

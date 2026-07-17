@@ -15,7 +15,6 @@
     "prebuild": "node scripts/build-icons.mjs",
     "build": "electron-vite build",
     "prepare:mcp-runtime": "node scripts/prepare-mcp-runtime.mjs",
-    "update:mcp-python-provenance": "node scripts/generate-python-provenance.mjs",
     "verify:mcp-runtime": "node scripts/verify-mcp-runtime.mjs",
     "verify:mcp-runtime-scripts": "node scripts/verify-mcp-runtime-scripts.mjs",
     "package": "npm run build && npm run prepare:mcp-runtime && npm run verify:mcp-runtime && electron-builder --win",

@@ -22,6 +22,25 @@ const executable = isAbsolute(executableArg)
 assert(existsSync(executable), `AutoIt runtime is missing: ${executable}`);
 
 const root = mkdtempSync(join(tmpdir(), "sandi-autoit-input-"));
+const compileProbe = join(root, "compile-probe.au3");
+writeFileSync(
+  compileProbe,
+  [
+    "#include <AutoItConstants.au3>",
+    "#include <String.au3>",
+    "#include <SandiAutoIt.au3>",
+    'If False Then SandiInput_TypeText(HWnd(0), 0, "", $SANDI_UIA_EDIT, "", "first line" & @CRLF & _StringRepeat("x", 4000))',
+    'If False Then Send("release-probe", $SEND_RAW)',
+    'ConsoleWrite("compile=ok")',
+    "",
+  ].join("\r\n"),
+  "utf8",
+);
+const compiled = runAutoIt(compileProbe);
+if (compiled.status !== 0 || compiled.stdout.trim() !== "compile=ok") {
+  rmSync(root, { recursive: true, force: true });
+  throw new Error(compiled.stderr || compiled.stdout || "compile probe failed");
+}
 const adminProbe = join(root, "is-admin.au3");
 writeFileSync(adminProbe, "ConsoleWrite(Number(IsAdmin()))\r\n", "utf8");
 const admin = runAutoIt(adminProbe);
@@ -34,12 +53,14 @@ if (admin.status !== 0 || admin.stdout.trim() !== "1") {
 
 const ready = join(root, "fixture.ready");
 const mode = join(root, "fixture.mode");
+const modeReady = join(root, "fixture.mode-ready");
 const state = join(root, "fixture.state");
 const focusChanged = join(root, "focus.changed");
 const fixturePath = join(root, "fixture.au3");
+let fixtureModeSequence = 0;
 writeFileSync(
   fixturePath,
-  inputFixture({ ready, mode, state, focusChanged }),
+  inputFixture({ ready, mode, modeReady, state, focusChanged }),
   "utf8",
 );
 const fixture = spawn(executable, ["/ErrorStdOut", fixturePath], {
@@ -51,7 +72,7 @@ try {
   await waitUntil(() => existsSync(ready), "input fixture readiness");
   const identity = readFileSync(ready, "utf8").trim();
 
-  writeFileSync(mode, "focus-change", "utf8");
+  await setFixtureMode("focus-change");
   const focusScript = writeScript(
     "focus-change.au3",
     guardedSource(identity, [
@@ -70,23 +91,30 @@ try {
   assert(focusState.primary.length < 24);
   assert.equal(focusState.decoy, "");
 
-  writeFileSync(mode, "reset", "utf8");
-  await waitUntil(() => readState().primary === "", "fixture reset");
-  writeFileSync(mode, "cancel", "utf8");
+  await setFixtureMode("reset");
+  await setFixtureMode("cancel");
   const active = join(root, "cancel.active");
   const controller = new AbortController();
   const cancelledRun = runScript(
     guardedSource(identity, [
       `FileWrite(${autoItString(active)}, "active")`,
-      'SandiInput_TypeText($hWnd, $iPid, "3", $SANDI_UIA_EDIT, "", "first line" & @CRLF & StringRepeat("x", 4000))',
+      'SandiInput_TypeText($hWnd, $iPid, "3", $SANDI_UIA_EDIT, "", "first line" & @CRLF & _StringRepeat("x", 4000))',
     ]),
     20_000,
     controller.signal,
   );
-  await waitUntil(
-    () => existsSync(active) && readState().primary.length > 0,
-    "active multiline guarded input",
-  );
+  let earlyResult: Awaited<typeof cancelledRun> | undefined;
+  void cancelledRun.then((result) => {
+    earlyResult = result;
+  });
+  await waitUntil(() => {
+    if (earlyResult !== undefined) {
+      throw new Error(
+        `guarded input exited before cancellation became active: ${JSON.stringify(earlyResult)}`,
+      );
+    }
+    return existsSync(active) && readState().primary.length > 0;
+  }, "active multiline guarded input");
   controller.abort();
   const cancelled = await cancelledRun;
   assert.equal(cancelled.kind, "cancelled");
@@ -110,16 +138,18 @@ try {
 }
 
 async function verifyInputReleased(identity: string): Promise<void> {
-  writeFileSync(mode, "reset", "utf8");
-  await waitUntil(() => readState().primary === "", "release-probe reset");
+  await setFixtureMode("reset");
   const probe = writeScript(
     "release-probe.au3",
-    fixtureIdentity(identity, [
-      "WinActivate($hWnd)",
-      'If Not WinWaitActive($hWnd, "", 3) Then Exit 30',
-      'If Not ControlFocus($hWnd, "", "Edit1") Then Exit 31',
-      'Send("release-probe", $SEND_RAW)',
-    ]),
+    [
+      "#include <AutoItConstants.au3>",
+      fixtureIdentity(identity, [
+        "WinActivate($hWnd)",
+        'If Not WinWaitActive($hWnd, "", 3) Then Exit 30',
+        'If Not ControlFocus($hWnd, "", "Edit1") Then Exit 31',
+        'Send("release-probe", $SEND_RAW)',
+      ]),
+    ].join("\r\n"),
   );
   const released = runAutoIt(probe);
   assert.equal(released.status, 0, released.stderr || released.stdout);
@@ -132,6 +162,7 @@ async function verifyInputReleased(identity: string): Promise<void> {
 function inputFixture(paths: {
   ready: string;
   mode: string;
+  modeReady: string;
   state: string;
   focusChanged: string;
 }): string {
@@ -148,23 +179,29 @@ Local $sLastMode = ""
 While True
     If GUIGetMsg() = $GUI_EVENT_CLOSE Then ExitLoop
     Local $sMode = StringStripWS(FileRead(${autoItString(paths.mode)}), 3)
+    Local $iModeSeparator = StringInStr($sMode, "|")
+    Local $sAction = $sMode
+    If $iModeSeparator > 0 Then $sAction = StringLeft($sMode, $iModeSeparator - 1)
     If $sMode <> $sLastMode Then
-        If $sMode = "reset" Then
+        If $sAction = "reset" Then
             GUICtrlSetData($iPrimary, "")
             GUICtrlSetData($iDecoy, "")
             GUICtrlSetState($iPrimary, $GUI_FOCUS)
-        ElseIf $sMode = "focus-change" Then
+        ElseIf $sAction = "focus-change" Then
             GUICtrlSetData($iPrimary, "")
             GUICtrlSetData($iDecoy, "")
             GUICtrlSetState($iPrimary, $GUI_FOCUS)
-        ElseIf $sMode = "cancel" Then
+        ElseIf $sAction = "cancel" Then
             GUICtrlSetData($iPrimary, "")
             GUICtrlSetData($iDecoy, "")
             GUICtrlSetState($iPrimary, $GUI_FOCUS)
         EndIf
         $sLastMode = $sMode
+        Local $hModeReady = FileOpen(${autoItString(paths.modeReady)}, 2)
+        FileWrite($hModeReady, $sMode)
+        FileClose($hModeReady)
     EndIf
-    If $sMode = "focus-change" And StringLen(GUICtrlRead($iPrimary)) >= 8 And _
+    If $sAction = "focus-change" And StringLen(GUICtrlRead($iPrimary)) >= 8 And _
             Not FileExists(${autoItString(paths.focusChanged)}) Then
         GUICtrlSetState($iDecoy, $GUI_FOCUS)
         FileWrite(${autoItString(paths.focusChanged)}, "changed")
@@ -183,6 +220,7 @@ WEnd
 
 function guardedSource(identity: string, lines: string[]): string {
   return [
+    "#include <String.au3>",
     "#include <SandiAutoIt.au3>",
     ...fixtureIdentity(identity, lines).trimEnd().split("\r\n"),
     "",
@@ -240,6 +278,17 @@ function readState(): { primary: string; decoy: string } {
     ? readFileSync(state, "utf8").split(/\r?\n/, 2)
     : [];
   return { primary, decoy };
+}
+
+async function setFixtureMode(action: string): Promise<void> {
+  const command = `${action}|${++fixtureModeSequence}`;
+  writeFileSync(mode, command, "utf8");
+  await waitUntil(
+    () =>
+      existsSync(modeReady) &&
+      readFileSync(modeReady, "utf8").trim() === command,
+    `${action} fixture acknowledgement`,
+  );
 }
 
 async function waitUntil(

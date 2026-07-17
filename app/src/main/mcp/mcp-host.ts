@@ -80,6 +80,7 @@ export function createMcpHost(input: {
   userDataDir: string;
   resolveBundled?: (
     id: string,
+    configuredArgs: readonly string[],
   ) => BundledMcpCommand | undefined | Promise<BundledMcpCommand | undefined>;
   configStore?: McpConfigStore;
   catalogStore?: McpCatalogStore;
@@ -311,7 +312,10 @@ export function createMcpHost(input: {
         protectedValues: protectedEnvironmentValues(inheritedEnv),
       };
     }
-    const resolved = await input.resolveBundled?.(config.command.id);
+    const resolved = await input.resolveBundled?.(
+      config.command.id,
+      config.args,
+    );
     if (!resolved) {
       throw new Error(
         `bundled MCP command ${config.command.id} is unavailable in this build`,

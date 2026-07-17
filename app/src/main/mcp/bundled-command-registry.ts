@@ -22,9 +22,33 @@ type Manifest = z.infer<typeof ManifestSchema>;
 type CommandDefinition = {
   executable: (root: string) => string;
   argsPrefix: (root: string) => string[];
-  argsSuffix?: (root: string) => string[];
+  argsSuffix?: (
+    root: string,
+    configuredArgs: readonly string[],
+    realLocalAppData: string | undefined,
+  ) => string[];
   requiredFiles: string[];
 };
+
+const CHROME_USER_DATA_DIRECTORIES: Readonly<
+  Record<string, readonly string[]>
+> = {
+  stable: ["Google", "Chrome", "User Data"],
+  beta: ["Google", "Chrome Beta", "User Data"],
+  dev: ["Google", "Chrome Dev", "User Data"],
+  canary: ["Google", "Chrome SxS", "User Data"],
+};
+
+const CHROME_CONNECTION_OPTIONS = [
+  "--userDataDir",
+  "--user-data-dir",
+  "--browserUrl",
+  "--browser-url",
+  "-u",
+  "--wsEndpoint",
+  "--ws-endpoint",
+  "-w",
+] as const;
 
 export const WINDOWS_MCP_UI_TOOLS = [
   "Snapshot",
@@ -53,6 +77,8 @@ const definitions: Record<string, CommandDefinition> = {
         "servers/chrome-devtools/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js",
       ),
     ],
+    argsSuffix: (_root, configuredArgs, realLocalAppData) =>
+      chromeAutoConnectProfileArgs(configuredArgs, realLocalAppData),
     requiredFiles: [
       "node/node.exe",
       "servers/chrome-devtools/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js",
@@ -72,12 +98,16 @@ const definitions: Record<string, CommandDefinition> = {
 };
 
 export type BundledMcpCommandRegistry = {
-  resolve(id: string): Promise<BundledMcpCommand | undefined>;
+  resolve(
+    id: string,
+    configuredArgs: readonly string[],
+  ): Promise<BundledMcpCommand | undefined>;
 };
 
 export function createBundledMcpCommandRegistry(input: {
   resourcesRoot: string;
   userDataDir: string;
+  realLocalAppData: string | undefined;
 }): BundledMcpCommandRegistry {
   const root = join(input.resourcesRoot, "mcp");
   let verified:
@@ -88,7 +118,7 @@ export function createBundledMcpCommandRegistry(input: {
     | undefined;
 
   return {
-    async resolve(id) {
+    async resolve(id, configuredArgs) {
       const definition = definitions[id];
       if (!definition) return undefined;
       if (!verified) verified = verifyBundle(root);
@@ -112,11 +142,60 @@ export function createBundledMcpCommandRegistry(input: {
         manifestSha256: result.manifestSha256,
         executable: definition.executable(root),
         argsPrefix: definition.argsPrefix(root),
-        argsSuffix: definition.argsSuffix?.(root) ?? [],
+        argsSuffix:
+          definition.argsSuffix?.(
+            root,
+            configuredArgs,
+            input.realLocalAppData,
+          ) ?? [],
         env,
       };
     },
   };
+}
+
+export function resolveRealLocalAppData(
+  environment: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  const localAppData = environment["LOCALAPPDATA"];
+  if (localAppData) return localAppData;
+  const userProfile = environment["USERPROFILE"];
+  return userProfile ? join(userProfile, "AppData", "Local") : undefined;
+}
+
+function chromeAutoConnectProfileArgs(
+  configuredArgs: readonly string[],
+  realLocalAppData: string | undefined,
+): string[] {
+  if (
+    !configuredArgs.includes("--autoConnect") ||
+    hasOption(configuredArgs, CHROME_CONNECTION_OPTIONS) ||
+    !realLocalAppData
+  ) {
+    return [];
+  }
+  const channel = optionValue(configuredArgs, "--channel") ?? "stable";
+  const directory = CHROME_USER_DATA_DIRECTORIES[channel];
+  return directory
+    ? ["--userDataDir", join(realLocalAppData, ...directory)]
+    : [];
+}
+
+function hasOption(args: readonly string[], names: readonly string[]): boolean {
+  return args.some((arg) =>
+    names.some((name) => arg === name || arg.startsWith(`${name}=`)),
+  );
+}
+
+function optionValue(
+  args: readonly string[],
+  name: string,
+): string | undefined {
+  for (const [index, arg] of args.entries()) {
+    if (arg === name) return args[index + 1];
+    if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1);
+  }
+  return undefined;
 }
 
 async function verifyBundle(root: string): Promise<{

@@ -31,8 +31,11 @@ Global `Send` and mouse input are the last fallback. Each short chunk must first
 revalidate its target, register exit cleanup, and successfully call
 `BlockInput(1)`. It must call `BlockInput(0)` immediately afterward and recheck
 state before another chunk. Current Windows versions normally require elevation
-for input blocking, so an unelevated failure refuses the global action. Sandi
-must not request elevation unless the user authorized it.
+for input blocking, so guarded global-input scripts should include
+`#RequireAdmin`. The directive is an explicit, on-demand elevation request:
+`local_autoit_run` shows UAC and supervises the elevated process, while ordinary
+control-targeted scripts remain unelevated. The user may approve or decline the
+prompt, and Sandi must not automate that decision.
 
 ## Desktop routing and cancellation
 
@@ -40,14 +43,18 @@ Every local tool accepts the optional `desktop` selector. A desktop-originated
 turn defaults to that machine; a cross-surface turn with several connected
 desktops must call `local_list_desktops` and choose one. The broker binds each
 dispatch to the turn's abort signal. Cancellation or timeout kills the runtime
-process and its descendants.
+process and its descendants. Raw AutoIt `#RequireAdmin` normally relaunches as a
+detached elevated process, which loses the broker's output and lifecycle
+tracking. The local tool detects the directive and pre-elevates a
+file-supervised wrapper instead; the real script then inherits administrator
+rights without another relaunch.
 
 `local_js_run` defaults `cwd` to the desktop tool root. A supplied relative
 `cwd` resolves from that root. AutoIt runs with the same root as its process
 working directory, while `@ScriptDir` names the unique persisted run artifact.
 Both tools return separate bounded stdout and stderr as untrusted evidence plus
-runtime version, artifact path, cwd, exit code, signal, timeout, truncation, and
-duration metadata.
+runtime version, artifact path, cwd, exit code, signal, timeout, truncation,
+duration, and elevation metadata.
 
 ## Packaged verification
 

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
+import { runSupervisedAutoIt } from "@/surfaces/api/client/autoit-supervisor";
 import { runBoundedProcess } from "@/surfaces/api/client/process-runner";
 import type {
   LocalAutoItRunParams,
@@ -65,6 +66,7 @@ export async function runLocalAutoIt(
   if (!autoit) return refused("the bundled AutoIt runtime is unavailable");
   const fenceError = autoItInputFenceError(params.code);
   if (fenceError) return refused(fenceError);
+  const elevated = autoItRequiresAdmin(params.code);
   const artifact = await writeArtifact(runtimes.runRoot, "au3", params.code);
   return runArtifact({
     runtimeName: "autoit",
@@ -72,9 +74,14 @@ export async function runLocalAutoIt(
     artifact,
     args: ["/ErrorStdOut", artifact],
     cwd: rootDir,
+    elevated,
     ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
     ...(signal !== undefined ? { signal } : {}),
   });
+}
+
+export function autoItRequiresAdmin(source: string): boolean {
+  return /^\s*#RequireAdmin(?:\s*;.*)?\s*$/im.test(source);
 }
 
 export function autoItInputFenceError(source: string): string | undefined {
@@ -114,6 +121,7 @@ async function runArtifact(input: {
   artifact: string;
   args: readonly string[];
   cwd: string;
+  elevated?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<ToolCallOutcome> {
@@ -121,15 +129,29 @@ async function runArtifact(input: {
     MAX_LOCAL_SCRIPT_TIMEOUT_MS,
     input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
   );
-  const result = await runBoundedProcess({
-    executable: input.runtime.executable,
-    args: [...(input.runtime.argsPrefix ?? []), ...input.args],
-    cwd: input.cwd,
-    env: { ...process.env, ...input.runtime.env },
-    timeoutMs,
-    maxOutputChars: MAX_STREAM_CHARS,
-    ...(input.signal !== undefined ? { signal: input.signal } : {}),
-  });
+  const env = { ...process.env, ...input.runtime.env };
+  const result =
+    input.runtimeName === "autoit" && input.elevated === true
+      ? await runSupervisedAutoIt({
+          executable: input.runtime.executable,
+          artifact: input.artifact,
+          runDir: dirname(input.artifact),
+          cwd: input.cwd,
+          env,
+          timeoutMs,
+          maxOutputChars: MAX_STREAM_CHARS,
+          elevation: "require_admin",
+          ...(input.signal !== undefined ? { signal: input.signal } : {}),
+        })
+      : await runBoundedProcess({
+          executable: input.runtime.executable,
+          args: [...(input.runtime.argsPrefix ?? []), ...input.args],
+          cwd: input.cwd,
+          env,
+          timeoutMs,
+          maxOutputChars: MAX_STREAM_CHARS,
+          ...(input.signal !== undefined ? { signal: input.signal } : {}),
+        });
   if (result.kind === "cancelled") return refused("cancelled");
   if (result.kind === "spawn_error") {
     return refused(result.error ?? `${input.runtimeName} failed to start`);
@@ -147,6 +169,7 @@ async function runArtifact(input: {
     cancelled: false,
     truncated: result.truncated,
     durationMs: result.durationMs,
+    elevated: input.elevated === true,
   };
   return {
     ok: true,
@@ -172,6 +195,7 @@ function formatResult(
     timedOut: boolean;
     truncated: boolean;
     durationMs: number;
+    elevated: boolean;
   },
   stdout: string,
   stderr: string,
@@ -183,6 +207,7 @@ function formatResult(
     `exit code: ${metadata.exitCode ?? "none"}`,
     `signal: ${metadata.signal ?? "none"}`,
     `duration ms: ${metadata.durationMs}`,
+    `elevated: ${metadata.elevated}`,
     `timed out: ${metadata.timedOut}`,
     `output truncated: ${metadata.truncated}`,
   ];

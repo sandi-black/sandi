@@ -39,10 +39,13 @@ driving a GUI to do the same work.
 Global keyboard or mouse actions must be a short, validated chunk fenced by
 user-input blocking. Register cleanup first, require `BlockInput(1)` to succeed,
 perform the chunk, immediately call `BlockInput(0)`, and re-observe before any
-next chunk. If blocking fails, exit without sending global input. Do not add
-`#RequireAdmin` or trigger elevation unless the user authorized it.
+next chunk. If blocking fails, exit without sending global input. Add
+`#RequireAdmin` when the script needs administrator rights; this directive is
+the explicit request for `local_autoit_run` to show UAC and supervise the
+elevated process. Do not add it to ordinary control-targeted scripts.
 
 ```autoit
+#RequireAdmin
 #include <AutoItConstants.au3>
 
 OnAutoItExitRegister("_SandiReleaseInput")
@@ -62,10 +65,14 @@ Func _SandiReleaseInput()
 EndFunc
 ```
 
-On current Windows versions, `BlockInput` normally requires an elevated AutoIt
-process. A failed block is a safety refusal, never permission to continue. The
-exit handler covers normal script exits; Sandi's timeout and cancellation path
-terminates the AutoIt process tree as the final cleanup backstop.
+Testing on Windows confirmed that `BlockInput` failed in an unelevated AutoIt
+process and succeeded for the same script after UAC elevation. A failed block
+is a safety refusal, never permission to continue. `local_autoit_run` detects
+the `#RequireAdmin` directive before launch and pre-elevates a supervisor, so
+the real script inherits elevation without AutoIt's detached relaunch. The
+supervisor preserves output, exit status, timeout, cancellation, descendant
+cleanup, and the final input-unblock backstop. The user may approve or decline
+the UAC prompt; do not automate the prompt itself.
 
 ## Observe, act, verify
 

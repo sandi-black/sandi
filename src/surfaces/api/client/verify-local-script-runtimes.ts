@@ -11,6 +11,7 @@ import { join } from "node:path";
 
 import {
   autoItInputFenceError,
+  autoItRequiresAdmin,
   type LocalScriptRuntimeContext,
   runLocalAutoIt,
   runLocalJavaScript,
@@ -36,6 +37,7 @@ try {
   assert.match(text(success), /Grace Hopper/);
   assert.equal(success.structuredContent?.["runtime"], "node");
   assert.equal(success.structuredContent?.["exitCode"], 0);
+  assert.equal(success.structuredContent?.["elevated"], false);
   const artifact = success.structuredContent?.["artifactPath"];
   assert.equal(typeof artifact, "string");
   assert(
@@ -178,6 +180,13 @@ try {
     ),
     undefined,
   );
+  assert.equal(autoItRequiresAdmin("#RequireAdmin\nConsoleWrite('Ada')"), true);
+  assert.equal(
+    autoItRequiresAdmin("  #requireadmin ; guarded global input\nExit 0"),
+    true,
+  );
+  assert.equal(autoItRequiresAdmin("; #RequireAdmin\nExit 0"), false);
+  assert.equal(autoItRequiresAdmin('ConsoleWrite("#RequireAdmin")'), false);
 
   const artifacts = readFileSync(String(artifact), "utf8");
   assert.match(artifacts, /Grace Hopper/);

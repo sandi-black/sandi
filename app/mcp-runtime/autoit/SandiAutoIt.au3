@@ -546,9 +546,27 @@ Func __SandiUIA_FocusedMatches($hWnd, $iPid, $sAutomationId, $iControlType, $sNa
     If Not IsObj($oFocused) Then Return False
     Local $vHasFocus = 0
     If Not __SandiUIA_Property($oFocused, $__SANDI_UIA_HAS_KEYBOARD_FOCUS, $vHasFocus) Or Not $vHasFocus Then Return False
+    Local $pExpectedRuntimeId = 0
+    $iHr = $oExpected.GetRuntimeId($pExpectedRuntimeId)
+    If $iHr <> 0 Or Not $pExpectedRuntimeId Then Return False
+    Local $pFocusedRuntimeId = 0
+    $iHr = $oFocused.GetRuntimeId($pFocusedRuntimeId)
+    If $iHr <> 0 Or Not $pFocusedRuntimeId Then
+        __SandiUIA_DestroySafeArray($pExpectedRuntimeId)
+        Return False
+    EndIf
     Local $bSame = 0
-    $iHr = $__g_SandiUIA.CompareElements(ObjPtr($oExpected), ObjPtr($oFocused), $bSame)
+    $iHr = $__g_SandiUIA.CompareRuntimeIds($pExpectedRuntimeId, $pFocusedRuntimeId, $bSame)
+    __SandiUIA_DestroySafeArray($pExpectedRuntimeId)
+    __SandiUIA_DestroySafeArray($pFocusedRuntimeId)
+    If $iHr <> 0 Or Not $bSame Then ConsoleWriteError("SandiUIA: focused target mismatch; expected=" & _
+            __SandiUIA_ElementText($oExpected) & "; focused=" & __SandiUIA_ElementText($oFocused) & _
+            "; hresult=" & $iHr & @CRLF)
     Return $iHr = 0 And $bSame
+EndFunc
+
+Func __SandiUIA_DestroySafeArray($pSafeArray)
+    If $pSafeArray Then DllCall("oleaut32.dll", "long", "SafeArrayDestroy", "ptr", $pSafeArray)
 EndFunc
 
 Func __SandiInput_Begin($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $bRequireFocus)

@@ -171,6 +171,12 @@ Local $oStaleWindow = SandiUIA_Find(HWnd(1), $iPid, "", $SANDI_UIA_EDIT, "")
 Local $iStaleWindowError = @error
 If $oStaleWindow Then Exit 44
 If $iStaleWindowError <> $SANDI_UIA_ERROR_ROOT Then Exit 45
+WinActivate($hTarget)
+If Not WinWaitActive($hTarget, "", 3) Then Exit 46
+If Not ControlFocus($hTarget, "", "Edit1") Then Exit 47
+If Not __SandiUIA_FocusedMatches($hTarget, $iPid, "3", $SANDI_UIA_EDIT, "") Then Exit 48
+If Not ControlFocus($hTarget, "", "Button1") Then Exit 49
+If __SandiUIA_FocusedMatches($hTarget, $iPid, "3", $SANDI_UIA_EDIT, "") Then Exit 50
 
 ConsoleWrite("uia=ok" & @CRLF)
 Exit 0

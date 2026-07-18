@@ -24,6 +24,11 @@ import {
   listWindows,
   screenshot,
 } from "@/surfaces/api/client/desktop-state";
+import {
+  type LocalScriptRuntimeContext,
+  runLocalAutoIt,
+  runLocalJavaScript,
+} from "@/surfaces/api/client/local-script-runtimes";
 import type {
   BrokerCall,
   LocalBashParams,
@@ -70,6 +75,7 @@ export type ExecutorContext = {
   // Relative paths resolve against this directory; absolute paths are used as
   // given. Defaults to where the client was launched.
   rootDir: string;
+  localScriptRuntimes?: LocalScriptRuntimeContext;
 };
 
 export async function executeLocalTool(
@@ -98,6 +104,24 @@ export async function executeLocalTool(
         return await grepLocal(call.params, context, signal);
       case "local_bash":
         return await bashLocal(call.params, context, signal);
+      case "local_js_run":
+        return context.localScriptRuntimes
+          ? await runLocalJavaScript(
+              call.params,
+              context.rootDir,
+              context.localScriptRuntimes,
+              signal,
+            )
+          : refused("the Sandi desktop JavaScript runtime is unavailable");
+      case "local_autoit_run":
+        return context.localScriptRuntimes
+          ? await runLocalAutoIt(
+              call.params,
+              context.rootDir,
+              context.localScriptRuntimes,
+              signal,
+            )
+          : refused("the bundled AutoIt runtime is unavailable");
       case "local_list_desktops":
         // The broker answers this from its registry and never dispatches it to a
         // desktop; this case only keeps the switch exhaustive.

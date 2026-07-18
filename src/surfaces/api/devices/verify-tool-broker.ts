@@ -158,7 +158,7 @@ async function verifyAbortRejects(
     tool: "local_mcp",
     params: {
       operation: "call",
-      serverId: "windows-mcp",
+      serverId: "grace-fixture",
       toolName: "Snapshot",
       arguments: {},
     },
@@ -338,10 +338,9 @@ async function verifyDesktopTargeting(
   });
 
   const targeted = await postCall(lease.ticket.url, lease.ticket.token, {
-    tool: "local_mcp",
+    tool: "local_autoit_run",
     params: {
-      operation: "search",
-      query: "window",
+      code: 'ConsoleWrite("desktop route")',
       desktop: "hopper-2",
     },
   });

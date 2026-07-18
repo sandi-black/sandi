@@ -62,7 +62,7 @@ try {
   await verifyInstalledBundle();
 
   writeFileSync(
-    join(installDir, "resources", "mcp", "node", "node.exe"),
+    join(installDir, "resources", "mcp", "autoit", "AutoIt3_x64.exe"),
     "corrupt runtime",
   );
   runAppSmoke("failed verification");

@@ -253,7 +253,7 @@ export class ToolBroker {
       `Connected desktops (${desktops.length}):`,
       ...lines,
       "",
-      "Pass an id or name as the `desktop` argument to local_list_monitors, local_list_windows, or local_screenshot. Omit it to use the current desktop.",
+      "Pass an id or name as the `desktop` argument to any local tool. Omit it to use the current desktop.",
     ].join("\n");
     return { ok: true, content: [{ type: "text", text: output }] };
   }

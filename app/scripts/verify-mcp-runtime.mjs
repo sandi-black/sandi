@@ -1,40 +1,32 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
 import { readRuntimeLock, verifyManifest } from "./mcp-runtime-lib.mjs";
-import { verifyPythonProvenance } from "./python-provenance-lib.mjs";
 
 if (process.platform !== "win32" || process.arch !== "x64") {
-  throw new Error("the MCP runtime bundle is verified only on Windows x64");
+  throw new Error("the desktop runtime bundle is verified only on Windows x64");
 }
 
+const require = createRequire(import.meta.url);
+const electronExecutable = require("electron");
 const appRoot = resolve(import.meta.dirname, "..");
 const bundle = join(appRoot, "build", "mcp");
 const lock = readRuntimeLock(join(appRoot, "mcp-runtime", "runtime-lock.json"));
-const userRoot = mkdtempSync(join(tmpdir(), "sandi-mcp-runtime-user-"));
+const userRoot = mkdtempSync(join(tmpdir(), "sandi-runtime-user-"));
 
 try {
   await verifyManifest(bundle, lock);
-
-  const node = join(bundle, "node", "node.exe");
-  const uv = join(bundle, "uv", "uv.exe");
-  const python = join(bundle, "python", "python.exe");
-  assert.equal(
-    runVersion(node, ["--version"]),
-    `v${lock.commands.node.version}`,
-  );
-  assert.match(
-    runVersion(uv, ["--version"]),
-    new RegExp(`^uv ${lock.commands.uv.version}`),
-  );
-  assert.match(
-    runVersion(python, ["--version"]),
-    new RegExp(`^Python ${lock.commands.python.version}`),
-  );
+  verifyAutoIt(userRoot);
 
   const chromePackage = JSON.parse(
     readFileSync(
@@ -53,43 +45,8 @@ try {
     chromePackage.version,
     lock.commands["chrome-devtools-mcp"].version,
   );
-  const windowsMetadata = readFileSync(
-    join(
-      bundle,
-      "servers",
-      "windows-mcp",
-      "site-packages",
-      `windows_mcp-${lock.commands["windows-mcp"].version}.dist-info`,
-      "METADATA",
-    ),
-    "utf8",
-  );
-  assert.match(
-    windowsMetadata,
-    new RegExp(`^Version: ${lock.commands["windows-mcp"].version}$`, "m"),
-  );
-
-  const offlineEnv = {
-    ...process.env,
-    PATH: [
-      join(bundle, "node"),
-      process.env.SystemRoot ? join(process.env.SystemRoot, "System32") : "",
-    ]
-      .filter(Boolean)
-      .join(";"),
-    npm_config_offline: "true",
-    UV_OFFLINE: "1",
-    PIP_NO_INDEX: "1",
-    NO_PROXY: "localhost,127.0.0.1,::1",
-    NODE_OPTIONS: `--use-env-proxy --import=${pathToFileURL(join(import.meta.dirname, "offline-network-guard.mjs")).href}`,
-    SANDI_MCP_OFFLINE_TEST: "1",
-    HTTP_PROXY: "http://127.0.0.1:9",
-    HTTPS_PROXY: "http://127.0.0.1:9",
-  };
-  assertOfflineGuard(node, offlineEnv);
-
   const chromeTools = await listTools(
-    node,
+    electronExecutable,
     [
       join(
         bundle,
@@ -104,39 +61,24 @@ try {
       ),
       "--headless",
     ],
-    offlineEnv,
+    {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+      PATH: join(process.env.SystemRoot ?? "C:\\Windows", "System32"),
+      HTTP_PROXY: "http://127.0.0.1:9",
+      HTTPS_PROXY: "http://127.0.0.1:9",
+      NO_PROXY: "localhost,127.0.0.1,::1",
+    },
     userRoot,
   );
   assert(chromeTools.length > 0, "Chrome DevTools MCP returned no tools");
 
-  const windowsTools = await listTools(
-    join(process.env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe"),
-    ["/d", "/s", "/c", join(bundle, "servers", "windows-mcp", "launch.cmd")],
-    offlineEnv,
-    userRoot,
-  );
-  assert(windowsTools.length > 0, "Windows-MCP returned no tools");
-
   const noticesPath = join(bundle, "THIRD_PARTY_NOTICES.json");
   assert(existsSync(noticesPath), "license index is missing");
-  const notices = JSON.parse(readFileSync(noticesPath, "utf8"));
-  verifyNotices(notices, lock);
-  verifyPythonProvenance(
-    JSON.parse(
-      readFileSync(
-        join(appRoot, "mcp-runtime", "windows-mcp", "provenance.json"),
-        "utf8",
-      ),
-    ),
-    readFileSync(
-      join(appRoot, "mcp-runtime", "windows-mcp", "requirements.lock"),
-      "utf8",
-    ),
-    notices.packages,
-  );
+  verifyNotices(JSON.parse(readFileSync(noticesPath, "utf8")), lock);
   await verifyManifest(bundle, lock);
   console.log(
-    `verified MCP runtime bundle: chrome-tools=${chromeTools.length} windows-tools=${windowsTools.length}`,
+    `verified desktop runtime bundle: autoit=${lock.commands.autoit.version} chrome-tools=${chromeTools.length}`,
   );
 } finally {
   rmSync(userRoot, {
@@ -147,76 +89,122 @@ try {
   });
 }
 
-function runVersion(command, args) {
-  const result = spawnSync(command, args, { encoding: "utf8" });
-  if (result.status !== 0) {
-    throw new Error(`${command} version check failed: ${result.stderr}`);
-  }
-  return result.stdout.trim();
+function verifyAutoIt(root) {
+  const checker = join(bundle, "autoit", "Au3Check.exe");
+  assert(existsSync(checker), "AutoIt syntax checker is missing");
+  assert(
+    existsSync(join(bundle, "autoit", "Au3Check.dat")),
+    "AutoIt syntax checker data is missing",
+  );
+  const facadeCheck = runAu3Check(
+    join(bundle, "autoit", "Include", "SandiAutoIt.au3"),
+    root,
+  );
+  assert.equal(facadeCheck.status, 0, facadeCheck.stderr || facadeCheck.stdout);
+
+  const script = join(root, "verify-autoit-success.au3");
+  writeFileSync(
+    script,
+    [
+      "#include <AutoItConstants.au3>",
+      'ConsoleWrite(@AutoItVersion & "|" & @AutoItX64 & "|" & $BI_ENABLE & @CRLF)',
+      "Exit 0",
+      "",
+    ].join("\r\n"),
+  );
+  const result = spawnSync(
+    join(bundle, "autoit", "AutoIt3_x64.exe"),
+    ["/ErrorStdOut", script],
+    { encoding: "utf8", cwd: root },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout.trim(), `${lock.commands.autoit.version}|1|0`);
+  const checked = runAu3Check(script, root);
+  assert.equal(checked.status, 0, checked.stderr || checked.stdout);
+
+  const syntaxScript = join(root, "verify-autoit-syntax.au3");
+  writeFileSync(syntaxScript, "This Is Not Valid(\r\n");
+  const syntaxCheck = runAu3Check(syntaxScript, root);
+  assert.equal(syntaxCheck.status, 2);
+  assert.match(syntaxCheck.stdout, /error/i);
+  const syntax = runAutoIt(syntaxScript, root);
+  assert.equal(syntax.status, 1);
+  assert.match(syntax.stdout, /ERROR/);
+
+  const nonzeroScript = join(root, "verify-autoit-nonzero.au3");
+  writeFileSync(nonzeroScript, "Exit 7\r\n");
+  assert.equal(runAutoIt(nonzeroScript, root).status, 7);
+
+  const controlScript = join(root, "verify-autoit-controls.au3");
+  writeFileSync(
+    controlScript,
+    [
+      "#include <GUIConstantsEx.au3>",
+      'Local $hWindow = GUICreate("Sandi AutoIt verification", 320, 120)',
+      'Local $iInput = GUICtrlCreateInput("", 10, 10, 200, 24)',
+      'Local $iButton = GUICtrlCreateButton("Verify", 10, 50, 100, 28)',
+      "GUISetState(@SW_SHOW, $hWindow)",
+      'If Not ControlSetText($hWindow, "", "Edit1", "Ada Lovelace") Then Exit 11',
+      'If ControlGetText($hWindow, "", "Edit1") <> "Ada Lovelace" Then Exit 12',
+      'If Not ControlClick($hWindow, "", "Button1") Then Exit 13',
+      "Local $hTimer = TimerInit()",
+      "Local $iMessage = 0",
+      "Do",
+      "    $iMessage = GUIGetMsg()",
+      "Until $iMessage = $iButton Or TimerDiff($hTimer) > 2000",
+      "If $iMessage <> $iButton Then Exit 14",
+      'ConsoleWrite("controls=ok" & @CRLF)',
+      "GUIDelete($hWindow)",
+      "Exit 0",
+      "",
+    ].join("\r\n"),
+  );
+  const controls = runAutoIt(controlScript, root);
+  assert.equal(controls.status, 0, controls.stderr || controls.stdout);
+  assert.equal(controls.stdout.trim(), "controls=ok");
 }
 
-function assertOfflineGuard(node, env) {
-  const directSocket = spawnSync(
-    node,
-    [
-      "-e",
-      'const net = require("node:net"); new net.Socket().connect(443, "example.com")',
-    ],
-    { encoding: "utf8", env },
+function runAu3Check(script, cwd) {
+  return spawnSync(
+    join(bundle, "autoit", "Au3Check.exe"),
+    ["-q", "-d", script],
+    { encoding: "utf8", cwd },
   );
-  assert.notEqual(
-    directSocket.status,
-    0,
-    "offline socket guard allowed egress",
-  );
-  assert.match(directSocket.stderr, /offline MCP verification blocked/);
+}
 
-  const fetch = spawnSync(
-    node,
-    ["-e", 'fetch("https://example.com").then(() => process.exit(91))'],
-    { encoding: "utf8", env },
+function runAutoIt(script, cwd) {
+  return spawnSync(
+    join(bundle, "autoit", "AutoIt3_x64.exe"),
+    ["/ErrorStdOut", script],
+    { encoding: "utf8", cwd },
   );
-  assert.notEqual(fetch.status, 91, "offline proxy guard allowed egress");
 }
 
 function verifyNotices(notices, runtimeLock) {
-  for (const entry of notices.packages) {
-    assert(
-      entry.licenseFiles.length > 0,
-      `license index has no text for ${entry.ecosystem}:${entry.name}@${entry.version}`,
-    );
-  }
   for (const path of [
-    "licenses/node.txt",
-    "licenses/python.txt",
-    "licenses/uv.txt",
+    "licenses/autoit.html",
     "servers/chrome-devtools/node_modules/chrome-devtools-mcp/LICENSE",
-    "servers/windows-mcp/site-packages/windows_mcp-0.8.2.dist-info/licenses/LICENSE.md",
   ]) {
     assert(
       notices.licenseFiles.includes(path),
       `license index omitted ${path}`,
     );
   }
-  const expected = [
-    ["runtime", "node", runtimeLock.artifacts.node.version],
-    ["runtime", "python", runtimeLock.artifacts.python.version],
-    ["runtime", "uv", runtimeLock.artifacts.uv.version],
+  for (const [ecosystem, name, version] of [
+    ["runtime", "autoit", runtimeLock.commands.autoit.version],
     [
       "npm",
       "chrome-devtools-mcp",
       runtimeLock.commands["chrome-devtools-mcp"].version,
     ],
-    ["python", "windows-mcp", runtimeLock.commands["windows-mcp"].version],
-  ];
-  for (const [ecosystem, name, version] of expected) {
+  ]) {
     assert(
       notices.packages.some(
         (entry) =>
           entry.ecosystem === ecosystem &&
           entry.name === name &&
           entry.version === version &&
-          (entry.license || entry.licenseFiles.length > 0),
+          entry.licenseFiles.length > 0,
       ),
       `license index omitted ${ecosystem}:${name}@${version}`,
     );
@@ -230,7 +218,6 @@ async function listTools(command, args, env, userDataRoot) {
       USERPROFILE: userDataRoot,
       LOCALAPPDATA: join(userDataRoot, "Local"),
       APPDATA: join(userDataRoot, "Roaming"),
-      SANDI_MCP_STATE_DIR: join(userDataRoot, "mcp-state"),
     },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
@@ -248,7 +235,7 @@ async function listTools(command, args, env, userDataRoot) {
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
     stdout += chunk;
-    while (true) {
+    for (;;) {
       const newline = stdout.indexOf("\n");
       if (newline < 0) break;
       const line = stdout.slice(0, newline).trim();

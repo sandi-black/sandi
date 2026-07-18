@@ -10,6 +10,8 @@ import {
 import { MAX_LOCAL_GREP_PATTERN_CHARS } from "@/surfaces/api/devices/search-limits";
 
 export const MAX_LOCAL_BASH_TIMEOUT_MS = 600_000;
+export const MAX_LOCAL_SCRIPT_TIMEOUT_MS = 600_000;
+export const MAX_LOCAL_SCRIPT_SOURCE_CHARS = 80_000;
 
 // The hands-local wire protocol. An api-surface turn runs server-side, but its
 // file and shell tools execute on the human's own desktop. Three hops carry one
@@ -80,6 +82,27 @@ export const LocalBashParamsSchema = z.object({
     .max(MAX_LOCAL_BASH_TIMEOUT_MS)
     .optional(),
 });
+export const LocalJsRunParamsSchema = z.object({
+  desktop: z.string().min(1).optional(),
+  code: z.string().min(1).max(MAX_LOCAL_SCRIPT_SOURCE_CHARS),
+  cwd: z.string().min(1).optional(),
+  timeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .max(MAX_LOCAL_SCRIPT_TIMEOUT_MS)
+    .optional(),
+});
+export const LocalAutoItRunParamsSchema = z.object({
+  desktop: z.string().min(1).optional(),
+  code: z.string().min(1).max(MAX_LOCAL_SCRIPT_SOURCE_CHARS),
+  timeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .max(MAX_LOCAL_SCRIPT_TIMEOUT_MS)
+    .optional(),
+});
 
 // The state tools. They take the same `desktop` selector as every other tool;
 // local_list_desktops is the discovery call that names the desktops a selector
@@ -119,6 +142,8 @@ export type LocalLsParams = z.infer<typeof LocalLsParamsSchema>;
 export type LocalGlobParams = z.infer<typeof LocalGlobParamsSchema>;
 export type LocalGrepParams = z.infer<typeof LocalGrepParamsSchema>;
 export type LocalBashParams = z.infer<typeof LocalBashParamsSchema>;
+export type LocalJsRunParams = z.infer<typeof LocalJsRunParamsSchema>;
+export type LocalAutoItRunParams = z.infer<typeof LocalAutoItRunParamsSchema>;
 export type LocalListDesktopsParams = z.infer<
   typeof LocalListDesktopsParamsSchema
 >;
@@ -144,6 +169,11 @@ export const BrokerCallSchema = z.discriminatedUnion("tool", [
   z.object({ tool: z.literal("local_glob"), params: LocalGlobParamsSchema }),
   z.object({ tool: z.literal("local_grep"), params: LocalGrepParamsSchema }),
   z.object({ tool: z.literal("local_bash"), params: LocalBashParamsSchema }),
+  z.object({ tool: z.literal("local_js_run"), params: LocalJsRunParamsSchema }),
+  z.object({
+    tool: z.literal("local_autoit_run"),
+    params: LocalAutoItRunParamsSchema,
+  }),
   z.object({
     tool: z.literal("local_list_desktops"),
     params: LocalListDesktopsParamsSchema,

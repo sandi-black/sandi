@@ -1,129 +1,117 @@
-# Fast Computer Use
+# Computer Use
 
-Sandi controls ordinary Windows and Chrome interfaces through the packaged MCP
-servers. Native controls use Windows-MCP, page content uses Chrome DevTools MCP,
-and screenshots cover interfaces with no useful semantic state. Dependent calls
-belong in one `sandi_js_run`, which removes a parent-model round trip between
-each observation and action.
+Sandi uses first-party AutoIt scripts for native Windows control and the
+packaged Chrome DevTools MCP server for browser-page content. Files and commands
+stay in the local file, shell, and JavaScript tools. Native Windows control has
+no MCP server or persistent subprocess.
 
-## Configure the packaged servers
+## Routing
 
-Sandi can configure both servers herself through `desktopMcp.configure`; there
-is no user approval dialog. The normal configuration uses these bundled command
-ids:
+| Target                                                     | Interface                             |
+| ---------------------------------------------------------- | ------------------------------------- |
+| Native apps, browser chrome, permission UI, and OS dialogs | `local_autoit_run`                    |
+| Page content, forms, console, and network                  | Chrome DevTools MCP                   |
+| Files, directories, and shell commands                     | Existing local tools                  |
+| Plain local JavaScript                                     | `local_js_run`                        |
+| Interfaces without useful controls or DOM state            | Fresh `local_screenshot` observations |
 
-| Server       | Bundled command id    | Arguments       |
-| ------------ | --------------------- | --------------- |
-| Windows UI   | `windows-mcp`         | none            |
-| User browser | `chrome-devtools-mcp` | `--autoConnect` |
+Chrome uses the bundled `chrome-devtools-mcp` command with `--autoConnect` for
+the user's running profile. The server receives that real profile path as an
+argument while its process environment remains isolated. Chrome must have
+remote debugging enabled at `chrome://inspect/#remote-debugging`, and the user
+must allow the connection. Generic web research does not need this server.
 
-The Windows command always appends its fixed UI catalog after user arguments,
-so a configuration cannot re-enable PowerShell, filesystem, clipboard, process,
-registry, notification, or scraping tools. File and command work stays in
-Sandi's existing local tools.
+## Native execution model
 
-The Chrome default connects to the user's running default Chrome profile because
-this interface is for requests that require work in the user's browser. Chrome
-must be running with remote debugging enabled at
-`chrome://inspect/#remote-debugging`, and Chrome asks the user to allow the
-connection. Generic searches and research continue to use Sandi's existing web
-tools.
+Keep native work in one observe-act-wait-verify AutoIt script. Discover and
+retain PID/HWND, then use this order:
 
-## Route and execute
+1. Use `ControlSetText`, `ControlClick`, or `ControlCommand` with a stable
+   control id.
+2. Include `<SandiAutoIt.au3>` and use its scoped UIA facade for controls that
+   do not expose a useful Win32 control interface.
+3. Use the facade's guarded `SandiInput_*` keyboard or mouse helpers only when
+   neither targeted path can perform the action.
 
-| Target                                                     | Interface            |
-| ---------------------------------------------------------- | -------------------- |
-| Native apps, browser chrome, permission UI, and OS dialogs | Windows-MCP          |
-| Page content, forms, console, and network                  | Chrome DevTools MCP  |
-| Files, directories, and commands                           | Existing local tools |
-| Canvas, remote desktop, games, and inaccessible custom UI  | Fresh screenshots    |
+The first-party UIA facade resolves from a validated HWND/PID root. Searches
+are bounded, skip document subtrees, and match control type with AutomationId
+and accessible name when those properties exist. Zero and ambiguous matches
+fail with candidate identities. Invoke, toggle, select, get-value, and set-value
+operations resolve the selector again before acting, so callers cannot mutate
+through a stale UIA element. Chrome DevTools remains the browser DOM path.
 
-Search the relevant cached catalog, describe the exact tools, and use their live
-schemas. A normal code-mode loop observes semantic state, acts, waits on a
-semantic condition, and observes again to verify. Windows actions use coordinates
-from the current `Snapshot`, or labels when the live schema exposes them. Chrome
-actions use ids from the current page snapshot. Never reuse either after the UI
-changes without observing again.
+Raw `Send`, `Mouse*`, `Call`, `Execute`, `Eval`, and native dispatch are rejected
+in submitted AutoIt source. Guarded helpers own `BlockInput`, validate the
+foreground HWND/PID after blocking, and revalidate before every short chunk.
+Keyboard helpers also compare the focused UIA element with the requested
+control. Focus or identity loss stops the remaining input rather than
+redirecting it.
 
-When a task crosses boundaries, switch tools at the boundary. For example, keep
-form work in Chrome DevTools, use Windows-MCP for the resulting operating-system
-dialog, then return to the page snapshot for verification. A `Screenshot` is the
-fallback when accessibility or DOM state omits the target; take a fresh image
-before acting and another after acting.
+Guarded global fallback requires `#RequireAdmin`, which is an explicit,
+on-demand elevation request. `local_autoit_run` pre-elevates its supervisor, so
+the actual script inherits administrator rights without AutoIt's detached
+relaunch. The user may approve or decline UAC, and Sandi must not automate that
+decision. Control* and UIA scripts do not need elevation.
 
-## Desktops and recovery
+The supervisor captures output and exit status, enforces timeout and
+cancellation, kills descendants, and releases blocked input and pressed mouse
+buttons during cleanup. Windows also releases `BlockInput` when the blocking
+thread exits unexpectedly.
 
-A turn can only reach desktops linked to the same human identity. A turn from the
-desktop app uses its originating desktop. Discord and GitHub turns with several
-linked desktops should call `local_list_desktops` and pass the selected id or
-name instead of relying on the newest connection.
+Every submitted artifact first runs through the bundled `Au3Check` with strict
+variable declarations. This catches undefined functions, variables, macros,
+argument-count errors, and missing includes before AutoIt or UAC starts. Exit 1
+means warnings and allows execution; syntax or checker errors stop in the
+`syntax_check` phase. `Aut2Exe` is not a substitute because AutoIt's compiler
+does not check syntax.
 
-Start diagnosis with `local_mcp` using `operation: "servers"`. A missing catalog
-means the server has not connected; a bounded `lastError` explains the latest
-failure. Enabling and disabling a server, replacing or removing its config,
-transport failure, and app shutdown close its child. An ordinary device-link
-reconnect does not: the app keeps healthy stdio children and the next exact call
-uses them through the restored link.
+## Desktop routing and results
 
-Run the app and server as the same unelevated interactive Windows user. This
-keeps Windows UI Automation in the user's desktop session and makes MCP servers
-descendants of the Electron app. The packaged smoke automates a virtual-desktop
-round trip and a separate device-link reconnect, then confirms that `Snapshot`
-still works and the same MCP child processes remain app-owned. Lock/unlock and
-remote desktop reconnections still need a manual check in the target deployment:
-wait for the device link, call `Snapshot`, and inspect `servers` before making one
-fresh call if the transport closed. Do not replay an ambiguous mutating action.
+Every local tool accepts the optional `desktop` selector. A desktop-originated
+turn defaults to that machine; a cross-surface turn with several connected
+desktops must call `local_list_desktops` and choose one. The broker binds each
+dispatch to the turn's abort signal.
 
-## Packaged smoke
+`local_js_run` defaults `cwd` to the desktop tool root. A relative `cwd` resolves
+from that root. AutoIt uses the same root as its process working directory,
+while `@ScriptDir` identifies the unique persisted run artifact. Both tools
+return separate bounded stdout and stderr as untrusted evidence plus runtime
+version, artifact path, cwd, exit code, signal, timeout, truncation, duration,
+elevation, execution phase, and syntax-check metadata.
 
-The real-desktop smoke is opt-in because it overrides the normal Chrome
-configuration with an isolated test profile and briefly opens the Run dialog. It
-types only fixture markers and dismisses the dialog without executing them. Run
-it from an unlocked, unelevated Windows session:
+## Verification
+
+The normal Windows runtime gate is non-elevated and includes a real separate
+AutoIt GUI fixture. It verifies background UIA value and invoke behavior,
+toggle, selection, exact AutomationId selectors, duplicate-name ambiguity,
+stale selector refusal, wrong PID, stale HWND, and bundled include resolution.
 
 ```powershell
-cd app
-npm run build
-npm run prepare:mcp-runtime
-npm run verify:mcp-runtime
-npx electron-builder --win dir --publish never
-$env:SANDI_COMPUTER_USE_SMOKE = "1"
-$env:SANDI_COMPUTER_USE_BENCHMARK_OUTPUT = (Resolve-Path ..).Path + "\docs\developers\computer-use-benchmark.json"
-npx tsx --tsconfig tsconfig.main.json scripts/verify-packaged-app-mcp.ts
+npm run prepare:mcp-runtime -w app
+npm run verify:mcp-runtime -w app
 ```
 
-The smoke uses the packaged Electron composition root and bundled offline
-runtimes. It checks the exact Windows tool catalog, native observation and input,
-Chrome page interaction, a value carried from Chrome through a Run dialog and
-back, disabled-server refusal, virtual-desktop and device-link recovery, and
-same-user app ownership of both stdio server processes.
+The guarded-input behavior gate is deliberately separate. It never requests
+elevation and refuses unless its terminal is already elevated. Run it only when
+interactive input blocking is safe:
 
-## Benchmark
+```powershell
+npm run verify:autoit-guarded-input -w app
+```
 
-The smoke also measures five warm repetitions of two complete tasks. The native
-task opens Run, enters a marker, and verifies it; dismissal is excluded cleanup.
-The browser task fills, submits, and verifies a loopback form. The screenshot
-paths use direct image observations and fixed waits; the semantic paths wait on
-UI or page conditions inside one composed run.
+That gate changes focus during chunked input, cancels multiline input while it
+is active, checks that remaining input is not redirected, and sends a fresh
+input probe after supervisor cleanup. The packaged release-boundary check
+verifies the manifest-hashed include through a real brokered `local_autoit_run`
+call:
 
-| Task    | Path       | Median time | Parent turns | MCP calls | Screenshots | Failures |
-| ------- | ---------- | ----------- | ------------ | --------- | ----------- | -------- |
-| Native  | Semantic   | 4,368 ms    | 1            | 6         | 0           | 0/5      |
-| Native  | Screenshot | 8,816 ms    | 5            | 7         | 3           | 0/5      |
-| Browser | Semantic   | 1,376 ms    | 1            | 5         | 0           | 0/5      |
-| Browser | Screenshot | 6,602 ms    | 3            | 5         | 2           | 0/5      |
+```powershell
+npm run verify:packaged-mcp -w app
+```
 
-These are packaged tool-path times from July 16, 2026. Each parent turn is an
-executed tool phase: a fresh Node/tsx action through Sandi's runtime and desktop
-broker, or a direct broker observation whose decoded image reached the harness.
-Model inference, fixture reset, coordinate calibration, cleanup, and
-machine-readable validation are excluded. The raw record includes every per-turn
-MCP trace and all five outcomes for each path in
-[`computer-use-benchmark.json`](computer-use-benchmark.json); the harness fails
-if either semantic median is slower, uses as many parent turns, or adds failures.
-
-AutoIt remains outside the baseline. It becomes useful only when a repeated,
-stable application workflow cannot be operated reliably through accessibility,
-DOM state, local commands, or fresh screenshots; until then it adds another
-runtime and application-specific script surface without improving the general
-routing path.
+The packaged check prepares the pinned AutoIt and Chrome payload, verifies each
+staged file's size and SHA256, builds the NSIS and portable targets, relocates
+and extracts both, launches the real Electron composition root, and runs
+brokered JavaScript and checked AutoIt without downloading a runtime at
+execution time. Its invalid AutoIt fixture proves the checker rejects the
+artifact before its first mutation.

@@ -184,7 +184,7 @@ electron-builder produces an NSIS installer and a portable exe under
 `app/release/`, per `app/electron-builder.yml`. electron-vite bundles most
 runtime dependencies into `out/`; dependencies deliberately left external,
 currently `re2-wasm`, are collected by electron-builder under the packaged
-app's resources. Packaging also prepares the pinned desktop MCP bundle described
+app's resources. Packaging also prepares the pinned desktop runtime bundle described
 below. The mac and linux blocks in the config are stubs: nothing in the app is
 Windows-only beyond the packaging targets, but only Windows is built and
 smoke-tested today.
@@ -248,7 +248,7 @@ The app is the process owner for desktop-hosted MCP servers. The server-side
 route and tool contract are documented in
 [`api-surface.md`](api-surface.md#desktop-hosted-mcp-bridge); code-mode usage is
 in [`code-mode.md`](code-mode.md#desktop-mcp-composition). Configuration,
-semantic routing, recovery, and the real-desktop benchmark are in
+routing, recovery, and native automation guidance are in
 [`computer-use.md`](computer-use.md).
 
 Persistent state lives under Electron's `userData` directory:
@@ -274,25 +274,29 @@ removal, transport failure, and app quit close them. Run
 NSIS installer and portable app, launches the real Electron composition root,
 and drives configuration, cached discovery, a brokered call over the
 authenticated device link, multiple-desktop selection, disable, removal, and
-child cleanup. It also verifies offline startup, portable relocation, an NSIS
+child cleanup. It also verifies packaged local JavaScript and AutoIt execution,
+offline startup, portable relocation, an NSIS
 install-update-uninstall cycle, and refusal of a corrupt bundled executable.
 The source bridge smoke covers the host and broker behavior without packaging.
 
-### Bundled MCP runtimes
+### Bundled desktop runtimes
 
 The Windows artifacts include one immutable payload at `resources/mcp`:
 
-- `node/`, `uv/`, and `python/` contain the pinned Windows x64 runtimes.
-- `servers/chrome-devtools/` and `servers/windows-mcp/` contain complete server
-  dependency trees and launchers. Runtime startup does not invoke npm, npx, uv,
-  or uvx.
+- `autoit/` contains pinned AutoIt x64, `Au3Check` with its data file, the
+  standard includes, and the first-party `SandiAutoIt.au3` scoped UIA and
+  guarded-input facade.
+- `servers/chrome-devtools/` contains the complete pinned server dependency
+  tree. It and `local_js_run` use the packaged Electron executable in documented
+  `ELECTRON_RUN_AS_NODE` mode, so no separate Node runtime is downloaded or
+  shipped.
 - `manifest.json` records stable command ids, versions, size, and SHA256 for
   every payload file. `licenses/` and `THIRD_PARTY_NOTICES.json` cover the
   packaged runtimes and dependencies.
 
 The bundled-command registry resolves this tree from `process.resourcesPath`
 and verifies the complete manifest before its first process spawn. Profiles,
-caches, temporary files, and generated COM state go under
+caches, temporary files, and local run artifacts go under
 `userData/mcp-runtime`; the packaged tree remains unchanged after use. The NSIS
 uninstaller removes the payload with the app, while ordinary Electron user data
 is retained for reinstall unless it is deleted separately.
@@ -302,15 +306,13 @@ The checked-in sources of truth are under `app/mcp-runtime`. To update a pin:
 1. Update the component version, download URL, artifact hash, license URL, and
    license hash in `runtime-lock.json`.
 2. For Chrome DevTools MCP, update its exact dependency in `package.json` and
-   regenerate that directory's npm lock. For Windows-MCP, update
-   `requirements.in` and regenerate `requirements.lock` with the `uv pip
-compile` command recorded at the top of the lock file.
+   regenerate that directory's npm lock. For AutoIt, pin the official portable
+   archive and license hashes. Preparation copies `AutoIt3_x64.exe`,
+   `Au3Check.exe`, `Au3Check.dat`, and the standard `Include` directory, then
+   adds the checked-in first-party include.
 3. On Windows x64, run `npm run prepare:mcp-runtime -w app`. Preparation
    downloads into the local cache, verifies every source, and atomically
-   replaces `app/build/mcp` only after the new bundle passes. After a Python
-   lock change, run `npm run update:mcp-python-provenance -w app` to record the
-   exact artifact URLs, hashes, package types, and license metadata selected by
-   the lock.
+   replaces `app/build/mcp` only after the new bundle passes.
 4. Run `npm run verify:mcp-runtime -w app`, then
    `npm run verify:packaged-mcp -w app`. These checks reject provenance drift;
    the latter is the release-boundary check

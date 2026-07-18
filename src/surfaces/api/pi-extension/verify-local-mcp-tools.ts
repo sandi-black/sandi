@@ -41,6 +41,14 @@ try {
     LOCAL_MCP_CONFIGURE_DESCRIPTION.includes("authenticated desktop lease"),
     "the configuration tool tells Pi where persistent changes execute",
   );
+  assert(
+    tools.localMcp.description.includes("disconnect"),
+    "the MCP tool advertises explicit connection release",
+  );
+  assert(
+    JSON.stringify(tools.localMcp.parameters).includes('"disconnect"'),
+    "the MCP tool schema exposes explicit disconnect",
+  );
 
   const registered: string[] = [];
   let errorHook: unknown;

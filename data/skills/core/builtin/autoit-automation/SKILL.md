@@ -1,6 +1,6 @@
 ---
 name: autoit-automation
-description: Use for native Windows automation through local_autoit_run, including window discovery, controls, dialogs, scoped UIA, guarded keyboard or mouse input, and verification.
+description: Use for native Windows automation through local_autoit_run, including window discovery, controls, dialogs, scoped UIA, guarded visual clicks, keyboard or mouse input, and verification.
 ---
 
 # AutoIt Automation
@@ -44,12 +44,16 @@ Use these interfaces in order:
    bounded JSON identities; searches skip document descendants unless an
    inspector identity explicitly points into one. Select by the returned
    identity instead of guessing control constants. Each mutation resolves the
-   identity again and fails on stale or ambiguous matches. Route multiline
-   editor content through `SandiEditor_InsertText`.
-3. If neither targeted path can act and the user is present and actively using
+   identity again and fails on stale or ambiguous matches.
+3. Route multiline editor content through `SandiEditor_InsertText` when the
+   retained control supports safe native or atomic insertion.
+4. Use `SandiVisual_Click` only after DOM, Control*, UIA, and safe editor
+   insertion are unavailable. It accepts one normalized point from a fresh
+   window `visualObservation` and performs one left click.
+5. If no targeted path can act and the user is present and actively using
    the computer, use the include's guarded `SandiInput_*` functions. They keep
    concurrent user input from redirecting the action.
-4. For unattended work, direct `Send` and `Mouse*` calls are allowed so the
+6. For unattended work, direct `Send` and `Mouse*` calls are allowed so the
    script can run without waiting for UAC. Retain and revalidate the target
    HWND/PID, keep each input sequence short, and verify the result before
    continuing. `local_autoit_run` does not filter functions by name; the exact
@@ -156,6 +160,35 @@ The call never emits Enter and never submits. Invoke a retained submit-button
 identity or call `SandiInput_PressKey(..., "{ENTER}")` as a separate, explicit
 action only when submission is requested. `SandiInput_TypeText` is single-line
 and rejects CR or LF, so do not use it for a composer or rich-text draft.
+
+## Click a custom-rendered target
+
+Take a window `local_screenshot` only after semantic mutation is unavailable.
+Retain its complete `structuredContent.visualObservation`, convert a screenshot
+pixel to normalized form with `x / screenshot.width` and
+`y / screenshot.height`, and pass the fields unchanged:
+
+```autoit
+#include <SandiAutoIt.au3>
+
+If Not SandiVisual_Click($hWnd, $iPid, $nX, $nY, $bObservedActive, _
+        $iClientX, $iClientY, $iClientWidth, $iClientHeight, _
+        $iOriginX, $iOriginY, $iDpi, $iScreenshotWidth, $iScreenshotHeight) Then
+    ConsoleWriteError("visual-click-refused; error=" & @error & @CRLF)
+    Exit 18
+EndIf
+```
+
+The facade rechecks HWND/PID, foreground state, client rectangle, client origin,
+DPI, and screenshot scale before converting to a physical screen pixel. It
+refuses stale, moved, resized, focus-lost, recycled, or out-of-bounds targets.
+Take another window screenshot after the click and verify the rendered state.
+Do not retain the screen pixel or chain another click from the old observation.
+
+Refuse this fallback in anti-cheat-sensitive software, online competitive
+games, security or permission dialogs, and remote desktops whose nested target
+identity is unavailable. Require immediate confirmation for destructive or
+economy-affecting actions. Refuse any action whose result cannot be reobserved.
 
 ## Guarded global fallback
 

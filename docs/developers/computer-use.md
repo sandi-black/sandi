@@ -7,34 +7,42 @@ no MCP server or persistent subprocess.
 
 ## Routing
 
-| Target                                                     | Interface                             |
-| ---------------------------------------------------------- | ------------------------------------- |
-| Native apps, browser chrome, permission UI, and OS dialogs | `local_autoit_run`                    |
-| Page content, forms, console, and network                  | Chrome DevTools MCP                   |
-| Files, directories, and shell commands                     | Existing local tools                  |
-| Plain local JavaScript                                     | `local_js_run`                        |
-| Interfaces without useful controls or DOM state            | Fresh `local_screenshot` observations |
+| Target                                                     | Interface                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------ |
+| Native apps, browser chrome, permission UI, and OS dialogs | `local_autoit_run`                                     |
+| Page content, forms, console, and network                  | Chrome DevTools MCP                                    |
+| Files, directories, and shell commands                     | Existing local tools                                   |
+| Plain local JavaScript                                     | `local_js_run`                                         |
+| Interfaces without useful controls or DOM state            | Guarded visual fallback from a fresh window screenshot |
 
 Chrome uses the bundled `chrome-devtools-mcp` command with `--autoConnect` for
 the user's running profile. The server receives that real profile path as an
 argument while its process environment remains isolated. Chrome must have
 remote debugging enabled at `chrome://inspect/#remote-debugging`, and the user
-must allow the connection. Generic web research does not need this server.
+must allow the connection. The MCP host starts the server on the first exact
+browser call and disconnects it after 30 idle seconds, which removes Chrome's
+automation banner while leaving remote debugging and the server's enabled
+configuration unchanged. A later call reconnects automatically. Generic web
+research does not need this server.
 
 ## Native execution model
 
-Keep native work in one observe-act-wait-verify AutoIt script. Discover and
-retain PID/HWND, then use this order:
+Keep native work in one observe-act-wait-verify AutoIt script. Browser content
+uses the DOM first. For other surfaces, discover and retain PID/HWND, then use
+this order:
 
 1. Use `ControlSetText`, `ControlClick`, or `ControlCommand` with a stable
    control id.
-2. Include `<SandiAutoIt.au3>` and use its scoped UIA facade for controls that
-   do not expose a useful Win32 control interface. Use
-   `SandiEditor_InsertText` for multiline editor content.
-3. If neither targeted path can perform the action and the user is present and
+2. Include `<SandiAutoIt.au3>` and use its scoped UIA facade when no useful
+   native control API exists.
+3. Use `SandiEditor_InsertText` when the retained editor identity supports safe
+   native or atomic insertion.
+4. Use `SandiVisual_Click` only when DOM, native controls, UIA, and safe editor
+   insertion cannot perform the mutation.
+5. If another narrow keyboard or pointer fallback is required and the user is
    actively using the computer, use the facade's guarded `SandiInput_*`
    keyboard or mouse helpers.
-4. For unattended work, direct `Send` and `Mouse*` calls may perform the global
+6. For unattended work, direct `Send` and `Mouse*` calls may perform the global
    input without waiting for UAC. Keep the sequence short and revalidate the
    target before and after it.
 
@@ -69,6 +77,75 @@ Focus loss fails the call instead of sending more input elsewhere.
 The facade never emits Enter. Submission is a separate retained-button invoke
 or explicit `SandiInput_PressKey(..., "{ENTER}")` call. `SandiInput_TypeText`
 rejects CR and LF and must not be used for multiline editors or chat composers.
+
+## Guarded visual fallback
+
+A window `local_screenshot` captures the target client area, not the outer
+frame. Its `structuredContent.visualObservation` is the only coordinate
+contract accepted by the visual facade:
+
+```json
+{
+  "version": 1,
+  "target": { "hwnd": "12345", "pid": 678 },
+  "active": true,
+  "clientRect": { "x": 0, "y": 0, "width": 1280, "height": 720 },
+  "clientOriginScreen": { "x": -1280, "y": 40 },
+  "dpi": 144,
+  "screenshot": {
+    "width": 640,
+    "height": 360,
+    "scaleX": 0.5,
+    "scaleY": 0.5
+  }
+}
+```
+
+The contract comes from `GetClientRect`, `ClientToScreen`, and
+`GetDpiForWindow` under per-monitor DPI awareness. Public click coordinates are
+normalized to `[0,1)`. Convert a screenshot pixel to normalized form with
+`x / screenshot.width` and `y / screenshot.height`, then pass every observation
+field unchanged:
+
+```autoit
+If Not SandiVisual_Click($hWnd, $iPid, $nX, $nY, $bActive, _
+        $iClientX, $iClientY, $iClientWidth, $iClientHeight, _
+        $iOriginX, $iOriginY, $iDpi, $iScreenshotWidth, $iScreenshotHeight) Then Exit 30
+```
+
+The facade checks the same HWND/PID, foreground window, client rectangle,
+screen origin, DPI, and screenshot scale before converting the normalized point
+to a physical screen pixel. A moved or resized window, DPI transition, focus
+loss, recycled handle, inconsistent scale, or out-of-bounds point refuses the
+click. Elevated calls also hold `BlockInput`; unelevated calls are limited to
+unattended work and still revalidate immediately before the single click. Never
+retain the screen pixel. After each click, take a new window screenshot and
+verify the rendered result before another action.
+
+This fallback is limited to one left click in a custom-rendered client area. It
+does not include image matching, application adapters, drag, scrolling, typing,
+or a sequence planner.
+
+## Refusal and confirmation boundaries
+
+- Refuse visual input in anti-cheat-sensitive software and online competitive
+  games. Offline game automation still requires the user's explicit request and
+  a verifiable target state.
+- Require confirmation immediately before an economy-affecting action such as a
+  purchase, trade, auction, wager, or irreversible inventory change. Refuse if
+  the amount, recipient, or resulting state cannot be reobserved.
+- Refuse visual input through a remote desktop when the nested target's HWND/PID
+  cannot be retained locally. The outer remote-desktop window is not proof of
+  the nested application's identity.
+- Refuse visual fallback for security, credential, permission, UAC, and secure
+  desktop dialogs. The user must handle those prompts, or automation must use a
+  semantic OS interface that identifies the exact control.
+- Require confirmation immediately before destructive actions. Reobserve the
+  exact target and consequence after the action; if either cannot be verified,
+  refuse the mutation.
+- Refuse mutation on any surface whose post-action state cannot be observed
+  reliably. A successful input call is not evidence that the intended state
+  changed.
 
 Document controls are returned, so Notepad's `Text editor` remains discoverable,
 but their descendants are excluded by default and counted in
@@ -134,6 +211,12 @@ default and opt-in document traversal, valid deterministic JSON, filters, bounds
 and truncation, identity reuse across every facade action, background UIA value
 and invoke behavior, toggle, selection, duplicate-name ambiguity, stale selector
 refusal, wrong PID, stale HWND, and bundled include resolution.
+
+The same gate launches a custom-rendered window for the visual fallback. It
+checks 96 and synthetic mixed-DPI conversion, stale movement and resizing, DPI
+change, focus loss, HWND/PID recycling, bounds, screenshot scale, one guarded
+click, cancellation cleanup, and a fresh screenshot showing the rendered state
+change.
 
 ```powershell
 npm run prepare:mcp-runtime -w app

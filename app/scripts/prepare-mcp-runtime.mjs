@@ -70,6 +70,10 @@ try {
     join(sourceRoot, "autoit", "SandiEditor.au3"),
     join(autoitDestination, "Include", "SandiEditor.au3"),
   );
+  copyFileSync(
+    join(sourceRoot, "autoit", "SandiVisual.au3"),
+    join(autoitDestination, "Include", "SandiVisual.au3"),
+  );
 
   const chromeDir = join(staging, "servers", "chrome-devtools");
   mkdirSync(chromeDir, { recursive: true });

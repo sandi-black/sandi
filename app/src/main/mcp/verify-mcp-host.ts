@@ -99,6 +99,7 @@ async function verifyHost(): Promise<void> {
   await verifySharedConnectCancellation();
   await verifySoleConnectCancellation();
   await verifyDisableDuringConnect();
+  await verifyConnectionLifecycle();
   await verifyOversizedStdout();
   await verifyMalformedFrame();
   await verifyRetryableTransportClose();
@@ -339,8 +340,6 @@ async function verifyHost(): Promise<void> {
     "catalog pagination reaches page two",
   );
 
-  const startsBeforeCrash = countState("start");
-  const exitsBeforeCrash = countState("exit");
   await mcp(host, {
     operation: "call",
     serverId: config.id,
@@ -384,6 +383,7 @@ async function verifyHost(): Promise<void> {
     controller.signal,
   );
   await waitFor(() => Promise.resolve(state().includes("call:wait")));
+  const exitsBeforeCancellation = countState("exit");
   controller.abort(new Error("fixture cancellation"));
   const cancelled = await waiting;
   assert.equal(
@@ -392,7 +392,24 @@ async function verifyHost(): Promise<void> {
     "cancelled MCP request is not reported as success",
   );
   await waitFor(() => Promise.resolve(state().includes("cancelled:wait")));
+  await waitFor(() =>
+    Promise.resolve(countState("exit") > exitsBeforeCancellation),
+  );
+  assert.equal(
+    (
+      await mcp(host, {
+        operation: "call",
+        serverId: config.id,
+        toolName: "echo",
+        arguments: { message: "after cancellation" },
+      })
+    ).ok,
+    true,
+    "a call reconnects after cancellation closes the session",
+  );
 
+  const startsBeforeCrash = countState("start");
+  const exitsBeforeCrash = countState("exit");
   await mcp(host, {
     operation: "call",
     serverId: config.id,
@@ -475,6 +492,12 @@ async function verifyHost(): Promise<void> {
     /unavailable in this build/,
     "unknown bundled ids fail before spawn",
   );
+  const failedStatus = await mcp(host, { operation: "servers" });
+  assert.equal(
+    serverField(failedStatus, config.id, "connection"),
+    "failed",
+    "a failed connection remains visible in status",
+  );
   assert.equal(
     countState("start"),
     startsBeforeEnable + 1,
@@ -517,6 +540,197 @@ async function verifyHost(): Promise<void> {
     /4 MiB/,
     "aggregate catalog snapshots are bounded",
   );
+}
+
+async function verifyConnectionLifecycle(): Promise<void> {
+  const root = join(dir, "connection-lifecycle");
+  const connectionState = join(root, "state.log");
+  const previousDelay = process.env["SANDI_MCP_FIXTURE_LIST_DELAY_MS"];
+  const previousStatePath = process.env["SANDI_MCP_FIXTURE_STATE"];
+  process.env["SANDI_MCP_FIXTURE_LIST_DELAY_MS"] = "50";
+  process.env["SANDI_MCP_FIXTURE_STATE"] = connectionState;
+  const host = createMcpHost({ userDataDir: root, idleDisconnectMs: 20 });
+  try {
+    await configure(host, {
+      operation: "upsert",
+      server: {
+        ...config,
+        inheritEnv: [
+          "SANDI_MCP_FIXTURE_LIST_DELAY_MS",
+          "SANDI_MCP_FIXTURE_STATE",
+        ],
+      },
+    });
+    const initial = await mcp(host, { operation: "servers" });
+    assert.equal(
+      serverField(initial, config.id, "enabled"),
+      true,
+      "an enabled server remains configured while disconnected",
+    );
+    assert.equal(
+      serverField(initial, config.id, "connection"),
+      "disconnected",
+      "an enabled lazy server reports disconnected",
+    );
+
+    const firstCall = mcp(host, {
+      operation: "call",
+      serverId: config.id,
+      toolName: "echo",
+      arguments: { message: "Ada" },
+    });
+    await waitFor(() => Promise.resolve(fileIncludes(connectionState, "list")));
+    assert.equal(
+      serverField(
+        await mcp(host, { operation: "servers" }),
+        config.id,
+        "connection",
+      ),
+      "connecting",
+      "status reports connection startup",
+    );
+    assert.equal((await firstCall).ok, true, "the first exact call connects");
+    assert.equal(
+      serverField(
+        await mcp(host, { operation: "servers" }),
+        config.id,
+        "connection",
+      ),
+      "connected",
+      "status reports a live connection",
+    );
+
+    const exitsBeforeExplicit = countFileLine(connectionState, "exit");
+    assert.equal(
+      (
+        await mcp(host, {
+          operation: "disconnect",
+          serverId: config.id,
+        })
+      ).ok,
+      true,
+      "explicit disconnect succeeds",
+    );
+    await waitFor(() =>
+      Promise.resolve(
+        countFileLine(connectionState, "exit") > exitsBeforeExplicit,
+      ),
+    );
+    const disconnected = await mcp(host, { operation: "servers" });
+    assert.equal(
+      serverField(disconnected, config.id, "connection"),
+      "disconnected",
+      "explicit disconnect updates connection status",
+    );
+    assert.equal(
+      serverField(disconnected, config.id, "catalog"),
+      "cached",
+      "explicit disconnect retains the catalog",
+    );
+    const startsBeforeReconnect = countFileLine(connectionState, "start");
+    const delayCallsBefore = countFileLine(connectionState, "call:delay");
+    const activeCall = mcp(host, {
+      operation: "call",
+      serverId: config.id,
+      toolName: "delay",
+      arguments: { milliseconds: 100 },
+    });
+    await waitFor(() =>
+      Promise.resolve(
+        countFileLine(connectionState, "call:delay") > delayCallsBefore,
+      ),
+    );
+    const disconnectAfterActiveCall = mcp(host, {
+      operation: "disconnect",
+      serverId: config.id,
+    });
+    assert.equal(
+      (await activeCall).ok,
+      true,
+      "explicit disconnect waits for an active tool call",
+    );
+    assert.equal(
+      (await disconnectAfterActiveCall).ok,
+      true,
+      "the queued explicit disconnect completes after active work",
+    );
+    assert.equal(
+      countFileLine(connectionState, "start"),
+      startsBeforeReconnect + 1,
+      "reconnect needs no configuration mutation",
+    );
+    assert.equal(
+      fileIncludes(connectionState, "delay:done"),
+      true,
+      "the active tool finishes before the queued disconnect",
+    );
+    await mcp(host, {
+      operation: "call",
+      serverId: config.id,
+      toolName: "echo",
+      arguments: { message: "idle reconnect" },
+    });
+    const exitsBeforeIdle = countFileLine(connectionState, "exit");
+    await waitFor(() =>
+      Promise.resolve(countFileLine(connectionState, "exit") > exitsBeforeIdle),
+    );
+    const idle = await mcp(host, { operation: "servers" });
+    assert.equal(
+      serverField(idle, config.id, "connection"),
+      "disconnected",
+      "idle expiry disconnects the live session",
+    );
+    assert.equal(
+      serverField(idle, config.id, "catalog"),
+      "cached",
+      "idle disconnect retains the catalog",
+    );
+
+    const cancellationController = new AbortController();
+    const cancelledCall = mcp(
+      host,
+      {
+        operation: "call",
+        serverId: config.id,
+        toolName: "wait",
+        arguments: {},
+      },
+      cancellationController.signal,
+    );
+    await waitFor(() =>
+      Promise.resolve(fileIncludes(connectionState, "call:wait")),
+    );
+    const exitsBeforeCancellation = countFileLine(connectionState, "exit");
+    cancellationController.abort(new Error("cancel lifecycle fixture"));
+    assert.equal(
+      (await cancelledCall).ok,
+      false,
+      "cancellation fails the call",
+    );
+    await waitFor(() =>
+      Promise.resolve(
+        countFileLine(connectionState, "exit") > exitsBeforeCancellation,
+      ),
+    );
+
+    await mcp(host, {
+      operation: "call",
+      serverId: config.id,
+      toolName: "echo",
+      arguments: { message: "shutdown" },
+    });
+    const exitsBeforeShutdown = countFileLine(connectionState, "exit");
+    await host.close();
+    await waitFor(() =>
+      Promise.resolve(
+        countFileLine(connectionState, "exit") > exitsBeforeShutdown,
+      ),
+    );
+  } finally {
+    await host.close();
+    restoreEnv("SANDI_MCP_FIXTURE_LIST_DELAY_MS", previousDelay);
+    restoreEnv("SANDI_MCP_FIXTURE_STATE", previousStatePath);
+  }
 }
 
 async function verifyConcurrentConfig(): Promise<void> {
@@ -1037,6 +1251,7 @@ function mcp(
     | { operation: "servers" }
     | { operation: "search"; query: string; serverId?: string }
     | { operation: "describe"; serverId: string; toolName: string }
+    | { operation: "disconnect"; serverId: string }
     | {
         operation: "call";
         serverId: string;
@@ -1084,6 +1299,30 @@ function countState(line: string): number {
   return state()
     .split(/\r?\n/)
     .filter((entry) => entry === line).length;
+}
+
+function countFileLine(path: string, expected: string): number {
+  if (!existsSync(path)) return 0;
+  return readFileSync(path, "utf8")
+    .split(/\r?\n/)
+    .filter((line) => line === expected).length;
+}
+
+function serverField(
+  outcome: Awaited<ReturnType<typeof mcp>>,
+  serverId: string,
+  field: string,
+): unknown {
+  const servers = outcome.structuredContent?.["servers"];
+  assert.ok(Array.isArray(servers), "server status contains a server list");
+  const server = servers.find(
+    (entry: unknown) =>
+      typeof entry === "object" &&
+      entry !== null &&
+      Reflect.get(entry, "id") === serverId,
+  );
+  assert.ok(server !== undefined, `server status contains ${serverId}`);
+  return Reflect.get(server, field);
 }
 
 async function waitFor(check: () => Promise<boolean>): Promise<void> {

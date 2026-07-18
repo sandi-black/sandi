@@ -105,6 +105,10 @@ function verifyAutoIt(root) {
     existsSync(join(bundle, "autoit", "Include", "SandiEditor.au3")),
     "atomic editor facade is missing",
   );
+  assert(
+    existsSync(join(bundle, "autoit", "Include", "SandiVisual.au3")),
+    "guarded visual facade is missing",
+  );
 
   const script = join(root, "verify-autoit-success.au3");
   writeFileSync(
@@ -133,13 +137,15 @@ function verifyAutoIt(root) {
       "Local $iInspectionError = @error",
       'Local $bInsertion = SandiEditor_InsertText(HWnd(0), 0, "", $SANDI_UIA_CUSTOM, "", "")',
       "Local $iInsertionError = @error",
-      'ConsoleWrite($iInspectionError & "|" & $iInsertionError & "|" & $SANDI_EDITOR_ERROR_PAYLOAD & @CRLF)',
+      "Local $bVisual = SandiVisual_Click(HWnd(0), 0, 0.5, 0.5, True, 0, 0, 100, 100, 0, 0, 96, 100, 100)",
+      "Local $iVisualError = @error",
+      'ConsoleWrite($iInspectionError & "|" & $iInsertionError & "|" & $iVisualError & "|" & $SANDI_EDITOR_ERROR_PAYLOAD & "|" & $SANDI_VISUAL_ERROR_TARGET & @CRLF)',
       "",
     ].join("\r\n"),
   );
   const facade = runAutoIt(facadeScript, root);
   assert.equal(facade.status, 0, facade.stderr || facade.stdout);
-  assert.equal(facade.stdout.trim(), "2|40|40");
+  assert.equal(facade.stdout.trim(), "2|40|51|40|51");
   const checked = runAu3Check(script, root);
   assert.equal(checked.status, 0, checked.stderr || checked.stdout);
 

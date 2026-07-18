@@ -975,3 +975,4 @@ Func __SandiInput_ReleaseModifiers()
 EndFunc
 
 #include "SandiEditor.au3"
+#include "SandiVisual.au3"

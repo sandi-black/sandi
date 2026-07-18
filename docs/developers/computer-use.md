@@ -78,6 +78,30 @@ The facade never emits Enter. Submission is a separate retained-button invoke
 or explicit `SandiInput_PressKey(..., "{ENTER}")` call. `SandiInput_TypeText`
 rejects CR and LF and must not be used for multiline editors or chat composers.
 
+## Desktop activity and global input
+
+Call `local_desktop_activity` immediately before choosing a global keyboard or
+pointer fallback. It reads the current Windows session lock state, the age of
+the last session-local keyboard or mouse input, and the number of interactive
+user sessions. The result exists only for that tool call. It contains no user
+identity, application usage, input content, or activity history.
+
+An observation is fresh for five seconds. Input at most 15 seconds old is
+`active`; input at least five minutes old is `idle`. The interval between those
+thresholds is `unknown`. Last-input age is capped at 24 hours and the structured
+result marks when the reported age is a lower bound. A stale or unavailable
+observation, or any count other than one interactive session, is also `unknown`.
+
+| Activity  | Global input behavior                                                                                                               |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `active`  | Use guarded input after targeted native and UIA actions fail.                                                                       |
+| `idle`    | Use direct input only when the user explicitly requested unattended work. Otherwise ask.                                            |
+| `locked`  | Do not send global input. Wait for unlock or ask the user.                                                                          |
+| `unknown` | Ask. Guarded input is acceptable only when the requested action is already authorized and the foreground target can be revalidated. |
+
+Activity never proves who is at the keyboard and does not authorize an action.
+Prefer targeted native or UIA operations in every state.
+
 ## Guarded visual fallback
 
 A window `local_screenshot` captures the target client area, not the outer

@@ -115,6 +115,9 @@ export const LocalListMonitorsParamsSchema = z.object({
 export const LocalListWindowsParamsSchema = z.object({
   desktop: z.string().min(1).optional(),
 });
+export const LocalDesktopActivityParamsSchema = z.object({
+  desktop: z.string().min(1).optional(),
+});
 export const LocalScreenshotParamsSchema = z
   .object({
     desktop: z.string().min(1).optional(),
@@ -153,6 +156,9 @@ export type LocalListMonitorsParams = z.infer<
 export type LocalListWindowsParams = z.infer<
   typeof LocalListWindowsParamsSchema
 >;
+export type LocalDesktopActivityParams = z.infer<
+  typeof LocalDesktopActivityParamsSchema
+>;
 export type LocalScreenshotParams = z.infer<typeof LocalScreenshotParamsSchema>;
 
 // What the pi child POSTs to the loopback broker, and what the broker pushes on
@@ -185,6 +191,10 @@ export const BrokerCallSchema = z.discriminatedUnion("tool", [
   z.object({
     tool: z.literal("local_list_windows"),
     params: LocalListWindowsParamsSchema,
+  }),
+  z.object({
+    tool: z.literal("local_desktop_activity"),
+    params: LocalDesktopActivityParamsSchema,
   }),
   z.object({
     tool: z.literal("local_screenshot"),

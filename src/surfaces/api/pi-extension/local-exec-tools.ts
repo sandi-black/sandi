@@ -214,6 +214,14 @@ const TOOL_SPECS = [
     }),
   },
   {
+    name: "local_desktop_activity",
+    label: "Observe Desktop Activity",
+    description: `Report the current Windows session lock state and bounded age of the last local keyboard or mouse input. The ephemeral, non-identifying result classifies activity as active, idle, locked, or unknown. Use it only to choose a global-input fallback after targeted native or UIA actions are unavailable. ${DESKTOP_HINT}`,
+    parameters: Type.Object({
+      desktop: desktopParam,
+    }),
+  },
+  {
     name: "local_screenshot",
     label: "Screenshot Desktop",
     description: `Capture a screenshot of a connected desktop and return it as an image. A window capture uses its DPI-aware client area and returns one visualObservation contract in structured content for guarded normalized-coordinate input. Capture one monitor or one window; with neither, the primary monitor is captured. ${DESKTOP_HINT}`,

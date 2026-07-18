@@ -51,7 +51,11 @@ browser session.
    insertion cannot perform the mutation. Do not pass newlines to
    `SandiInput_TypeText`, which accepts single-line text only. Use guarded
    `SandiInput_*` helpers when the user is present and actively using the
-   computer. Use direct input for unattended work so it does not wait on UAC.
+   computer. Immediately before choosing global input, call
+   `local_desktop_activity`. Use guarded input for `active`; use direct input
+   for `idle` only when the user explicitly requested unattended work. Do not
+   send global input while `locked`. For `unknown`, ask unless the action is
+   already authorized and guarded input can revalidate the foreground target.
    Do file and process work with the matching local tools.
 3. Wait on the real state change and observe again. Never repeat an ambiguous
    mutating action without first checking whether it happened.

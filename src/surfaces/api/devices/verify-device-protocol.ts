@@ -132,6 +132,13 @@ function verifyDeviceProtocol(): void {
     "the broker accepts bounded inline AutoIt",
   );
   assert(
+    BrokerCallSchema.safeParse({
+      tool: "local_desktop_activity",
+      params: { desktop: "Ada's workstation" },
+    }).success,
+    "the broker accepts a routed desktop activity observation",
+  );
+  assert(
     !BrokerCallSchema.safeParse({
       tool: "local_autoit_run",
       params: { code: "x".repeat(MAX_LOCAL_SCRIPT_SOURCE_CHARS + 1) },

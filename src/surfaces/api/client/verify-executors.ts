@@ -756,6 +756,19 @@ async function verifyStateToolRouting(context: ExecutorContext): Promise<void> {
       "local_list_monitors refuses on a non-Windows desktop",
     );
   }
+
+  const activity = await executeLocalTool(
+    { tool: "local_desktop_activity", params: {} },
+    context,
+  );
+  if (process.platform === "win32") {
+    assert(activity.ok, "local_desktop_activity runs on a Windows desktop");
+  } else {
+    assert(
+      !activity.ok && (activity.error ?? "").includes("only supported"),
+      "local_desktop_activity refuses on a non-Windows desktop",
+    );
+  }
   console.log("ok the state tools route to their executors");
 }
 

@@ -11,7 +11,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  autoItInputGuardError,
   autoItRequiresAdmin,
   type LocalScriptRuntimeContext,
   runLocalAutoIt,
@@ -202,6 +201,23 @@ try {
     "checked",
     "ran",
   ]);
+  const unfilteredAutoIt = await runLocalAutoIt(
+    {
+      code: [
+        'Send("Grace Hopper")',
+        "MouseMove(10, 10)",
+        'Call("DynamicFunction")',
+        "Execute('ConsoleWrite(\"dynamic\")')",
+        'Eval("dynamicVariable")',
+        'DllCall("kernel32.dll", "none", "Sleep", "dword", 0)',
+        'DllCallAddress("none", 0)',
+      ].join("\n"),
+    },
+    root,
+    autoitContext,
+  );
+  assert.equal(unfilteredAutoIt.ok, true);
+  assert.equal(unfilteredAutoIt.isError, undefined);
 
   writeFileSync(autoitLog, "", "utf8");
   const invalidAutoIt = await runLocalAutoIt(
@@ -261,53 +277,6 @@ try {
   assert.equal(checkerTimeout.structuredContent?.["phase"], "syntax_check");
   assert.equal(checkerTimeout.structuredContent?.["timedOut"], true);
   assert.equal(readFileSync(autoitLog, "utf8").trim(), "checked");
-  assert.match(
-    autoItInputGuardError('Send("unsafe")') ?? "",
-    /raw global input/,
-  );
-  assert.match(
-    autoItInputGuardError(
-      [
-        'OnAutoItExitRegister("ReleaseInput")',
-        "If Not BlockInput(1) Then Exit 2",
-        'MouseClickDrag("left", 0, 0, 10, 10)',
-        "BlockInput(0)",
-      ].join("\n"),
-    ) ?? "",
-    /raw global input/,
-  );
-  assert.match(
-    autoItInputGuardError(
-      [
-        "#include <SandiAutoIt.au3>",
-        'SandiInput_TypeText($hWnd, $pid, "Edit1", $SANDI_UIA_EDIT, "Name", "Ada")',
-      ].join("\n"),
-    ) ?? "",
-    /requires #RequireAdmin/,
-  );
-  assert.equal(
-    autoItInputGuardError(
-      [
-        "#RequireAdmin",
-        "#include <SandiAutoIt.au3>",
-        'SandiInput_TypeText($hWnd, $pid, "Edit1", $SANDI_UIA_EDIT, "Name", "Ada")',
-      ].join("\n"),
-    ),
-    undefined,
-  );
-  assert.equal(autoItInputGuardError('; Send("comment only")'), undefined);
-  assert.equal(
-    autoItInputGuardError('ConsoleWrite("MouseClickDrag(unsafe)")'),
-    undefined,
-  );
-  for (const unsafe of [
-    'Call("Send", "x")',
-    'Execute("Send(""x"")")',
-    'DllCall("user32.dll", "none", "mouse_event")',
-    '$shell.SendKeys("x")',
-  ]) {
-    assert.match(autoItInputGuardError(unsafe) ?? "", /blocked/);
-  }
   assert.equal(autoItRequiresAdmin("#RequireAdmin\nConsoleWrite('Ada')"), true);
   assert.equal(
     autoItRequiresAdmin("  #requireadmin ; guarded global input\nExit 0"),

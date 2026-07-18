@@ -253,11 +253,13 @@ the script; warnings remain untrusted evidence and execution continues within
 the call's original timeout and output budgets.
 
 The packaged AutoIt include provides bounded HWND/PID-scoped UIA operations and
-guarded global-input helpers. Submitted scripts may use Control* and the UIA
-facade directly. Raw global input and dynamic/native dispatch fail closed;
-global fallback must use `SandiInput_*` with `#RequireAdmin` so the supervised
-elevation path owns input release during normal completion, timeout, and
-cancellation.
+guarded global-input helpers. Submitted scripts may use Control*, the UIA
+facade, direct global input, dynamic dispatch, or native calls. There is no
+function-name policy scanner; the exact artifact passes through `Au3Check`
+before execution. When the user is present and actively using the computer,
+guidance prefers `SandiInput_*` with `#RequireAdmin` so the supervised elevation
+path owns input release during normal completion, timeout, and cancellation.
+Unattended work may use direct input without elevation or a UAC dependency.
 
 Only the builtin file and shell tools are disabled on a desktop turn.
 `sandi_js_run` stays enabled and the desktop surface points its runtime entry at

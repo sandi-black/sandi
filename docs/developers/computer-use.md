@@ -19,7 +19,11 @@ Chrome uses the bundled `chrome-devtools-mcp` command with `--autoConnect` for
 the user's running profile. The server receives that real profile path as an
 argument while its process environment remains isolated. Chrome must have
 remote debugging enabled at `chrome://inspect/#remote-debugging`, and the user
-must allow the connection. Generic web research does not need this server.
+must allow the connection. The MCP host starts the server on the first exact
+browser call and disconnects it after 30 idle seconds, which removes Chrome's
+automation banner while leaving remote debugging and the server's enabled
+configuration unchanged. A later call reconnects automatically. Generic web
+research does not need this server.
 
 ## Native execution model
 

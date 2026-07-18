@@ -36,6 +36,7 @@ import {
 } from "@sandi-server/surfaces/api/devices/protocol";
 
 export type McpConfigChange = LocalMcpConfigureParams;
+export const DEFAULT_MCP_IDLE_DISCONNECT_MS = 30_000;
 export type BundledMcpCommand = {
   id?: string;
   version?: string;
@@ -74,6 +75,13 @@ type ConnectionEntry = {
   promise: Promise<LiveConnection>;
   waiters: number;
   settled: boolean;
+  status: "connecting" | "connected";
+};
+
+type PendingDisconnect = {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: unknown) => void;
 };
 
 export function createMcpHost(input: {
@@ -84,6 +92,7 @@ export function createMcpHost(input: {
   ) => BundledMcpCommand | undefined | Promise<BundledMcpCommand | undefined>;
   configStore?: McpConfigStore;
   catalogStore?: McpCatalogStore;
+  idleDisconnectMs?: number;
 }): McpHost {
   const configStore =
     input.configStore ??
@@ -94,11 +103,17 @@ export function createMcpHost(input: {
   const catalogs = new Map<string, McpCatalog>();
   const connections = new Map<string, ConnectionEntry>();
   const connectionTokens = new Map<string, string>();
+  const failedConnections = new Set<string>();
   const lastErrors = new Map<string, string>();
   const outputSchemaValidator = new AjvJsonSchemaValidator();
   const notificationWorkers = new Map<string, Promise<void>>();
   const notificationGenerations = new Map<string, number>();
   const notificationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const activeOperations = new Map<string, number>();
+  const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const pendingDisconnects = new Map<string, PendingDisconnect>();
+  const idleDisconnectMs =
+    input.idleDisconnectMs ?? DEFAULT_MCP_IDLE_DISCONNECT_MS;
   let configTail = Promise.resolve();
 
   const serializeConfig = <T>(run: () => T | Promise<T>): Promise<T> => {
@@ -121,7 +136,15 @@ export function createMcpHost(input: {
     return loaded;
   };
 
+  const clearIdleTimer = (serverId: string): void => {
+    const timer = idleTimers.get(serverId);
+    if (timer) clearTimeout(timer);
+    idleTimers.delete(serverId);
+  };
+
   const closeServer = async (serverId: string): Promise<void> => {
+    clearIdleTimer(serverId);
+    failedConnections.delete(serverId);
     const pending = connections.get(serverId);
     connections.delete(serverId);
     connectionTokens.delete(serverId);
@@ -143,6 +166,114 @@ export function createMcpHost(input: {
       await live.client.close();
     } catch {
       await live.transport.close();
+    }
+  };
+
+  const drainPendingDisconnect = async (serverId: string): Promise<void> => {
+    const pending = pendingDisconnects.get(serverId);
+    if (!pending || (activeOperations.get(serverId) ?? 0) > 0) return;
+    try {
+      await closeServer(serverId);
+      pending.resolve();
+    } catch (error) {
+      pending.reject(error);
+    } finally {
+      if (pendingDisconnects.get(serverId) === pending) {
+        pendingDisconnects.delete(serverId);
+      }
+    }
+  };
+
+  const queueDisconnect = (serverId: string): Promise<void> => {
+    clearIdleTimer(serverId);
+    const existing = pendingDisconnects.get(serverId);
+    if (existing) return existing.promise;
+    if ((activeOperations.get(serverId) ?? 0) === 0) {
+      return closeServer(serverId);
+    }
+    let resolve = (): void => undefined;
+    let reject = (_error: unknown): void => undefined;
+    const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    pendingDisconnects.set(serverId, { promise, resolve, reject });
+    return promise;
+  };
+
+  const requestDisconnect = async (serverId: string): Promise<void> => {
+    let completion = Promise.resolve();
+    await serializeConfig(async () => {
+      completion = queueDisconnect(serverId);
+      if ((activeOperations.get(serverId) ?? 0) > 0) return;
+      if (pendingDisconnects.has(serverId)) {
+        await drainPendingDisconnect(serverId);
+        return;
+      }
+      await completion;
+    });
+    await completion;
+  };
+
+  const scheduleIdleDisconnect = (serverId: string): void => {
+    clearIdleTimer(serverId);
+    const connection = connections.get(serverId);
+    if (
+      idleDisconnectMs <= 0 ||
+      connection?.status !== "connected" ||
+      (activeOperations.get(serverId) ?? 0) > 0 ||
+      pendingDisconnects.has(serverId)
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (idleTimers.get(serverId) !== timer) return;
+      idleTimers.delete(serverId);
+      void requestDisconnect(serverId).catch((error: unknown) => {
+        lastErrors.set(serverId, boundedError(error));
+      });
+    }, idleDisconnectMs);
+    timer.unref();
+    idleTimers.set(serverId, timer);
+  };
+
+  const beginActivity = (serverId: string): void => {
+    clearIdleTimer(serverId);
+    activeOperations.set(serverId, (activeOperations.get(serverId) ?? 0) + 1);
+  };
+
+  const finishActivity = async (
+    serverId: string,
+    disconnect: boolean,
+  ): Promise<void> => {
+    const remaining = Math.max((activeOperations.get(serverId) ?? 1) - 1, 0);
+    if (remaining === 0) activeOperations.delete(serverId);
+    else activeOperations.set(serverId, remaining);
+    if (disconnect) {
+      await requestDisconnect(serverId);
+      return;
+    }
+    if (remaining > 0) return;
+    await serializeConfig(async () => {
+      if (pendingDisconnects.has(serverId)) {
+        await drainPendingDisconnect(serverId);
+        return;
+      }
+      scheduleIdleDisconnect(serverId);
+    });
+  };
+
+  const withActivity = async <T>(
+    serverId: string,
+    signal: AbortSignal,
+    run: () => Promise<T>,
+    disconnectOnAbort: boolean,
+  ): Promise<T> => {
+    beginActivity(serverId);
+    try {
+      return await run();
+    } finally {
+      await finishActivity(serverId, disconnectOnAbort && signal.aborted);
     }
   };
 
@@ -243,12 +374,18 @@ export function createMcpHost(input: {
     const worker = (async () => {
       for (;;) {
         const generation = notificationGenerations.get(serverId) ?? 0;
-        await refreshCatalog(
+        await withActivity(
           serverId,
-          client,
-          protectedValues,
-          callMetadata,
           signal,
+          () =>
+            refreshCatalog(
+              serverId,
+              client,
+              protectedValues,
+              callMetadata,
+              signal,
+            ),
+          false,
         );
         if ((notificationGenerations.get(serverId) ?? 0) === generation) return;
       }
@@ -377,11 +514,13 @@ export function createMcpHost(input: {
       transport.stderr.on("data", () => undefined);
       client.onclose = () => {
         if (connectionTokens.get(serverId) === token) {
+          clearIdleTimer(serverId);
           connections.delete(serverId);
           connectionTokens.delete(serverId);
         }
       };
       client.onerror = (error) => {
+        failedConnections.add(serverId);
         lastErrors.set(serverId, boundedError(error, protectedValues));
       };
       try {
@@ -407,17 +546,24 @@ export function createMcpHost(input: {
       promise,
       waiters: 0,
       settled: false,
+      status: "connecting",
     };
     connections.set(serverId, entry);
     void promise.then(
       () => {
         entry.settled = true;
+        if (connections.get(serverId) === entry) {
+          entry.status = "connected";
+          failedConnections.delete(serverId);
+        }
       },
       () => {
         entry.settled = true;
       },
     );
-    void promise.catch(() => {
+    void promise.catch((error: unknown) => {
+      failedConnections.add(serverId);
+      lastErrors.set(serverId, boundedError(error));
       if (connectionTokens.get(serverId) === token) {
         connections.delete(serverId);
         connectionTokens.delete(serverId);
@@ -553,11 +699,10 @@ export function createMcpHost(input: {
         id: server.id,
         label: server.label,
         enabled: server.enabled,
-        catalog: catalogFor(server.id)
-          ? "cached"
-          : connections.has(server.id)
-            ? "connecting"
-            : "missing",
+        catalog: catalogFor(server.id) ? "cached" : "missing",
+        connection:
+          connections.get(server.id)?.status ??
+          (failedConnections.has(server.id) ? "failed" : "disconnected"),
         ...(lastErrors.get(server.id) !== undefined
           ? { lastError: lastErrors.get(server.id) }
           : {}),
@@ -595,6 +740,18 @@ export function createMcpHost(input: {
         .map(({ score: _score, ...match }) => match);
       return jsonOutcome({ matches });
     }
+    if (params.operation === "disconnect") {
+      if (!configFor(params.serverId)) {
+        return {
+          ok: false,
+          content: [],
+          error: `desktop MCP server ${params.serverId} is not configured`,
+        };
+      }
+      await requestDisconnect(params.serverId);
+      lastErrors.delete(params.serverId);
+      return textOutcome(`disconnected desktop MCP server ${params.serverId}`);
+    }
     const catalog = catalogFor(params.serverId);
     const tool = catalog?.tools.find((entry) => entry.name === params.toolName);
     if (params.operation === "describe") {
@@ -602,69 +759,76 @@ export function createMcpHost(input: {
         ? jsonOutcome({ serverId: params.serverId, tool })
         : missingTool(params.serverId, params.toolName);
     }
-    const prepared = await prepareCall(params.serverId, signal);
-    const { live, catalog: fresh } = prepared;
-    const freshTool = fresh.tools.find(
-      (entry) => entry.name === params.toolName,
+    return withActivity(
+      params.serverId,
+      signal,
+      async () => {
+        const prepared = await prepareCall(params.serverId, signal);
+        const { live, catalog: fresh } = prepared;
+        const freshTool = fresh.tools.find(
+          (entry) => entry.name === params.toolName,
+        );
+        if (!freshTool) {
+          return missingTool(params.serverId, params.toolName);
+        }
+        const metadata = live.callMetadata.get(params.toolName);
+        if (!metadata) {
+          return missingTool(params.serverId, params.toolName);
+        }
+        if (metadata.taskSupport === "required") {
+          return {
+            ok: false,
+            content: [],
+            error: `desktop MCP tool ${params.serverId}/${params.toolName} requires task execution, which is not supported`,
+          };
+        }
+        const started = Date.now();
+        try {
+          const result = await live.client.request(
+            {
+              method: "tools/call",
+              params: { name: metadata.rawName, arguments: params.arguments },
+            },
+            CallToolResultSchema,
+            { signal },
+          );
+          if (metadata.outputSchema !== undefined && result.isError !== true) {
+            if (result.structuredContent === undefined) {
+              throw new Error(
+                `desktop MCP tool ${params.serverId}/${params.toolName} declared an output schema but returned no structured content`,
+              );
+            }
+            const validation = outputSchemaValidator.getValidator(
+              metadata.outputSchema,
+            )(result.structuredContent);
+            if (!validation.valid) {
+              throw new Error(
+                `desktop MCP tool ${params.serverId}/${params.toolName} returned invalid structured content: ${validation.errorMessage}`,
+              );
+            }
+          }
+          const redacted = CallToolResultSchema.parse(
+            redactValue(result, live.protectedValues),
+          );
+          console.info("desktop MCP tool call finished", {
+            serverId: params.serverId,
+            toolName: params.toolName,
+            durationMs: Date.now() - started,
+            isError: "isError" in result && result.isError === true,
+          });
+          return convertMcpToolResult(redacted);
+        } catch (error) {
+          console.error("desktop MCP tool call failed", {
+            serverId: params.serverId,
+            toolName: params.toolName,
+            durationMs: Date.now() - started,
+            cancelled: signal.aborted,
+          });
+          throw new Error(boundedError(error, live.protectedValues));
+        }
+      },
+      true,
     );
-    if (!freshTool) {
-      return missingTool(params.serverId, params.toolName);
-    }
-    const metadata = live.callMetadata.get(params.toolName);
-    if (!metadata) {
-      return missingTool(params.serverId, params.toolName);
-    }
-    if (metadata.taskSupport === "required") {
-      return {
-        ok: false,
-        content: [],
-        error: `desktop MCP tool ${params.serverId}/${params.toolName} requires task execution, which is not supported`,
-      };
-    }
-    const started = Date.now();
-    try {
-      const result = await live.client.request(
-        {
-          method: "tools/call",
-          params: { name: metadata.rawName, arguments: params.arguments },
-        },
-        CallToolResultSchema,
-        { signal },
-      );
-      if (metadata.outputSchema !== undefined && result.isError !== true) {
-        if (result.structuredContent === undefined) {
-          throw new Error(
-            `desktop MCP tool ${params.serverId}/${params.toolName} declared an output schema but returned no structured content`,
-          );
-        }
-        const validation = outputSchemaValidator.getValidator(
-          metadata.outputSchema,
-        )(result.structuredContent);
-        if (!validation.valid) {
-          throw new Error(
-            `desktop MCP tool ${params.serverId}/${params.toolName} returned invalid structured content: ${validation.errorMessage}`,
-          );
-        }
-      }
-      const redacted = CallToolResultSchema.parse(
-        redactValue(result, live.protectedValues),
-      );
-      console.info("desktop MCP tool call finished", {
-        serverId: params.serverId,
-        toolName: params.toolName,
-        durationMs: Date.now() - started,
-        isError: "isError" in result && result.isError === true,
-      });
-      return convertMcpToolResult(redacted);
-    } catch (error) {
-      console.error("desktop MCP tool call failed", {
-        serverId: params.serverId,
-        toolName: params.toolName,
-        durationMs: Date.now() - started,
-        cancelled: signal.aborted,
-      });
-      throw new Error(boundedError(error, live.protectedValues));
-    }
   };
 
   return {
@@ -684,9 +848,13 @@ export function createMcpHost(input: {
       }
     },
     async close() {
+      for (const timer of idleTimers.values()) clearTimeout(timer);
+      idleTimers.clear();
       await serializeConfig(() =>
         Promise.all([...connections.keys()].map(closeServer)),
       );
+      for (const pending of pendingDisconnects.values()) pending.resolve();
+      pendingDisconnects.clear();
     },
   };
 }

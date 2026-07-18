@@ -337,11 +337,12 @@ api-surface lease sets it, the cross-surface lease leaves it false.
 ### Desktop-hosted MCP bridge
 
 Desktop-affine MCP servers use the same lease and device link as the other local
-tools. Pi exposes two fixed tools, `local_mcp` for discovery and calls and
-`local_mcp_configure` for persistent changes. Adding MCP servers does not add Pi
-tool definitions: Sandi searches a bounded cached catalog, describes an exact
-tool, then calls it by `{ serverId, toolName }`. The headless reference client
-refuses these operations because it has no persistent MCP host.
+tools. Pi exposes two fixed tools, `local_mcp` for discovery, calls, and
+disconnecting live servers, and `local_mcp_configure` for persistent changes.
+Adding MCP servers does not add Pi tool definitions: Sandi searches a bounded
+cached catalog, describes an exact tool, then calls it by
+`{ serverId, toolName }`. The headless reference client refuses these operations
+because it has no persistent MCP host.
 
 The ownership path is:
 
@@ -364,6 +365,10 @@ Every add, replacement, enable, disable, or removal is applied by the Electron
 host through the authenticated desktop lease. Configuration remains lazy: the
 first exact call starts the selected server and refreshes its complete
 paginated catalog. Search and describe read the cache without starting a child.
+An enabled server disconnects after 30 seconds without connection startup,
+catalog refresh, or tool-call activity. `operation: "disconnect"` releases it
+sooner. Both paths keep its configuration and cached catalog, and the next exact
+call reconnects without another configuration change.
 Catalog-change notifications replace the snapshot after a bounded refresh.
 
 The Electron host retains healthy clients across turns and device-link

@@ -65,6 +65,13 @@ cancellation, kills descendants, and releases blocked input and pressed mouse
 buttons during cleanup. Windows also releases `BlockInput` when the blocking
 thread exits unexpectedly.
 
+Desktop Stop and `/sandi stop` cancel the owning turn, including an active
+`local_autoit_run`. Cancellation terminates the current AutoIt tree and its
+elevation supervisor, and the cancelled executor waits for that cleanup. The
+desktop reports the owning turn as stopped, while an AutoIt timeout or nonzero
+exit remains a model-visible tool result with distinct timeout and exit
+metadata.
+
 Every submitted artifact first runs through the bundled `Au3Check` with strict
 variable declarations. This catches undefined functions, variables, macros,
 argument-count errors, and missing includes before AutoIt or UAC starts. Exit 1
@@ -98,19 +105,27 @@ npm run prepare:mcp-runtime -w app
 npm run verify:mcp-runtime -w app
 ```
 
+The runtime gate includes an end-to-end cancellation check through the desktop
+turn manager, API queue, tool broker, device stream, desktop executor, and real
+AutoIt process tree. It stops an active action, checks that the owner and its
+descendant exit promptly, confirms that no later action occurs, and runs timeout,
+ordinary-failure, and recovery turns over the same desktop link.
+
 The guarded-input behavior gate is deliberately separate. It never requests
 elevation and refuses unless its terminal is already elevated. Run it only when
 interactive input blocking is safe:
 
 ```powershell
 npm run verify:autoit-guarded-input -w app
+npm run verify:autoit-cancellation:guarded -w app
 ```
 
-That gate changes focus during chunked input, cancels multiline input while it
-is active, checks that remaining input is not redirected, and sends a fresh
-input probe after supervisor cleanup. The packaged release-boundary check
-verifies the manifest-hashed include through a real brokered `local_autoit_run`
-call:
+These gates change focus during chunked input and cancel multiline input while
+it is active. The end-to-end variant also covers guarded-input timeout cleanup,
+checks the child and elevated supervisor directly, and sends fresh input through
+the still-running desktop link after cancellation and timeout. The packaged
+release-boundary check verifies the manifest-hashed include through a real
+brokered `local_autoit_run` call:
 
 ```powershell
 npm run verify:packaged-mcp -w app

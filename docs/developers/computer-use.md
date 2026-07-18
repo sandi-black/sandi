@@ -9,7 +9,7 @@ no MCP server or persistent subprocess.
 
 | Target                                                     | Interface                                              |
 | ---------------------------------------------------------- | ------------------------------------------------------ |
-| Native apps, browser chrome, permission UI, and OS dialogs | `local_autoit_run`                                     |
+| Native apps, browser chrome, permission UI, and OS dialogs | `local_native`                                         |
 | Page content, forms, console, and network                  | Chrome DevTools MCP                                    |
 | Files, directories, and shell commands                     | Existing local tools                                   |
 | Plain local JavaScript                                     | `local_js_run`                                         |
@@ -25,7 +25,30 @@ automation banner while leaving remote debugging and the server's enabled
 configuration unchanged. A later call reconnects automatically. Generic web
 research does not need this server.
 
-## Native execution model
+## Typed native helpers
+
+Use `local_native` for routine native control work. Its `inspect` action takes
+one retained HWND/PID and returns controls whose identities include that window,
+AutomationId, control type, accessible name, class, and root-relative path.
+Pass the returned identity unchanged to `describe`, `get_value`, `set_value`,
+`insert_text`, `invoke`, `toggle`, `select`, or `wait_value`. `wait_window`
+checks one retained HWND/PID for existence or closure. `visual_click` requires
+the complete version 2 observation from a window screenshot and normalized
+coordinates.
+
+The desktop generates the narrow AutoIt artifact, checks it, and runs it under
+the normal supervisor. Facade failures are reported as structured `no_match`,
+`ambiguity`, `stale_target`, `unsupported_pattern`, `cancelled`, `timeout`, or
+`verification_failure` errors. `set_value` reads the control back before it
+reports verified success. Other mutations report `observe_next`; take another
+inspection, value read, or screenshot to verify their effect.
+
+Use `local_autoit_run` for application research and unusual multi-step flows
+that the typed action union cannot express. It remains the expert escape hatch
+and accepts complete AutoIt source, so its caller owns sequencing and result
+interpretation.
+
+## Raw AutoIt execution model
 
 Keep native work in one observe-act-wait-verify AutoIt script. Browser content
 uses the DOM first. For other surfaces, discover and retain PID/HWND, then use
@@ -179,7 +202,8 @@ contract accepted by the visual facade:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "capturedAtMs": 1784400000000,
   "target": { "hwnd": "12345", "pid": 678 },
   "active": true,
   "clientRect": { "x": 0, "y": 0, "width": 1280, "height": 720 },
@@ -206,12 +230,14 @@ If Not SandiVisual_Click($hWnd, $iPid, $nX, $nY, $bActive, _
         $iOriginX, $iOriginY, $iDpi, $iScreenshotWidth, $iScreenshotHeight) Then Exit 30
 ```
 
-The facade checks the same HWND/PID, foreground window, client rectangle,
-screen origin, DPI, and screenshot scale before converting the normalized point
-to a physical screen pixel. A moved or resized window, DPI transition, focus
-loss, recycled handle, inconsistent scale, or out-of-bounds point refuses the
-click. Elevated calls also hold `BlockInput`; unelevated calls are limited to
-unattended work and still revalidate immediately before the single click. Never
+The typed helper accepts the observation for 10 seconds after `capturedAtMs`.
+It then calls the facade, which checks the same HWND/PID, foreground window,
+client rectangle, screen origin, DPI, and screenshot scale before converting
+the normalized point to a physical screen pixel. A moved or resized window, DPI
+transition, focus loss, recycled handle, inconsistent scale, or out-of-bounds
+point refuses the click. Elevated calls also hold `BlockInput`; unelevated calls
+are limited to unattended work and still revalidate immediately before the
+single click. Never
 retain the screen pixel. After each click, take a new window screenshot and
 verify the rendered result before another action.
 
@@ -268,10 +294,10 @@ formats, and releases blocked input, modifier keys, and mouse buttons through
 one cleanup path. Windows also releases `BlockInput` when the blocking thread
 exits unexpectedly.
 
-Desktop Stop and `/sandi stop` cancel the owning turn, including an active
-`local_autoit_run`. Cancellation terminates the current AutoIt tree and its
-elevation supervisor, and the cancelled executor waits for that cleanup. The
-desktop reports the owning turn as stopped, while an AutoIt timeout or nonzero
+Desktop Stop and `/sandi stop` cancel the owning turn, including active
+`local_native` and `local_autoit_run` calls. Cancellation terminates the current
+AutoIt tree and its elevation supervisor. The cancelled executor waits for that
+cleanup. The desktop reports the owning turn as stopped, while an AutoIt timeout or nonzero
 exit remains a model-visible tool result with distinct timeout and exit
 metadata.
 

@@ -139,6 +139,34 @@ function verifyDeviceProtocol(): void {
     "the broker accepts a routed desktop activity observation",
   );
   assert(
+    BrokerCallSchema.safeParse({
+      tool: "local_native",
+      params: {
+        action: "invoke",
+        target: {
+          hwnd: "4242",
+          pid: 101,
+          automationId: "SaveButton",
+          controlType: 50000,
+          name: "Save",
+          className: "Button",
+          path: "0/2",
+        },
+      },
+    }).success,
+    "the broker accepts a typed retained-control action",
+  );
+  assert(
+    !BrokerCallSchema.safeParse({
+      tool: "local_native",
+      params: {
+        action: "invoke",
+        target: { hwnd: "4242", pid: 101, name: "Save" },
+      },
+    }).success,
+    "the broker rejects a native mutation without a complete retained identity",
+  );
+  assert(
     !BrokerCallSchema.safeParse({
       tool: "local_autoit_run",
       params: { code: "x".repeat(MAX_LOCAL_SCRIPT_SOURCE_CHARS + 1) },

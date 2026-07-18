@@ -30,6 +30,7 @@ import {
   runLocalAutoIt,
   runLocalJavaScript,
 } from "@/surfaces/api/client/local-script-runtimes";
+import { runLocalNative } from "@/surfaces/api/client/native-automation";
 import type {
   BrokerCall,
   LocalBashParams,
@@ -117,6 +118,15 @@ export async function executeLocalTool(
       case "local_autoit_run":
         return context.localScriptRuntimes
           ? await runLocalAutoIt(
+              call.params,
+              context.rootDir,
+              context.localScriptRuntimes,
+              signal,
+            )
+          : refused("the bundled AutoIt runtime is unavailable");
+      case "local_native":
+        return context.localScriptRuntimes
+          ? await runLocalNative(
               call.params,
               context.rootDir,
               context.localScriptRuntimes,

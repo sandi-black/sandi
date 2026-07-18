@@ -1,5 +1,7 @@
 import { z } from "zod/v4";
 
+export const MAX_VISUAL_OBSERVATION_AGE_MS = 10_000;
+
 const PointSchema = z.object({
   x: z.number().int(),
   y: z.number().int(),
@@ -20,7 +22,8 @@ const ScreenshotGeometrySchema = z.object({
 // Window screenshots and guarded visual actions share this observation shape.
 export const VisualObservationSchema = z
   .object({
-    version: z.literal(1),
+    version: z.literal(2),
+    capturedAtMs: z.number().int().nonnegative(),
     target: z.object({
       hwnd: z.string().regex(/^\d+$/, "must be a decimal window handle"),
       pid: z.number().int().positive(),
@@ -70,3 +73,11 @@ export const VisualObservationEnvelopeSchema = z.object({
 });
 
 export type VisualObservation = z.infer<typeof VisualObservationSchema>;
+
+export function isFreshVisualObservation(
+  observation: VisualObservation,
+  nowMs = Date.now(),
+): boolean {
+  const ageMs = nowMs - observation.capturedAtMs;
+  return ageMs >= 0 && ageMs <= MAX_VISUAL_OBSERVATION_AGE_MS;
+}

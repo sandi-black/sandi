@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { VisualObservationSchema } from "@/surfaces/api/client/visual-observation";
 import {
   DesktopFileAttachmentSchema,
   DesktopFileTransferParamsSchema,
@@ -12,6 +13,7 @@ import { MAX_LOCAL_GREP_PATTERN_CHARS } from "@/surfaces/api/devices/search-limi
 export const MAX_LOCAL_BASH_TIMEOUT_MS = 600_000;
 export const MAX_LOCAL_SCRIPT_TIMEOUT_MS = 600_000;
 export const MAX_LOCAL_SCRIPT_SOURCE_CHARS = 80_000;
+export const MAX_NATIVE_WAIT_TIMEOUT_MS = 30_000;
 
 // The hands-local wire protocol. An api-surface turn runs server-side, but its
 // file and shell tools execute on the human's own desktop. Three hops carry one
@@ -104,6 +106,78 @@ export const LocalAutoItRunParamsSchema = z.object({
     .optional(),
 });
 
+const NativeWindowIdentitySchema = z.object({
+  hwnd: z.string().regex(/^\d+$/, "must be a decimal window handle"),
+  pid: z.number().int().positive(),
+});
+
+const NativeControlIdentitySchema = NativeWindowIdentitySchema.extend({
+  automationId: z.string().max(1_024),
+  controlType: z.number().int().positive(),
+  name: z.string().max(4_096),
+  className: z.string().max(1_024),
+  path: z
+    .string()
+    .regex(/^\d+(?:\/\d+)*$/)
+    .max(2_048),
+});
+
+const NativeInspectFiltersSchema = z.object({
+  automationId: z.string().max(1_024).optional(),
+  controlType: z.number().int().positive().optional(),
+  name: z.string().max(4_096).optional(),
+  className: z.string().max(1_024).optional(),
+});
+
+const NativeTargetActionSchema = z.object({
+  desktop: z.string().min(1).optional(),
+  target: NativeControlIdentitySchema,
+});
+
+export const LocalNativeParamsSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("inspect"),
+    desktop: z.string().min(1).optional(),
+    window: NativeWindowIdentitySchema,
+    filters: NativeInspectFiltersSchema.optional(),
+    includeDocumentChildren: z.boolean().optional(),
+    maxNodes: z.number().int().min(1).max(256).optional(),
+    maxResults: z.number().int().min(1).max(128).optional(),
+  }),
+  NativeTargetActionSchema.extend({ action: z.literal("describe") }),
+  NativeTargetActionSchema.extend({ action: z.literal("get_value") }),
+  NativeTargetActionSchema.extend({
+    action: z.literal("set_value"),
+    value: z.string().max(65_536),
+  }),
+  NativeTargetActionSchema.extend({
+    action: z.literal("insert_text"),
+    text: z.string().min(1).max(65_536),
+  }),
+  NativeTargetActionSchema.extend({ action: z.literal("invoke") }),
+  NativeTargetActionSchema.extend({ action: z.literal("toggle") }),
+  NativeTargetActionSchema.extend({ action: z.literal("select") }),
+  NativeTargetActionSchema.extend({
+    action: z.literal("wait_value"),
+    value: z.string().max(65_536),
+    timeoutMs: z.number().int().positive().max(MAX_NATIVE_WAIT_TIMEOUT_MS),
+  }),
+  z.object({
+    action: z.literal("wait_window"),
+    desktop: z.string().min(1).optional(),
+    window: NativeWindowIdentitySchema,
+    state: z.enum(["exists", "closed"]),
+    timeoutMs: z.number().int().positive().max(MAX_NATIVE_WAIT_TIMEOUT_MS),
+  }),
+  z.object({
+    action: z.literal("visual_click"),
+    desktop: z.string().min(1).optional(),
+    visualObservation: VisualObservationSchema,
+    x: z.number().min(0).lt(1),
+    y: z.number().min(0).lt(1),
+  }),
+]);
+
 // The state tools. They take the same `desktop` selector as every other tool;
 // local_list_desktops is the discovery call that names the desktops a selector
 // can target, so it takes no arguments and the broker answers it from its own
@@ -147,6 +221,7 @@ export type LocalGrepParams = z.infer<typeof LocalGrepParamsSchema>;
 export type LocalBashParams = z.infer<typeof LocalBashParamsSchema>;
 export type LocalJsRunParams = z.infer<typeof LocalJsRunParamsSchema>;
 export type LocalAutoItRunParams = z.infer<typeof LocalAutoItRunParamsSchema>;
+export type LocalNativeParams = z.infer<typeof LocalNativeParamsSchema>;
 export type LocalListDesktopsParams = z.infer<
   typeof LocalListDesktopsParamsSchema
 >;
@@ -179,6 +254,10 @@ export const BrokerCallSchema = z.discriminatedUnion("tool", [
   z.object({
     tool: z.literal("local_autoit_run"),
     params: LocalAutoItRunParamsSchema,
+  }),
+  z.object({
+    tool: z.literal("local_native"),
+    params: LocalNativeParamsSchema,
   }),
   z.object({
     tool: z.literal("local_list_desktops"),

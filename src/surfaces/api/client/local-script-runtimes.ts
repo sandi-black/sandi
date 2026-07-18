@@ -64,6 +64,42 @@ export async function runLocalAutoIt(
   runtimes: LocalScriptRuntimeContext,
   signal?: AbortSignal,
 ): Promise<ToolCallOutcome> {
+  return runAutoItSource(
+    {
+      code: params.code,
+      ...(params.timeoutMs !== undefined
+        ? { timeoutMs: params.timeoutMs }
+        : {}),
+    },
+    rootDir,
+    runtimes,
+    signal,
+  );
+}
+
+export async function runGeneratedAutoIt(
+  input: {
+    code: string;
+    files?: Readonly<Record<string, string>>;
+    timeoutMs?: number;
+  },
+  rootDir: string,
+  runtimes: LocalScriptRuntimeContext,
+  signal?: AbortSignal,
+): Promise<ToolCallOutcome> {
+  return runAutoItSource(input, rootDir, runtimes, signal);
+}
+
+async function runAutoItSource(
+  params: {
+    code: string;
+    files?: Readonly<Record<string, string>>;
+    timeoutMs?: number;
+  },
+  rootDir: string,
+  runtimes: LocalScriptRuntimeContext,
+  signal?: AbortSignal,
+): Promise<ToolCallOutcome> {
   let autoit: LocalAutoItRuntime | undefined;
   try {
     autoit =
@@ -78,6 +114,12 @@ export async function runLocalAutoIt(
   if (!autoit) return refused("the bundled AutoIt runtime is unavailable");
   const elevated = autoItRequiresAdmin(params.code);
   const artifact = await writeArtifact(runtimes.runRoot, "au3", params.code);
+  for (const [name, content] of Object.entries(params.files ?? {})) {
+    if (!/^[a-z0-9][a-z0-9.-]*$/i.test(name)) {
+      return refused("generated AutoIt artifact has an invalid companion name");
+    }
+    await writeFile(join(dirname(artifact), name), content, "utf8");
+  }
   return runArtifact({
     runtimeName: "autoit",
     runtime: autoit,

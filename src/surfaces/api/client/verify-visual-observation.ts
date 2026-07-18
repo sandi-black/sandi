@@ -1,12 +1,14 @@
 import { assert } from "@/lib/verification/harness";
 import {
+  isFreshVisualObservation,
   VisualObservationEnvelopeSchema,
   VisualObservationSchema,
 } from "@/surfaces/api/client/visual-observation";
 
 export function verifyVisualObservationBoundary(): void {
   const at96Dpi = {
-    version: 1,
+    version: 2,
+    capturedAtMs: 1_700_000_000_000,
     target: { hwnd: "101", pid: 202 },
     active: true,
     clientRect: { x: 0, y: 0, width: 800, height: 600 },
@@ -18,9 +20,28 @@ export function verifyVisualObservationBoundary(): void {
     VisualObservationSchema.safeParse(at96Dpi).success,
     "a 96 DPI client observation is accepted",
   );
+  assert(
+    isFreshVisualObservation(
+      VisualObservationSchema.parse(at96Dpi),
+      at96Dpi.capturedAtMs + 10_000,
+    ),
+    "a version 2 observation remains fresh through its ten-second boundary",
+  );
+  assert(
+    !isFreshVisualObservation(
+      VisualObservationSchema.parse(at96Dpi),
+      at96Dpi.capturedAtMs + 10_001,
+    ),
+    "a version 2 observation expires after ten seconds",
+  );
+  assert(
+    !VisualObservationSchema.safeParse({ ...at96Dpi, version: 1 }).success,
+    "the observation boundary rejects the superseded version 1 shape",
+  );
 
   const mixedDpi = {
-    version: 1,
+    version: 2,
+    capturedAtMs: 1_700_000_000_100,
     target: { hwnd: "303", pid: 404 },
     active: true,
     clientRect: { x: 0, y: 0, width: 1280, height: 720 },

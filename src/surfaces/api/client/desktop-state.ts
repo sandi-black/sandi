@@ -611,7 +611,8 @@ if ($before.pid -ne $after.pid -or $before.active -ne $after.active -or
 }
 $null = [SandiCap]::SetThreadDpiAwarenessContext($priorDpiContext)
 $visualObservationBase = [pscustomobject]@{
-  version = 1
+  version = 2
+  capturedAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   target = [pscustomobject]@{ hwnd = '${handle}'; pid = $before.pid }
   active = $before.active
   clientRect = [pscustomobject]@{ x = $before.x; y = $before.y; width = $before.width; height = $before.height }

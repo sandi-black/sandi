@@ -1,9 +1,21 @@
 ---
 name: autoit-automation
-description: Use for native Windows automation through local_autoit_run, including window discovery, controls, dialogs, scoped UIA, guarded visual clicks, keyboard or mouse input, and verification.
+description: Use for native Windows automation through local_native or the local_autoit_run expert path, including window discovery, controls, dialogs, scoped UIA, guarded visual clicks, input, and verification.
 ---
 
 # AutoIt Automation
+
+Use `local_native` for inspection and common retained-control actions. Start
+with `action: "inspect"`, then pass its complete returned identity unchanged to
+the read, value, editor, invoke, toggle, select, or wait action. Use
+`visual_click` only with the complete version 2 observation from a window
+screenshot; it expires after 10 seconds. `set_value` verifies by reading the
+value back. After any action marked `observe_next`, inspect, read, or capture
+again before continuing.
+
+Use `local_autoit_run` only when application research or an unusual multi-step
+flow does not fit the typed action union. The rest of this skill describes that
+expert path.
 
 Use one `local_autoit_run` call that observes, acts, waits, verifies, and prints
 concise evidence with `ConsoleWrite`. The tool writes a unique `.au3` artifact
@@ -166,7 +178,8 @@ and rejects CR or LF, so do not use it for a composer or rich-text draft.
 Take a window `local_screenshot` only after semantic mutation is unavailable.
 Retain its complete `structuredContent.visualObservation`, convert a screenshot
 pixel to normalized form with `x / screenshot.width` and
-`y / screenshot.height`, and pass the fields unchanged:
+`y / screenshot.height`, and pass the fields unchanged. Version 2 includes
+`capturedAtMs`; do not use it after 10 seconds.
 
 ```autoit
 #include <SandiAutoIt.au3>

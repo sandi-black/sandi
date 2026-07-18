@@ -229,10 +229,11 @@ agents.
 An api-surface turn runs pi with `--no-builtin-tools`, which disables its seven
 native file and shell tools (read, write, edit, bash, grep, find, ls) because
 those operate on the server's disk, the wrong machine. In their place, an
-api-only extension (`pi-extension/local-exec-tools.ts`) registers nine proxy
+api-only extension (`pi-extension/local-exec-tools.ts`) registers ten proxy
 tools (`local_read`, `local_write`, `local_edit`, `local_ls`, `local_glob`,
-`local_grep`, `local_bash`, `local_js_run`, and `local_autoit_run`) under distinct
-names, so pi's name-based exclusion never catches them. The flag is carried by
+`local_grep`, `local_bash`, `local_js_run`, `local_autoit_run`, and
+`local_native`) under distinct names, so pi's name-based exclusion never catches
+them. The flag is carried by
 `SandiSurfaceContext.disableBuiltinTools`, set on `API_SURFACE_CONTEXT`. Sandi's
 own extension tools (memory, skills, `sandi_js_run`, and the rest) stay
 server-side and unchanged; only the proxy file and shell tools run on the
@@ -251,6 +252,15 @@ artifact through the manifest-verified `Au3Check` from the same pinned AutoIt
 distribution. Syntax errors stop in the `syntax_check` phase without executing
 the script; warnings remain untrusted evidence and execution continues within
 the call's original timeout and output budgets.
+
+`local_native` exposes one discriminated action union for inspection, retained
+control reads and mutations, editor insertion, bounded waits, and one guarded
+visual click. Inspection returns a complete HWND/PID plus control identity for
+later actions. Mutations reject incomplete identities, and visual clicks reject
+version 2 screenshot observations more than 10 seconds old. The desktop
+generates the AutoIt artifact and maps facade failures into structured native
+errors. `local_autoit_run` remains available for application research and flows
+outside the typed union.
 
 The packaged AutoIt include provides bounded HWND/PID-scoped UIA operations,
 atomic editor insertion, guarded visual clicks, and global-input helpers. `SandiUIA_Inspect`
@@ -295,9 +305,9 @@ available from every surface, including the desktop REPL. A screenshot returns a
 downscaled JPEG that the proxy maps to an image block in the tool result. Window
 captures use the DPI-aware client area and add a versioned `visualObservation`
 to structured content with HWND/PID, active state, client rectangle, client
-origin in screen pixels, DPI, output dimensions, and scale. `DeviceResult`
-carries both artifacts unchanged. Capture is Windows-only today (PowerShell
-with `System.Windows.Forms` for monitors, `user32` for windows and client
+origin in screen pixels, DPI, capture time, output dimensions, and scale.
+`DeviceResult` carries both artifacts unchanged. Capture is Windows-only today
+(PowerShell with `System.Windows.Forms` for monitors, `user32` for windows and client
 geometry, and `System.Drawing.CopyFromScreen` for the image, in
 `client/desktop-state.ts`); other platforms refuse with a clear message.
 

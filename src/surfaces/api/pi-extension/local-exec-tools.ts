@@ -34,6 +34,58 @@ const desktopParam = Type.Optional(
   Type.String({ description: DESKTOP_SELECTOR_HINT }),
 );
 
+const nativeWindowIdentity = Type.Object({
+  hwnd: Type.String({
+    pattern: "^[0-9]+$",
+    description: "Decimal HWND retained from a current window observation.",
+  }),
+  pid: Type.Integer({ minimum: 1, description: "Retained process id." }),
+});
+
+const nativeControlIdentity = Type.Object({
+  hwnd: Type.String({ pattern: "^[0-9]+$" }),
+  pid: Type.Integer({ minimum: 1 }),
+  automationId: Type.String({ maxLength: 1_024 }),
+  controlType: Type.Integer({ minimum: 1 }),
+  name: Type.String({ maxLength: 4_096 }),
+  className: Type.String({ maxLength: 1_024 }),
+  path: Type.String({
+    pattern: "^[0-9]+(?:/[0-9]+)*$",
+    maxLength: 2_048,
+  }),
+});
+
+const nativeVisualObservation = Type.Object({
+  version: Type.Literal(2),
+  capturedAtMs: Type.Integer({ minimum: 0 }),
+  target: nativeWindowIdentity,
+  active: Type.Boolean(),
+  clientRect: Type.Object({
+    x: Type.Integer(),
+    y: Type.Integer(),
+    width: Type.Integer({ minimum: 1 }),
+    height: Type.Integer({ minimum: 1 }),
+  }),
+  clientOriginScreen: Type.Object({
+    x: Type.Integer(),
+    y: Type.Integer(),
+  }),
+  dpi: Type.Integer({ minimum: 48, maximum: 768 }),
+  screenshot: Type.Object({
+    width: Type.Integer({ minimum: 1 }),
+    height: Type.Integer({ minimum: 1 }),
+    scaleX: Type.Number({ exclusiveMinimum: 0, maximum: 1 }),
+    scaleY: Type.Number({ exclusiveMinimum: 0, maximum: 1 }),
+  }),
+});
+
+const nativeTargetAction = (action: string) =>
+  Type.Object({
+    action: Type.Literal(action),
+    desktop: desktopParam,
+    target: nativeControlIdentity,
+  });
+
 // One entry per proxy tool: its registered name, its UI label, its
 // description, and its parameter schema. `execute` is identical for every
 // tool but the name it forwards, so it is built once in the registration loop
@@ -189,6 +241,67 @@ const TOOL_SPECS = [
         }),
       ),
     }),
+  },
+  {
+    name: "local_native",
+    label: "Control Local Native UI",
+    description: `Inspect and act on native Windows controls through typed calls backed by SandiAutoIt.au3. Start with inspect, then pass the returned complete control identity unchanged to describe, value, editor, invoke, toggle, select, or wait actions. visual_click accepts only a fresh window visualObservation. Use local_autoit_run only for unusual multi-step flows or application research. ${DESKTOP_HINT}`,
+    parameters: Type.Union([
+      Type.Object({
+        action: Type.Literal("inspect"),
+        desktop: desktopParam,
+        window: nativeWindowIdentity,
+        filters: Type.Optional(
+          Type.Object({
+            automationId: Type.Optional(Type.String({ maxLength: 1_024 })),
+            controlType: Type.Optional(Type.Integer({ minimum: 1 })),
+            name: Type.Optional(Type.String({ maxLength: 4_096 })),
+            className: Type.Optional(Type.String({ maxLength: 1_024 })),
+          }),
+        ),
+        includeDocumentChildren: Type.Optional(Type.Boolean()),
+        maxNodes: Type.Optional(Type.Integer({ minimum: 1, maximum: 256 })),
+        maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 128 })),
+      }),
+      nativeTargetAction("describe"),
+      nativeTargetAction("get_value"),
+      Type.Object({
+        action: Type.Literal("set_value"),
+        desktop: desktopParam,
+        target: nativeControlIdentity,
+        value: Type.String({ maxLength: 65_536 }),
+      }),
+      Type.Object({
+        action: Type.Literal("insert_text"),
+        desktop: desktopParam,
+        target: nativeControlIdentity,
+        text: Type.String({ minLength: 1, maxLength: 65_536 }),
+      }),
+      nativeTargetAction("invoke"),
+      nativeTargetAction("toggle"),
+      nativeTargetAction("select"),
+      Type.Object({
+        action: Type.Literal("wait_value"),
+        desktop: desktopParam,
+        target: nativeControlIdentity,
+        value: Type.String({ maxLength: 65_536 }),
+        timeoutMs: Type.Integer({ minimum: 1, maximum: 30_000 }),
+      }),
+      Type.Object({
+        action: Type.Literal("wait_window"),
+        desktop: desktopParam,
+        window: nativeWindowIdentity,
+        state: Type.Union([Type.Literal("exists"), Type.Literal("closed")]),
+        timeoutMs: Type.Integer({ minimum: 1, maximum: 30_000 }),
+      }),
+      Type.Object({
+        action: Type.Literal("visual_click"),
+        desktop: desktopParam,
+        visualObservation: nativeVisualObservation,
+        x: Type.Number({ minimum: 0, exclusiveMaximum: 1 }),
+        y: Type.Number({ minimum: 0, exclusiveMaximum: 1 }),
+      }),
+    ]),
   },
   {
     name: "local_list_desktops",

@@ -47,7 +47,9 @@ async function verifyLocalExecTools(): Promise<void> {
       output: "captured primary monitor",
       mimeType: "image/jpeg",
       dataBase64: "/9j/4AAQ",
-      structuredContent: { visualObservation: { version: 1 } },
+      structuredContent: {
+        visualObservation: { version: 2, capturedAtMs: 1_700_000_000_000 },
+      },
     });
     const shot = await callBrokerTool(broker, "local_screenshot", {});
     assertEqual(
@@ -68,7 +70,9 @@ async function verifyLocalExecTools(): Promise<void> {
     );
     assertEqual(
       JSON.stringify(shot.details["structuredContent"]),
-      JSON.stringify({ visualObservation: { version: 1 } }),
+      JSON.stringify({
+        visualObservation: { version: 2, capturedAtMs: 1_700_000_000_000 },
+      }),
       "a screenshot result carries its visual observation",
     );
     console.log("ok an image outcome is returned as an image content block");

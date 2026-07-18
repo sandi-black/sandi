@@ -28,6 +28,11 @@ const localMcpParameters = Type.Union([
     toolName,
   }),
   Type.Object({
+    operation: Type.Literal("disconnect"),
+    desktop,
+    serverId,
+  }),
+  Type.Object({
     operation: Type.Literal("call"),
     desktop,
     serverId,
@@ -88,7 +93,7 @@ function localMcpTool(broker: NonNullable<ReturnType<typeof readBroker>>) {
     name: "local_mcp",
     label: "Use Desktop MCP",
     description:
-      "List desktop MCP servers, search their cached tool catalogs, describe an exact tool, or call it on the human's desktop.",
+      "List desktop MCP servers, search their cached tool catalogs, describe or call an exact tool, or disconnect a server on the human's desktop.",
     parameters: localMcpParameters,
     async execute(_id, params, signal) {
       return callBrokerTool(broker, "local_mcp", params, signal);

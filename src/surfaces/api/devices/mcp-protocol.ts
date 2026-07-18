@@ -48,6 +48,11 @@ export const LocalMcpParamsSchema = z.discriminatedUnion("operation", [
     toolName: ToolNameSchema,
   }),
   z.object({
+    operation: z.literal("disconnect"),
+    desktop: z.string().min(1).optional(),
+    serverId: IdSchema,
+  }),
+  z.object({
     operation: z.literal("call"),
     desktop: z.string().min(1).optional(),
     serverId: IdSchema,

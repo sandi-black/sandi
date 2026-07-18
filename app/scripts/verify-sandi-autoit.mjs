@@ -623,8 +623,18 @@ Local $parts = StringSplit(StringStripWS(FileRead(${autoItString(readyPath)}), 3
 If UBound($parts) <> 2 Then Exit 10
 Local $hWnd = HWnd(Number($parts[0]))
 Local $iPid = Number($parts[1])
-Local $inspection = SandiUIA_Inspect($hWnd, $iPid, "", 0, "", "", True, 128, 64)
-If @error Or $inspection = "" Then Exit 11
+WinActivate($hWnd)
+If Not WinWaitActive($hWnd, "", 3) Then Exit 11
+Local $inspection = ""
+Local $timer = TimerInit()
+While TimerDiff($timer) < 10000 And Not StringInStr($inspection, '"name":"Sandi composer"')
+    $inspection = SandiUIA_Inspect($hWnd, $iPid, "", 0, "", "", True, 128, 64)
+    If Not StringInStr($inspection, '"name":"Sandi composer"') Then Sleep(50)
+WEnd
+If Not StringInStr($inspection, '"name":"Sandi composer"') Then
+    ConsoleWriteError($inspection & @CRLF)
+    Exit 12
+EndIf
 ConsoleWrite($inspection & @CRLF)
 `;
 }

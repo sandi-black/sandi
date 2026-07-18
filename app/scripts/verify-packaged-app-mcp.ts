@@ -164,7 +164,9 @@ try {
       "#include <SandiAutoIt.au3>",
       "Local $sInspection = SandiUIA_Inspect(HWnd(0), 0)",
       "Local $iInspectionError = @error",
-      'ConsoleWrite(@AutoItVersion & "|" & @AutoItX64 & "|" & $SANDI_UIA_BUTTON & "|" & $iInspectionError & @CRLF)',
+      'Local $bInsertion = SandiEditor_InsertText(HWnd(0), 0, "", $SANDI_UIA_CUSTOM, "", "")',
+      "Local $iInsertionError = @error",
+      'ConsoleWrite(@AutoItVersion & "|" & @AutoItX64 & "|" & $SANDI_UIA_BUTTON & "|" & $iInspectionError & "|" & $iInsertionError & @CRLF)',
     ].join("\n"),
   });
   const expectedBundledError = process.env["SANDI_EXPECT_BUNDLED_ERROR"];
@@ -179,7 +181,7 @@ try {
       true,
       autoitRun.error ?? "local_autoit_run failed",
     );
-    assert.match(textOf(autoitRun), /3\.3\.18\.0\|1\|50000\|2/);
+    assert.match(textOf(autoitRun), /3\.3\.18\.0\|1\|50000\|2\|40/);
     assert.equal(autoitRun.structuredContent?.["runtime"], "autoit");
     assert.equal(autoitRun.structuredContent?.["exitCode"], 0);
     assert.equal(autoitRun.structuredContent?.["syntaxCheck"], "passed");

@@ -29,7 +29,8 @@ retain PID/HWND, then use this order:
 1. Use `ControlSetText`, `ControlClick`, or `ControlCommand` with a stable
    control id.
 2. Include `<SandiAutoIt.au3>` and use its scoped UIA facade for controls that
-   do not expose a useful Win32 control interface.
+   do not expose a useful Win32 control interface. Use
+   `SandiEditor_InsertText` for multiline editor content.
 3. If neither targeted path can perform the action and the user is present and
    actively using the computer, use the facade's guarded `SandiInput_*`
    keyboard or mouse helpers.
@@ -54,6 +55,21 @@ the existing zero-match and ambiguity failures. A stale/recycled HWND, PID
 mismatch, changed path, or changed identity fails instead of selecting a nearby
 element.
 
+`SandiEditor_InsertText(hwnd, pid, automationId, controlType, name, text,
+className="", path="")` is the no-submit editor facade. It requires the exact
+focused identity, normalizes CR/LF variants to CRLF, caps the normalized payload
+at 65,536 characters, and uses one five-second operation budget. A writable
+`ValuePattern` receives one `SetValue`; otherwise only a focused Edit, Document,
+or Custom control with `TextPattern` may take the single paste path. UIA
+`TextPattern` is read-only, so it proves text capability but never performs the
+mutation. The paste path snapshots and restores all clipboard formats through
+the AutoIt supervisor, including failure, timeout, and cancellation cleanup.
+Focus loss fails the call instead of sending more input elsewhere.
+
+The facade never emits Enter. Submission is a separate retained-button invoke
+or explicit `SandiInput_PressKey(..., "{ENTER}")` call. `SandiInput_TypeText`
+rejects CR and LF and must not be used for multiline editors or chat composers.
+
 Document controls are returned, so Notepad's `Text editor` remains discoverable,
 but their descendants are excluded by default and counted in
 `documentSubtreesSkipped`. `includeDocumentChildren` is an explicit opt-in for
@@ -61,12 +77,12 @@ native document content. Do not enable it for Chrome or another browser;
 Chrome DevTools remains the browser DOM path.
 
 Submitted AutoIt source is not filtered by function name. The exact artifact
-passes through `Au3Check`, then runs under the normal process supervisor. Direct
-`Send`, `Mouse*`, and `SendKeys` input is allowed for unattended work. Guarded
-helpers own `BlockInput`, validate the foreground HWND/PID after blocking, and
-revalidate before every short chunk. Keyboard helpers also compare the focused
-UIA element with the requested control. Focus or identity loss stops the
-remaining input rather than redirecting it.
+passes through `Au3Check`, then every AutoIt artifact runs under the process
+supervisor. Direct `Send`, `Mouse*`, and `SendKeys` input is allowed for
+unattended work. Guarded helpers own `BlockInput`, validate the foreground
+HWND/PID after blocking, and revalidate before every short chunk. Keyboard
+helpers also compare the focused UIA element with the requested control. Focus
+or identity loss stops the remaining input rather than redirecting it.
 
 When the user is present and actively using the computer, guarded global
 fallback prevents their input from redirecting the action. It requires
@@ -77,9 +93,10 @@ Sandi must not automate that decision. Control*, UIA, and unattended direct
 input scripts do not need elevation.
 
 The supervisor captures output and exit status, enforces timeout and
-cancellation, kills descendants, and releases blocked input and pressed mouse
-buttons during cleanup. Windows also releases `BlockInput` when the blocking
-thread exits unexpectedly.
+cancellation, kills descendants, restores an editor operation's saved clipboard
+formats, and releases blocked input, modifier keys, and mouse buttons through
+one cleanup path. Windows also releases `BlockInput` when the blocking thread
+exits unexpectedly.
 
 Desktop Stop and `/sandi stop` cancel the owning turn, including an active
 `local_autoit_run`. Cancellation terminates the current AutoIt tree and its

@@ -252,19 +252,26 @@ distribution. Syntax errors stop in the `syntax_check` phase without executing
 the script; warnings remain untrusted evidence and execution continues within
 the call's original timeout and output budgets.
 
-The packaged AutoIt include provides bounded HWND/PID-scoped UIA operations and
-guarded global-input helpers. `SandiUIA_Inspect` returns deterministic
-control-view JSON with optional property filters, node/result limits,
-truncation metadata, reusable action identities, and supported UIA
-patterns/actions. Document controls are visible while descendant traversal is
-opt-in, which keeps browser DOM trees out of the native discovery path.
+The packaged AutoIt include provides bounded HWND/PID-scoped UIA operations,
+atomic editor insertion, and guarded global-input helpers. `SandiUIA_Inspect`
+returns deterministic control-view JSON with optional property filters,
+node/result limits, truncation metadata, reusable action identities, and
+supported UIA patterns/actions. `SandiEditor_InsertText` accepts an inspector
+identity and a payload of at most 65,536 characters. It uses writable
+`ValuePattern` first or one focused paste operation for TextPattern-capable Edit,
+Document, and Custom controls. It never sends Enter, and the supervisor restores
+the clipboard on completion, failure, timeout, or cancellation. Document
+controls are visible while descendant traversal is opt-in, which keeps browser
+DOM trees out of the native discovery path.
 Submitted scripts may use Control*, the UIA facade, direct global input,
 dynamic dispatch, or native calls. There is no
 function-name policy scanner; the exact artifact passes through `Au3Check`
 before execution. When the user is present and actively using the computer,
 guidance prefers `SandiInput_*` with `#RequireAdmin` so the supervised elevation
 path owns input release during normal completion, timeout, and cancellation.
-Unattended work may use direct input without elevation or a UAC dependency.
+`SandiInput_TypeText` rejects newlines; multiline editor content always uses the
+atomic facade. Unattended work may use direct input without elevation or a UAC
+dependency.
 
 Only the builtin file and shell tools are disabled on a desktop turn.
 `sandi_js_run` stays enabled and the desktop surface points its runtime entry at

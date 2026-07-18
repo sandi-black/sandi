@@ -44,7 +44,8 @@ Use these interfaces in order:
    bounded JSON identities; searches skip document descendants unless an
    inspector identity explicitly points into one. Select by the returned
    identity instead of guessing control constants. Each mutation resolves the
-   identity again and fails on stale or ambiguous matches.
+   identity again and fails on stale or ambiguous matches. Route multiline
+   editor content through `SandiEditor_InsertText`.
 3. If neither targeted path can act and the user is present and actively using
    the computer, use the include's guarded `SandiInput_*` functions. They keep
    concurrent user input from redirecting the action.
@@ -84,8 +85,9 @@ Each element contains `identity`, `automationId`, `controlType`,
 The identity has `automationId`, `controlType`, `name`, `className`, and `path`;
 pass those fields in that order to `SandiUIA_Describe`, `SandiUIA_GetValue`,
 `SandiUIA_Invoke`, `SandiUIA_Toggle`, or `SandiUIA_Select`. `SandiUIA_SetValue`
-takes the new value after `name`, followed by `className` and `path`. The path is
-root-relative control-view identity, so do not construct or edit it.
+and `SandiEditor_InsertText` take the new value after `name`, followed by
+`className` and `path`. The path is root-relative control-view identity, so do
+not construct or edit it.
 
 The JSON also reports `visited`, `matched`, `returned`, `limits`, `truncated`,
 per-limit `truncation`, and `documentSubtreesSkipped`. A document control such
@@ -128,6 +130,33 @@ Use the same returned identity for `SandiUIA_Invoke`, `SandiUIA_Toggle`, or
 `SandiUIA_Select`. Do not enumerate the desktop or opt into a browser document
 tree. Chrome DevTools is the page-content path.
 
+## Insert editor text without submitting
+
+Use `SandiEditor_InsertText` for multiline drafts. It requires the exact focused
+identity returned by `SandiUIA_Inspect`, normalizes CR, LF, and CRLF to Windows
+line endings, accepts at most 65,536 characters, and finishes within five
+seconds. Writable `ValuePattern` controls receive one `SetValue` call. Focused
+Edit, Document, or Custom controls without a writable value must expose
+`TextPattern`; the facade then sends one paste command and restores every saved
+clipboard format. `TextPattern` is read-only and is never used to mutate text.
+
+```autoit
+#include <SandiAutoIt.au3>
+
+Local $sDraft = "Ada Lovelace" & @LF & "Grace Hopper"
+; These identity fields are copied verbatim from one SandiUIA_Inspect element.
+If Not SandiEditor_InsertText($hWnd, $iPid, "composer", $SANDI_UIA_CUSTOM, _
+        "Message", $sDraft, "", "0/1/2") Then
+    ConsoleWriteError("editor-insert-refused; error=" & @error & "; extended=" & @extended & @CRLF)
+    Exit 15
+EndIf
+```
+
+The call never emits Enter and never submits. Invoke a retained submit-button
+identity or call `SandiInput_PressKey(..., "{ENTER}")` as a separate, explicit
+action only when submission is requested. `SandiInput_TypeText` is single-line
+and rejects CR or LF, so do not use it for a composer or rich-text draft.
+
 ## Guarded global fallback
 
 Use the guarded global keyboard and mouse helpers only when the user is present
@@ -136,12 +165,12 @@ and actively using the computer. They require `#RequireAdmin`, which asks
 must not automate the prompt. Ordinary Control*, UIA, and unattended direct
 input scripts should remain unelevated.
 
-The helpers check `BlockInput`, register exit cleanup, validate the foreground
-HWND/PID after blocking, and revalidate before every short input chunk. Keyboard
-helpers also require the exact focused UIA control. They stop on any identity or
-focus change and release input on normal exit. Cancellation or timeout kills the
-script under the supervised elevated process, which releases blocked input and
-pressed mouse buttons.
+The guarded pointer and key helpers check `BlockInput`, register exit cleanup,
+validate the foreground HWND/PID after blocking, and revalidate before every
+short input chunk. Keyboard helpers also require the exact focused UIA control.
+They stop on any identity or focus change and release input on normal exit.
+Cancellation or timeout kills the script under the supervised elevated process,
+which releases blocked input and pressed mouse buttons.
 
 ```autoit
 #RequireAdmin

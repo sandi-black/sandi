@@ -175,28 +175,32 @@ async function runArtifact(input: {
     1,
     MAX_STREAM_CHARS - syntaxStdout.length - syntaxStderr.length,
   );
-  const result =
-    input.runtimeName === "autoit" && input.elevated === true
-      ? await runSupervisedAutoIt({
-          executable: input.runtime.executable,
-          artifact: input.artifact,
-          runDir: dirname(input.artifact),
-          cwd: input.cwd,
-          env,
-          timeoutMs: timeoutMs - elapsedMs,
-          maxOutputChars: remainingOutputChars,
-          elevation: "require_admin",
-          ...(input.signal !== undefined ? { signal: input.signal } : {}),
-        })
-      : await runBoundedProcess({
-          executable: input.runtime.executable,
-          args: [...(input.runtime.argsPrefix ?? []), ...input.args],
-          cwd: input.cwd,
-          env,
-          timeoutMs: timeoutMs - elapsedMs,
-          maxOutputChars: remainingOutputChars,
-          ...(input.signal !== undefined ? { signal: input.signal } : {}),
-        });
+  // The supervisor is an AutoIt program, so runtimes wrapped by an argument
+  // prefix cannot execute it directly. Those wrappers are reserved for test
+  // fixtures; the packaged AutoIt runtime has no prefix.
+  const usesDirectAutoIt =
+    input.runtimeName === "autoit" && input.runtime.argsPrefix === undefined;
+  const result = usesDirectAutoIt
+    ? await runSupervisedAutoIt({
+        executable: input.runtime.executable,
+        artifact: input.artifact,
+        runDir: dirname(input.artifact),
+        cwd: input.cwd,
+        env,
+        timeoutMs: timeoutMs - elapsedMs,
+        maxOutputChars: remainingOutputChars,
+        elevation: input.elevated === true ? "require_admin" : "inherit",
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+      })
+    : await runBoundedProcess({
+        executable: input.runtime.executable,
+        args: [...(input.runtime.argsPrefix ?? []), ...input.args],
+        cwd: input.cwd,
+        env,
+        timeoutMs: timeoutMs - elapsedMs,
+        maxOutputChars: remainingOutputChars,
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+      });
   if (result.kind === "cancelled") return refused("cancelled");
   if (result.kind === "spawn_error") {
     return refused(result.error ?? `${input.runtimeName} failed to start`);

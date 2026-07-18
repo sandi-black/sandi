@@ -44,6 +44,10 @@ browser session.
 2. Act through Chrome for page content or one `local_autoit_run` script for a
    native flow. For native work, keep HWND/PID and use Control* first, the
    bundled `SandiAutoIt.au3` UIA facade second, and global input third. Use
+   `SandiEditor_InsertText` with an exact inspector identity for multiline or
+   rich-text drafts. It never submits; invoke the retained submit control as a
+   separate action when requested. Do not pass newlines to
+   `SandiInput_TypeText`, which accepts single-line text only. Use
    guarded `SandiInput_*` fallback helpers when the user is present and actively
    using the computer. Use direct input for unattended work so it does not wait
    on UAC. Do file and process work with the matching local tools.

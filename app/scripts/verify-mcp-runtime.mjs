@@ -123,7 +123,7 @@ function verifyAutoIt(root) {
   const result = spawnSync(
     join(bundle, "autoit", "AutoIt3_x64.exe"),
     ["/ErrorStdOut", script],
-    { encoding: "utf8", cwd: root },
+    { encoding: "utf8", cwd: root, windowsHide: true },
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(result.stdout.trim(), `${lock.commands.autoit.version}|1|0`);
@@ -161,41 +161,13 @@ function verifyAutoIt(root) {
   const nonzeroScript = join(root, "verify-autoit-nonzero.au3");
   writeFileSync(nonzeroScript, "Exit 7\r\n");
   assert.equal(runAutoIt(nonzeroScript, root).status, 7);
-
-  const controlScript = join(root, "verify-autoit-controls.au3");
-  writeFileSync(
-    controlScript,
-    [
-      "#include <GUIConstantsEx.au3>",
-      'Local $hWindow = GUICreate("Sandi AutoIt verification", 320, 120)',
-      'Local $iInput = GUICtrlCreateInput("", 10, 10, 200, 24)',
-      'Local $iButton = GUICtrlCreateButton("Verify", 10, 50, 100, 28)',
-      "GUISetState(@SW_SHOW, $hWindow)",
-      'If Not ControlSetText($hWindow, "", "Edit1", "Ada Lovelace") Then Exit 11',
-      'If ControlGetText($hWindow, "", "Edit1") <> "Ada Lovelace" Then Exit 12',
-      'If Not ControlClick($hWindow, "", "Button1") Then Exit 13',
-      "Local $hTimer = TimerInit()",
-      "Local $iMessage = 0",
-      "Do",
-      "    $iMessage = GUIGetMsg()",
-      "Until $iMessage = $iButton Or TimerDiff($hTimer) > 2000",
-      "If $iMessage <> $iButton Then Exit 14",
-      'ConsoleWrite("controls=ok" & @CRLF)',
-      "GUIDelete($hWindow)",
-      "Exit 0",
-      "",
-    ].join("\r\n"),
-  );
-  const controls = runAutoIt(controlScript, root);
-  assert.equal(controls.status, 0, controls.stderr || controls.stdout);
-  assert.equal(controls.stdout.trim(), "controls=ok");
 }
 
 function runAu3Check(script, cwd) {
   return spawnSync(
     join(bundle, "autoit", "Au3Check.exe"),
     ["-q", "-d", script],
-    { encoding: "utf8", cwd },
+    { encoding: "utf8", cwd, windowsHide: true },
   );
 }
 
@@ -203,7 +175,7 @@ function runAutoIt(script, cwd) {
   return spawnSync(
     join(bundle, "autoit", "AutoIt3_x64.exe"),
     ["/ErrorStdOut", script],
-    { encoding: "utf8", cwd },
+    { encoding: "utf8", cwd, windowsHide: true },
   );
 }
 

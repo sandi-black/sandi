@@ -7,13 +7,13 @@ no MCP server or persistent subprocess.
 
 ## Routing
 
-| Target | Interface |
-| --- | --- |
-| Native apps, browser chrome, permission UI, and OS dialogs | `local_autoit_run` |
-| Page content, forms, console, and network | Chrome DevTools MCP |
-| Files, directories, and shell commands | Existing local tools |
-| Plain local JavaScript | `local_js_run` |
-| Interfaces without useful controls or DOM state | Fresh `local_screenshot` observations |
+| Target                                                     | Interface                             |
+| ---------------------------------------------------------- | ------------------------------------- |
+| Native apps, browser chrome, permission UI, and OS dialogs | `local_autoit_run`                    |
+| Page content, forms, console, and network                  | Chrome DevTools MCP                   |
+| Files, directories, and shell commands                     | Existing local tools                  |
+| Plain local JavaScript                                     | `local_js_run`                        |
+| Interfaces without useful controls or DOM state            | Fresh `local_screenshot` observations |
 
 Chrome uses the bundled `chrome-devtools-mcp` command with `--autoConnect` for
 the user's running profile. The server receives that real profile path as an

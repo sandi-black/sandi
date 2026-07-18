@@ -19,6 +19,10 @@ type SupervisorPaths = {
   stderr: string;
   result: string;
   resultTemp: string;
+  clipboardRequest: string;
+  clipboardReady: string;
+  clipboardRestore: string;
+  clipboardRestored: string;
 };
 
 export async function runSupervisedAutoIt(input: {
@@ -56,7 +60,13 @@ export async function runSupervisedAutoIt(input: {
     executable: input.executable,
     args: ["/ErrorStdOut", wrapper],
     cwd: input.cwd,
-    env: input.env,
+    env: {
+      ...input.env,
+      SANDI_AUTOIT_CLIPBOARD_REQUEST: paths.clipboardRequest,
+      SANDI_AUTOIT_CLIPBOARD_READY: paths.clipboardReady,
+      SANDI_AUTOIT_CLIPBOARD_RESTORE: paths.clipboardRestore,
+      SANDI_AUTOIT_CLIPBOARD_RESTORED: paths.clipboardRestored,
+    },
     timeoutMs: input.timeoutMs + CLEANUP_GRACE_MS,
     maxOutputChars: input.maxOutputChars,
     signal: launcherController.signal,
@@ -103,6 +113,10 @@ Global Const $g_StdoutPath = ${autoItString(input.paths.stdout)}
 Global Const $g_StderrPath = ${autoItString(input.paths.stderr)}
 Global Const $g_ResultPath = ${autoItString(input.paths.result)}
 Global Const $g_ResultTempPath = ${autoItString(input.paths.resultTemp)}
+Global Const $g_ClipboardRequestPath = ${autoItString(input.paths.clipboardRequest)}
+Global Const $g_ClipboardReadyPath = ${autoItString(input.paths.clipboardReady)}
+Global Const $g_ClipboardRestorePath = ${autoItString(input.paths.clipboardRestore)}
+Global Const $g_ClipboardRestoredPath = ${autoItString(input.paths.clipboardRestored)}
 Global Const $g_TimeoutMs = ${input.timeoutMs}
 Global Const $g_MaxOutputChars = ${input.maxOutputChars}
 Global $g_ChildPid = 0
@@ -112,6 +126,11 @@ Global $g_StdoutChars = 0
 Global $g_StderrChars = 0
 Global $g_StdoutTruncated = False
 Global $g_StderrTruncated = False
+Global Const $g_MaxClipboardFormats = 128
+Global $g_ClipboardFormats[$g_MaxClipboardFormats]
+Global $g_ClipboardHandles[$g_MaxClipboardFormats]
+Global $g_ClipboardFormatCount = 0
+Global $g_ClipboardCaptured = False
 
 OnAutoItExitRegister("_SandiCleanup")
 _SandiMain()
@@ -140,6 +159,7 @@ Func _SandiMain()
 
     Local $started = TimerInit()
     While True
+        _SandiClipboardTick()
         _SandiCapture($g_StdoutHandle, StdoutRead($g_ChildPid), $g_StdoutChars, $g_StdoutTruncated)
         _SandiCapture($g_StderrHandle, StderrRead($g_ChildPid), $g_StderrChars, $g_StderrTruncated)
 
@@ -152,6 +172,7 @@ Func _SandiMain()
             EndIf
             _SandiDrain($cancelPid)
             $g_ChildPid = 0
+            _SandiClipboardRestore()
             _SandiWriteResult("cancelled", "null")
             Return
         EndIf
@@ -164,6 +185,7 @@ Func _SandiMain()
             EndIf
             _SandiDrain($timeoutPid)
             $g_ChildPid = 0
+            _SandiClipboardRestore()
             _SandiWriteResult("timed_out", "null")
             Return
         EndIf
@@ -173,6 +195,7 @@ Func _SandiMain()
             Local $finishedPid = $g_ChildPid
             _SandiDrain($finishedPid)
             $g_ChildPid = 0
+            _SandiClipboardRestore()
             _SandiWriteResult("completed", String($exitCode))
             Return
         EndIf
@@ -209,15 +232,105 @@ Func _SandiDrain($pid)
 EndFunc
 
 Func _SandiKillTree($pid)
-    BlockInput($BI_ENABLE)
-    MouseUp("left")
-    MouseUp("right")
-    MouseUp("middle")
+    _SandiReleaseInput()
     RunWait('"' & @SystemDir & '\\taskkill.exe" /PID ' & $pid & ' /T /F', "", @SW_HIDE)
     If ProcessExists($pid) Then ProcessClose($pid)
     ProcessWaitClose($pid, 2)
-    BlockInput($BI_ENABLE)
+    _SandiClipboardRestore()
     Return Not ProcessExists($pid)
+EndFunc
+
+Func _SandiClipboardTick()
+    If Not $g_ClipboardCaptured And FileExists($g_ClipboardRequestPath) Then
+        Local $status = "error"
+        If _SandiClipboardCapture() Then $status = "ok"
+        FileWrite($g_ClipboardReadyPath, $status)
+    EndIf
+    If $g_ClipboardCaptured And FileExists($g_ClipboardRestorePath) Then
+        Local $restored = _SandiClipboardRestore()
+        If $restored Then
+            FileWrite($g_ClipboardRestoredPath, "ok")
+        Else
+            FileWrite($g_ClipboardRestoredPath, "error")
+        EndIf
+    EndIf
+EndFunc
+
+Func _SandiClipboardCapture()
+    If Not _SandiOpenClipboard() Then Return False
+    $g_ClipboardFormatCount = 0
+    Local $format = 0
+    While $g_ClipboardFormatCount < $g_MaxClipboardFormats
+        Local $nextFormat = DllCall("user32.dll", "uint", "EnumClipboardFormats", "uint", $format)
+        If @error Or $nextFormat[0] = 0 Then ExitLoop
+        $format = $nextFormat[0]
+        Local $source = DllCall("user32.dll", "handle", "GetClipboardData", "uint", $format)
+        If @error Or Not $source[0] Then
+            DllCall("user32.dll", "bool", "CloseClipboard")
+            Return False
+        EndIf
+        Local $copy = DllCall("ole32.dll", "handle", "OleDuplicateData", "handle", $source[0], "uint", $format, "uint", 0)
+        If @error Or Not $copy[0] Then
+            DllCall("user32.dll", "bool", "CloseClipboard")
+            Return False
+        EndIf
+        $g_ClipboardFormats[$g_ClipboardFormatCount] = $format
+        $g_ClipboardHandles[$g_ClipboardFormatCount] = $copy[0]
+        $g_ClipboardFormatCount += 1
+    WEnd
+    If $g_ClipboardFormatCount = $g_MaxClipboardFormats Then
+        Local $extra = DllCall("user32.dll", "uint", "EnumClipboardFormats", "uint", $format)
+        If Not @error And $extra[0] <> 0 Then
+            DllCall("user32.dll", "bool", "CloseClipboard")
+            Return False
+        EndIf
+    EndIf
+    DllCall("user32.dll", "bool", "CloseClipboard")
+    $g_ClipboardCaptured = True
+    Return True
+EndFunc
+
+Func _SandiClipboardRestore()
+    If Not $g_ClipboardCaptured Then Return True
+    If Not _SandiOpenClipboard() Then Return False
+    Local $empty = DllCall("user32.dll", "bool", "EmptyClipboard")
+    If @error Or Not $empty[0] Then
+        DllCall("user32.dll", "bool", "CloseClipboard")
+        Return False
+    EndIf
+    For $index = 0 To $g_ClipboardFormatCount - 1
+        Local $set = DllCall("user32.dll", "handle", "SetClipboardData", "uint", $g_ClipboardFormats[$index], "handle", $g_ClipboardHandles[$index])
+        If @error Or Not $set[0] Then
+            DllCall("user32.dll", "bool", "CloseClipboard")
+            Return False
+        EndIf
+        $g_ClipboardHandles[$index] = 0
+    Next
+    DllCall("user32.dll", "bool", "CloseClipboard")
+    $g_ClipboardFormatCount = 0
+    $g_ClipboardCaptured = False
+    Return True
+EndFunc
+
+Func _SandiOpenClipboard()
+    Local $timer = TimerInit()
+    Do
+        Local $opened = DllCall("user32.dll", "bool", "OpenClipboard", "hwnd", 0)
+        If Not @error And $opened[0] Then Return True
+        Sleep(10)
+    Until TimerDiff($timer) >= 2000
+    Return False
+EndFunc
+
+Func _SandiReleaseInput()
+    Local $keys[5] = [0x10, 0x11, 0x12, 0x5B, 0x5C]
+    For $index = 0 To UBound($keys) - 1
+        DllCall("user32.dll", "none", "keybd_event", "byte", $keys[$index], "byte", 0, "dword", 2, "ulong_ptr", 0)
+    Next
+    MouseUp("left")
+    MouseUp("right")
+    MouseUp("middle")
+    BlockInput($BI_ENABLE)
 EndFunc
 
 Func _SandiWriteResult($kind, $exitCode)
@@ -242,10 +355,8 @@ EndFunc
 
 Func _SandiCleanup()
     If $g_ChildPid <> 0 And ProcessExists($g_ChildPid) Then _SandiKillTree($g_ChildPid)
-    BlockInput($BI_ENABLE)
-    MouseUp("left")
-    MouseUp("right")
-    MouseUp("middle")
+    _SandiClipboardRestore()
+    _SandiReleaseInput()
     _SandiCloseOutputs()
     FileChangeDir(@TempDir)
     FileWrite($g_StoppedPath, "pid=" & @AutoItPID & @CRLF)
@@ -411,6 +522,10 @@ function supervisorPaths(runDir: string): SupervisorPaths {
     stderr: join(runDir, "stderr.txt"),
     result: join(runDir, "supervisor.result"),
     resultTemp: join(runDir, "supervisor.result.tmp"),
+    clipboardRequest: join(runDir, "clipboard.request"),
+    clipboardReady: join(runDir, "clipboard.ready"),
+    clipboardRestore: join(runDir, "clipboard.restore"),
+    clipboardRestored: join(runDir, "clipboard.restored"),
   };
 }
 

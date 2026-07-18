@@ -154,6 +154,13 @@ function verifyDeviceProtocol(): void {
     "an empty MCP search query can list bounded matches",
   );
   assert(
+    LocalMcpParamsSchema.safeParse({
+      operation: "disconnect",
+      serverId: "chrome-devtools",
+    }).success,
+    "MCP disconnect addresses a configured server without changing it",
+  );
+  assert(
     !LocalMcpParamsSchema.safeParse({
       operation: "call",
       serverId: "grace-fixture",

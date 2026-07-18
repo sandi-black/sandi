@@ -252,19 +252,33 @@ distribution. Syntax errors stop in the `syntax_check` phase without executing
 the script; warnings remain untrusted evidence and execution continues within
 the call's original timeout and output budgets.
 
-The packaged AutoIt include provides bounded HWND/PID-scoped UIA operations and
-guarded global-input helpers. `SandiUIA_Inspect` returns deterministic
-control-view JSON with optional property filters, node/result limits,
-truncation metadata, reusable action identities, and supported UIA
-patterns/actions. Document controls are visible while descendant traversal is
-opt-in, which keeps browser DOM trees out of the native discovery path.
+The packaged AutoIt include provides bounded HWND/PID-scoped UIA operations,
+atomic editor insertion, guarded visual clicks, and global-input helpers. `SandiUIA_Inspect`
+returns deterministic control-view JSON with optional property filters,
+node/result limits, truncation metadata, reusable action identities, and
+supported UIA patterns/actions. `SandiEditor_InsertText` accepts an inspector
+identity and a payload of at most 65,536 characters. It uses writable
+`ValuePattern` first or one focused paste operation for TextPattern-capable Edit,
+Document, and Custom controls. It never sends Enter, and the supervisor restores
+the clipboard on completion, failure, timeout, or cancellation. Document
+controls are visible while descendant traversal is opt-in, which keeps browser
+DOM trees out of the native discovery path.
 Submitted scripts may use Control*, the UIA facade, direct global input,
 dynamic dispatch, or native calls. There is no
 function-name policy scanner; the exact artifact passes through `Au3Check`
 before execution. When the user is present and actively using the computer,
 guidance prefers `SandiInput_*` with `#RequireAdmin` so the supervised elevation
 path owns input release during normal completion, timeout, and cancellation.
-Unattended work may use direct input without elevation or a UAC dependency.
+`SandiInput_TypeText` rejects newlines; multiline editor content always uses the
+atomic facade. Unattended work may use direct input without elevation or a UAC
+dependency.
+
+`SandiVisual_Click` is the last mutation route for custom-rendered surfaces. It
+accepts a normalized point plus the complete observation from the preceding
+window screenshot. It refuses unless the same HWND/PID is foreground and its
+client rectangle, screen origin, DPI, and screenshot scale are unchanged. The
+facade converts to screen pixels only after those checks, performs one left
+click, and uses the existing supervisor cleanup on cancellation.
 
 Only the builtin file and shell tools are disabled on a desktop turn.
 `sandi_js_run` stays enabled and the desktop surface points its runtime entry at
@@ -277,14 +291,15 @@ The same extension registers four machine-state tools that read the shape of a
 desktop rather than its files: `local_list_desktops`, `local_list_monitors`,
 `local_list_windows`, and `local_screenshot`. They register on the same gate as
 the file and shell proxies (any turn that leased a desktop), so they are
-available from every surface, not just the desktop REPL. A screenshot returns a
-downscaled JPEG that the proxy maps to an image block in the tool result, so the
-model sees the picture; the wire result (`DeviceResult`) carries an optional
-base64 `image` alongside its text for exactly this. Capture is Windows-only today
-(PowerShell with `System.Windows.Forms` for the screen list, `user32` for the
-window list, and `System.Drawing` with `PrintWindow`/`CopyFromScreen` for the
-image, in `client/desktop-state.ts`); on any other platform the tools refuse with
-a clear message.
+available from every surface, including the desktop REPL. A screenshot returns a
+downscaled JPEG that the proxy maps to an image block in the tool result. Window
+captures use the DPI-aware client area and add a versioned `visualObservation`
+to structured content with HWND/PID, active state, client rectangle, client
+origin in screen pixels, DPI, output dimensions, and scale. `DeviceResult`
+carries both artifacts unchanged. Capture is Windows-only today (PowerShell
+with `System.Windows.Forms` for monitors, `user32` for windows and client
+geometry, and `System.Drawing.CopyFromScreen` for the image, in
+`client/desktop-state.ts`); other platforms refuse with a clear message.
 
 `local_grep` accepts the Unicode Google RE2 regular-expression dialect, with a
 16,384-character pattern limit. RE2 keeps matching time linear for untrusted
@@ -301,8 +316,8 @@ adds a warning. Failure of the top-level Windows enumeration refuses the call
 instead of returning a misleading empty or partial result.
 
 Every `local_*` tool (file, shell, and state alike) takes an optional `desktop`
-selector, so Sandi can run any call on any of the caller's connected desktops,
-not only the one the turn is paired with. `local_list_desktops` names the
+selector, so Sandi can run any call on any of the caller's connected desktops.
+`local_list_desktops` names the
 candidates (an id and name per desktop, the current one marked); a selector
 resolves against the leasing identity's connected desktops only, so a turn can
 never reach a desktop belonging to someone else, and a selector that matches none
@@ -322,11 +337,12 @@ api-surface lease sets it, the cross-surface lease leaves it false.
 ### Desktop-hosted MCP bridge
 
 Desktop-affine MCP servers use the same lease and device link as the other local
-tools. Pi exposes two fixed tools, `local_mcp` for discovery and calls and
-`local_mcp_configure` for persistent changes. Adding MCP servers does not add Pi
-tool definitions: Sandi searches a bounded cached catalog, describes an exact
-tool, then calls it by `{ serverId, toolName }`. The headless reference client
-refuses these operations because it has no persistent MCP host.
+tools. Pi exposes two fixed tools, `local_mcp` for discovery, calls, and
+disconnecting live servers, and `local_mcp_configure` for persistent changes.
+Adding MCP servers does not add Pi tool definitions: Sandi searches a bounded
+cached catalog, describes an exact tool, then calls it by
+`{ serverId, toolName }`. The headless reference client refuses these operations
+because it has no persistent MCP host.
 
 The ownership path is:
 
@@ -349,6 +365,10 @@ Every add, replacement, enable, disable, or removal is applied by the Electron
 host through the authenticated desktop lease. Configuration remains lazy: the
 first exact call starts the selected server and refreshes its complete
 paginated catalog. Search and describe read the cache without starting a child.
+An enabled server disconnects after 30 seconds without connection startup,
+catalog refresh, or tool-call activity. `operation: "disconnect"` releases it
+sooner. Both paths keep its configuration and cached catalog, and the next exact
+call reconnects without another configuration change.
 Catalog-change notifications replace the snapshot after a bounded refresh.
 
 The Electron host retains healthy clients across turns and device-link

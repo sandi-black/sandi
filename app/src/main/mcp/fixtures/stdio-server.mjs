@@ -82,6 +82,15 @@ const tools = () => [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "delay",
+    description: "Returns after a bounded delay.",
+    inputSchema: {
+      type: "object",
+      properties: { milliseconds: { type: "number" } },
+      required: ["milliseconds"],
+    },
+  },
+  {
     name: "crash",
     description: "Closes the fixture transport.",
     inputSchema: { type: "object", properties: {} },
@@ -219,6 +228,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       content: [{ type: "text", text: "cancelled" }],
       isError: true,
     };
+  }
+  if (name === "delay") {
+    const requested = Number(request.params.arguments?.["milliseconds"]);
+    const milliseconds = Number.isFinite(requested)
+      ? Math.max(0, Math.min(requested, 1_000))
+      : 0;
+    await new Promise((resolve) => setTimeout(resolve, milliseconds));
+    record("delay:done");
+    return { content: [{ type: "text", text: "delayed" }] };
   }
   if (name === "crash") {
     setTimeout(() => process.exit(23), 0);

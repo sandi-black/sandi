@@ -109,6 +109,7 @@ Global Const $__SANDI_UIA_TREE_SCOPE_CHILDREN = 2
 Global Const $__SANDI_UIA_INVOKE_PATTERN = 10000
 Global Const $__SANDI_UIA_VALUE_PATTERN = 10002
 Global Const $__SANDI_UIA_SELECTION_ITEM_PATTERN = 10010
+Global Const $__SANDI_EDITOR_TEXT_PATTERN = 10014
 Global Const $__SANDI_UIA_TOGGLE_PATTERN = 10015
 Global Const $__SANDI_UIA_MAX_NODES = 256
 Global Const $__SANDI_UIA_MAX_CANDIDATES = 8
@@ -428,6 +429,8 @@ EndFunc
 
 ; Global fallback helpers own BlockInput so validation and cleanup cannot drift apart.
 Func SandiInput_TypeText($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sText)
+    If StringInStr($sText, @CR) Or StringInStr($sText, @LF) Then _
+            Return SetError($SANDI_INPUT_ERROR_ARGUMENT, 0, False)
     Local $bStarted = __SandiInput_Begin($hWnd, $iPid, $sAutomationId, $iControlType, $sName, True)
     Local $iStartError = @error
     Local $iStartExtended = @extended
@@ -439,21 +442,10 @@ Func SandiInput_TypeText($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $s
             __SandiInput_Release()
             Return SetError($SANDI_INPUT_ERROR_TARGET, $iOffset, False)
         EndIf
-        Local $sCharacter = StringMid($sText, $iOffset, 1)
-        If $sCharacter = @CR Or $sCharacter = @LF Then
-            Send("{ENTER}")
-            If $sCharacter = @CR And StringMid($sText, $iOffset + 1, 1) = @LF Then $iOffset += 1
-            $iOffset += 1
-        Else
-            Local $iChunkLength = 0
-            While $iChunkLength < $__SANDI_INPUT_TEXT_CHUNK And $iOffset + $iChunkLength <= $iLength
-                Local $sNext = StringMid($sText, $iOffset + $iChunkLength, 1)
-                If $sNext = @CR Or $sNext = @LF Then ExitLoop
-                $iChunkLength += 1
-            WEnd
-            Send(StringMid($sText, $iOffset, $iChunkLength), $SEND_RAW)
-            $iOffset += $iChunkLength
-        EndIf
+        Local $iChunkLength = $__SANDI_INPUT_TEXT_CHUNK
+        If $iOffset + $iChunkLength - 1 > $iLength Then $iChunkLength = $iLength - $iOffset + 1
+        Send(StringMid($sText, $iOffset, $iChunkLength), $SEND_RAW)
+        $iOffset += $iChunkLength
         Sleep(10)
     WEnd
     __SandiInput_Release()
@@ -706,6 +698,7 @@ Func __SandiUIA_Capabilities($oElement, ByRef $sPatterns, ByRef $sActions)
     $sPatterns = "["
     $sActions = '["Describe"'
     Local $bHasPattern = False
+    Local $bCanInsert = False
     Local $oPattern = __SandiUIA_Pattern($oElement, $__SANDI_UIA_INVOKE_PATTERN)
     If Not @error And IsObj($oPattern) Then
         __SandiUIA_JsonAppend($sPatterns, "Invoke", $bHasPattern)
@@ -716,7 +709,10 @@ Func __SandiUIA_Capabilities($oElement, ByRef $sPatterns, ByRef $sActions)
         __SandiUIA_JsonAppend($sPatterns, "Value", $bHasPattern)
         $sActions &= ',"GetValue"'
         Local $bReadOnly = 1
-        If $oPattern.CurrentIsReadOnly($bReadOnly) = 0 And Not $bReadOnly Then $sActions &= ',"SetValue"'
+        If $oPattern.CurrentIsReadOnly($bReadOnly) = 0 And Not $bReadOnly Then
+            $sActions &= ',"SetValue"'
+            $bCanInsert = True
+        EndIf
     EndIf
     $oPattern = __SandiUIA_Pattern($oElement, $__SANDI_UIA_SELECTION_ITEM_PATTERN)
     If Not @error And IsObj($oPattern) Then
@@ -728,6 +724,17 @@ Func __SandiUIA_Capabilities($oElement, ByRef $sPatterns, ByRef $sActions)
         __SandiUIA_JsonAppend($sPatterns, "Toggle", $bHasPattern)
         $sActions &= ',"Toggle"'
     EndIf
+    Local $pTextPattern = 0
+    Local $iTextHr = $oElement.GetCurrentPattern($__SANDI_EDITOR_TEXT_PATTERN, $pTextPattern)
+    If $iTextHr = 0 And $pTextPattern Then
+        __SandiEditor_ReleaseCom($pTextPattern)
+        __SandiUIA_JsonAppend($sPatterns, "Text", $bHasPattern)
+        Local $vTextControlType = 0
+        If __SandiUIA_Property($oElement, $__SANDI_UIA_CONTROL_TYPE, $vTextControlType) And _
+                ($vTextControlType = $SANDI_UIA_EDIT Or $vTextControlType = $SANDI_UIA_DOCUMENT Or _
+                $vTextControlType = $SANDI_UIA_CUSTOM) Then $bCanInsert = True
+    EndIf
+    If $bCanInsert Then $sActions &= ',"InsertText"'
     $sPatterns &= "]"
     $sActions &= "]"
 EndFunc
@@ -883,8 +890,9 @@ Func __SandiUIA_Clean($vValue)
     Return StringReplace($sValue, '"', "'")
 EndFunc
 
-Func __SandiUIA_FocusedMatches($hWnd, $iPid, $sAutomationId, $iControlType, $sName)
-    Local $oExpected = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName)
+Func __SandiUIA_FocusedMatches($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+        $sClassName = "", $sPath = "")
+    Local $oExpected = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sClassName, $sPath)
     If @error Then Return False
     Local $pFocused = 0
     Local $iHr = $__g_SandiUIA.GetFocusedElement($pFocused)
@@ -916,23 +924,25 @@ Func __SandiUIA_DestroySafeArray($pSafeArray)
     If $pSafeArray Then DllCall("oleaut32.dll", "long", "SafeArrayDestroy", "ptr", $pSafeArray)
 EndFunc
 
-Func __SandiInput_Begin($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $bRequireFocus)
+Func __SandiInput_Begin($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $bRequireFocus, _
+        $sClassName = "", $sPath = "")
     If $__g_SandiInputBlocked Then Return SetError($SANDI_INPUT_ERROR_BUSY, 0, False)
     If Not BlockInput($BI_DISABLE) Then Return SetError($SANDI_INPUT_ERROR_BLOCK, 0, False)
     $__g_SandiInputBlocked = True
-    If Not __SandiInput_Valid($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $bRequireFocus) Then
+    If Not __SandiInput_Valid($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $bRequireFocus, $sClassName, $sPath) Then
         __SandiInput_Release()
         Return SetError($SANDI_INPUT_ERROR_TARGET, 0, False)
     EndIf
     Return True
 EndFunc
 
-Func __SandiInput_Valid($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $bRequireFocus)
+Func __SandiInput_Valid($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $bRequireFocus, _
+        $sClassName = "", $sPath = "")
     $hWnd = HWnd($hWnd)
     If $hWnd = 0 Or Not WinExists($hWnd) Or WinGetProcess($hWnd) <> $iPid Then Return False
     If WinGetHandle("[ACTIVE]") <> $hWnd Then Return False
     If Not $bRequireFocus Then Return True
-    Return __SandiUIA_FocusedMatches($hWnd, $iPid, $sAutomationId, $iControlType, $sName)
+    Return __SandiUIA_FocusedMatches($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sClassName, $sPath)
 EndFunc
 
 Func __SandiInput_PointInWindow($hWnd, $iX, $iY)
@@ -947,8 +957,22 @@ Func __SandiInput_ButtonValid($sButton)
 EndFunc
 
 Func __SandiInput_Release()
+    Local $bClipboardRestored = __SandiEditor_RestoreClipboard()
+    Local $iClipboardError = @error
+    __SandiInput_ReleaseModifiers()
     If $__g_SandiInputMouseButton <> "" Then MouseUp($__g_SandiInputMouseButton)
     $__g_SandiInputMouseButton = ""
     If $__g_SandiInputBlocked Then BlockInput($BI_ENABLE)
     $__g_SandiInputBlocked = False
+    Return SetError($iClipboardError, 0, $bClipboardRestored)
 EndFunc
+
+Func __SandiInput_ReleaseModifiers()
+    Local $aVirtualKeys[5] = [0x10, 0x11, 0x12, 0x5B, 0x5C]
+    For $iIndex = 0 To UBound($aVirtualKeys) - 1
+        DllCall("user32.dll", "none", "keybd_event", "byte", $aVirtualKeys[$iIndex], "byte", 0, "dword", 2, "ulong_ptr", 0)
+    Next
+EndFunc
+
+#include "SandiEditor.au3"
+#include "SandiVisual.au3"

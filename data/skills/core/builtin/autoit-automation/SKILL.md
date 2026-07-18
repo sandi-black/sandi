@@ -1,6 +1,6 @@
 ---
 name: autoit-automation
-description: Use for native Windows automation through local_autoit_run, including window discovery, controls, dialogs, scoped UIA, guarded keyboard or mouse input, and verification.
+description: Use for native Windows automation through local_autoit_run, including window discovery, controls, dialogs, scoped UIA, guarded visual clicks, keyboard or mouse input, and verification.
 ---
 
 # AutoIt Automation
@@ -45,10 +45,15 @@ Use these interfaces in order:
    inspector identity explicitly points into one. Select by the returned
    identity instead of guessing control constants. Each mutation resolves the
    identity again and fails on stale or ambiguous matches.
-3. If neither targeted path can act and the user is present and actively using
+3. Route multiline editor content through `SandiEditor_InsertText` when the
+   retained control supports safe native or atomic insertion.
+4. Use `SandiVisual_Click` only after DOM, Control*, UIA, and safe editor
+   insertion are unavailable. It accepts one normalized point from a fresh
+   window `visualObservation` and performs one left click.
+5. If no targeted path can act and the user is present and actively using
    the computer, use the include's guarded `SandiInput_*` functions. They keep
    concurrent user input from redirecting the action.
-4. For unattended work, direct `Send` and `Mouse*` calls are allowed so the
+6. For unattended work, direct `Send` and `Mouse*` calls are allowed so the
    script can run without waiting for UAC. Retain and revalidate the target
    HWND/PID, keep each input sequence short, and verify the result before
    continuing. `local_autoit_run` does not filter functions by name; the exact
@@ -84,8 +89,9 @@ Each element contains `identity`, `automationId`, `controlType`,
 The identity has `automationId`, `controlType`, `name`, `className`, and `path`;
 pass those fields in that order to `SandiUIA_Describe`, `SandiUIA_GetValue`,
 `SandiUIA_Invoke`, `SandiUIA_Toggle`, or `SandiUIA_Select`. `SandiUIA_SetValue`
-takes the new value after `name`, followed by `className` and `path`. The path is
-root-relative control-view identity, so do not construct or edit it.
+and `SandiEditor_InsertText` take the new value after `name`, followed by
+`className` and `path`. The path is root-relative control-view identity, so do
+not construct or edit it.
 
 The JSON also reports `visited`, `matched`, `returned`, `limits`, `truncated`,
 per-limit `truncation`, and `documentSubtreesSkipped`. A document control such
@@ -128,6 +134,62 @@ Use the same returned identity for `SandiUIA_Invoke`, `SandiUIA_Toggle`, or
 `SandiUIA_Select`. Do not enumerate the desktop or opt into a browser document
 tree. Chrome DevTools is the page-content path.
 
+## Insert editor text without submitting
+
+Use `SandiEditor_InsertText` for multiline drafts. It requires the exact focused
+identity returned by `SandiUIA_Inspect`, normalizes CR, LF, and CRLF to Windows
+line endings, accepts at most 65,536 characters, and finishes within five
+seconds. Writable `ValuePattern` controls receive one `SetValue` call. Focused
+Edit, Document, or Custom controls without a writable value must expose
+`TextPattern`; the facade then sends one paste command and restores every saved
+clipboard format. `TextPattern` is read-only and is never used to mutate text.
+
+```autoit
+#include <SandiAutoIt.au3>
+
+Local $sDraft = "Ada Lovelace" & @LF & "Grace Hopper"
+; These identity fields are copied verbatim from one SandiUIA_Inspect element.
+If Not SandiEditor_InsertText($hWnd, $iPid, "composer", $SANDI_UIA_CUSTOM, _
+        "Message", $sDraft, "", "0/1/2") Then
+    ConsoleWriteError("editor-insert-refused; error=" & @error & "; extended=" & @extended & @CRLF)
+    Exit 15
+EndIf
+```
+
+The call never emits Enter and never submits. Invoke a retained submit-button
+identity or call `SandiInput_PressKey(..., "{ENTER}")` as a separate, explicit
+action only when submission is requested. `SandiInput_TypeText` is single-line
+and rejects CR or LF, so do not use it for a composer or rich-text draft.
+
+## Click a custom-rendered target
+
+Take a window `local_screenshot` only after semantic mutation is unavailable.
+Retain its complete `structuredContent.visualObservation`, convert a screenshot
+pixel to normalized form with `x / screenshot.width` and
+`y / screenshot.height`, and pass the fields unchanged:
+
+```autoit
+#include <SandiAutoIt.au3>
+
+If Not SandiVisual_Click($hWnd, $iPid, $nX, $nY, $bObservedActive, _
+        $iClientX, $iClientY, $iClientWidth, $iClientHeight, _
+        $iOriginX, $iOriginY, $iDpi, $iScreenshotWidth, $iScreenshotHeight) Then
+    ConsoleWriteError("visual-click-refused; error=" & @error & @CRLF)
+    Exit 18
+EndIf
+```
+
+The facade rechecks HWND/PID, foreground state, client rectangle, client origin,
+DPI, and screenshot scale before converting to a physical screen pixel. It
+refuses stale, moved, resized, focus-lost, recycled, or out-of-bounds targets.
+Take another window screenshot after the click and verify the rendered state.
+Do not retain the screen pixel or chain another click from the old observation.
+
+Refuse this fallback in anti-cheat-sensitive software, online competitive
+games, security or permission dialogs, and remote desktops whose nested target
+identity is unavailable. Require immediate confirmation for destructive or
+economy-affecting actions. Refuse any action whose result cannot be reobserved.
+
 ## Guarded global fallback
 
 Use the guarded global keyboard and mouse helpers only when the user is present
@@ -136,12 +198,12 @@ and actively using the computer. They require `#RequireAdmin`, which asks
 must not automate the prompt. Ordinary Control*, UIA, and unattended direct
 input scripts should remain unelevated.
 
-The helpers check `BlockInput`, register exit cleanup, validate the foreground
-HWND/PID after blocking, and revalidate before every short input chunk. Keyboard
-helpers also require the exact focused UIA control. They stop on any identity or
-focus change and release input on normal exit. Cancellation or timeout kills the
-script under the supervised elevated process, which releases blocked input and
-pressed mouse buttons.
+The guarded pointer and key helpers check `BlockInput`, register exit cleanup,
+validate the foreground HWND/PID after blocking, and revalidate before every
+short input chunk. Keyboard helpers also require the exact focused UIA control.
+They stop on any identity or focus change and release input on normal exit.
+Cancellation or timeout kills the script under the supervised elevated process,
+which releases blocked input and pressed mouse buttons.
 
 ```autoit
 #RequireAdmin

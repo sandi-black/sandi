@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -99,6 +100,43 @@ try {
   const cancelled = await cancelledRun;
   assert.equal(cancelled.kind, "cancelled");
 
+  const clipboardSeed = runDirect([
+    'ClipPut("Grace clipboard")',
+    "ConsoleWrite(ClipGet() & @CRLF)",
+  ]);
+  assert.equal(clipboardSeed.status, 0, clipboardSeed.stderr);
+  assert.equal(clipboardSeed.stdout.trim(), "Grace clipboard");
+  const clipboardActive = join(root, "clipboard-cancel-active.marker");
+  const clipboardController = new AbortController();
+  const clipboardCancellation = runScript(
+    [
+      "#include <SandiAutoIt.au3>",
+      "Local $timer = TimerInit()",
+      'If Not __SandiEditor_SetClipboard("temporary clipboard", $timer) Then Exit 21',
+      'DllCall("user32.dll", "none", "keybd_event", "byte", 0x11, "byte", 0, "dword", 0, "ulong_ptr", 0)',
+      `FileWrite(${autoItString(clipboardActive)}, "active")`,
+      "While True",
+      "    Sleep(100)",
+      "WEnd",
+    ].join("\r\n"),
+    10_000,
+    40_000,
+    clipboardController.signal,
+  );
+  await waitUntil(
+    () => existsSync(clipboardActive),
+    "active clipboard cancellation marker",
+  );
+  clipboardController.abort();
+  assert.equal((await clipboardCancellation).kind, "cancelled");
+  const clipboardAfterCancel = runDirect([
+    'Local $control = DllCall("user32.dll", "short", "GetAsyncKeyState", "int", 0x11)',
+    'DllCall("user32.dll", "none", "keybd_event", "byte", 0x11, "byte", 0, "dword", 2, "ulong_ptr", 0)',
+    'ConsoleWrite(ClipGet() & "|" & BitAND($control[0], 0x8000) & @CRLF)',
+  ]);
+  assert.equal(clipboardAfterCancel.status, 0, clipboardAfterCancel.stderr);
+  assert.equal(clipboardAfterCancel.stdout.trim(), "Grace clipboard|0");
+
   console.log("AutoIt supervisor verification passed");
 } finally {
   rmSync(root, {
@@ -106,6 +144,17 @@ try {
     force: true,
     maxRetries: 40,
     retryDelay: 50,
+  });
+}
+
+function runDirect(lines: readonly string[]) {
+  const runDir = mkdtempSync(join(root, "direct-"));
+  const artifact = join(runDir, "main.au3");
+  writeFileSync(artifact, `${lines.join("\r\n")}\r\n`, "utf8");
+  return spawnSync(executable, ["/ErrorStdOut", artifact], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 10_000,
   });
 }
 

@@ -69,6 +69,17 @@ export const desktopMcp = {
     return invoke("local_mcp", params, signal);
   },
 
+  disconnect(
+    input: DesktopSelection & { serverId: string },
+    signal?: AbortSignal,
+  ): Promise<ToolCallOutcome> {
+    const params = LocalMcpParamsSchema.parse({
+      operation: "disconnect",
+      ...input,
+    });
+    return invoke("local_mcp", params, signal);
+  },
+
   call(input: CallInput, signal?: AbortSignal): Promise<ToolCallOutcome> {
     const params = LocalMcpParamsSchema.parse({
       operation: "call",

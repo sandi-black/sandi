@@ -7,6 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -15,6 +16,8 @@ if (process.platform !== "win32" || process.arch !== "x64") {
 }
 
 const appRoot = resolve(import.meta.dirname, "..");
+const require = createRequire(import.meta.url);
+const electronExecutable = require("electron");
 const runtime = join(appRoot, "build", "mcp", "autoit", "AutoIt3_x64.exe");
 const root = mkdtempSync(join(tmpdir(), "sandi-autoit-uia-"));
 const ready = join(root, "fixture.ready");
@@ -32,6 +35,7 @@ const driverPath = join(root, "driver.au3");
 let fixture;
 
 try {
+  await verifyElectronEditor(runtime, root, electronExecutable);
   verifyNotepad(runtime, root);
   writeFileSync(
     fixturePath,
@@ -417,6 +421,302 @@ function verifyNotepad(autoItRuntime, fixtureRoot) {
   assert.equal(includedInspection.visited >= defaultInspection.visited, true);
 }
 
+async function verifyElectronEditor(autoItRuntime, fixtureRoot, electron) {
+  const fixtureMain = join(fixtureRoot, "electron-editor.cjs");
+  const fixtureHtml = join(fixtureRoot, "electron-editor.html");
+  const readyPath = join(fixtureRoot, "electron-editor.ready");
+  const statePath = join(fixtureRoot, "electron-editor-state.json");
+  const clipboardSnapshotPath = join(
+    fixtureRoot,
+    "electron-editor-clipboard.json",
+  );
+  const commandPath = join(fixtureRoot, "electron-editor-command.json");
+  const inspectionPath = join(fixtureRoot, "electron-editor-inspection.au3");
+  writeFileSync(fixtureHtml, electronEditorHtml({ statePath, commandPath }));
+  writeFileSync(fixtureMain, electronEditorMain({ fixtureHtml, readyPath }));
+  const fixture = spawn(electron, [fixtureMain], {
+    cwd: fixtureRoot,
+    env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let fixtureError = "";
+  fixture.stderr.setEncoding("utf8");
+  fixture.stderr.on("data", (chunk) => {
+    fixtureError += chunk;
+  });
+  try {
+    await waitUntil(
+      () => existsSync(readyPath) && existsSync(statePath),
+      () => `Electron editor readiness; stderr=${fixtureError}`,
+    );
+    writeFileSync(inspectionPath, electronInspectionDriver(readyPath));
+    const inspection = spawnSync(
+      autoItRuntime,
+      ["/ErrorStdOut", inspectionPath],
+      { cwd: fixtureRoot, encoding: "utf8", timeout: 120_000 },
+    );
+    assert.equal(inspection.status, 0, inspection.stderr || inspection.stdout);
+    const inspected = JSON.parse(inspection.stdout.trim());
+    const composer = inspected.elements.find(
+      (element) => element.name === "Sandi composer",
+    );
+    assert.notEqual(composer, undefined, JSON.stringify(inspected));
+    const submit = findElement(
+      inspected,
+      (element) => element.name === "Submit draft",
+    );
+    assert.equal(composer.patterns.includes("Text"), true);
+    assert.equal(composer.actions.includes("SetValue"), false);
+    assert.equal(composer.actions.includes("InsertText"), true);
+    const driverPath = join(fixtureRoot, "electron-editor-driver.au3");
+    writeFileSync(
+      driverPath,
+      electronInsertionDriver({
+        readyPath,
+        statePath,
+        clipboardSnapshotPath,
+        commandPath,
+        composer: composer.identity,
+        submit: submit.identity,
+      }),
+    );
+    const insertion = spawnSync(autoItRuntime, ["/ErrorStdOut", driverPath], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+      timeout: 120_000,
+    });
+    assert.equal(insertion.status, 0, insertion.stderr || insertion.stdout);
+    assert.equal(insertion.stdout.trim(), "electron-editor=ok");
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const clipboardSnapshot = JSON.parse(
+      readFileSync(clipboardSnapshotPath, "utf8"),
+    );
+    assert.equal(clipboardSnapshot.clipboardText, "Grace clipboard");
+    assert.match(clipboardSnapshot.clipboardHtml, /<b>Grace clipboard<\/b>/);
+    assert.equal(
+      clipboardSnapshot.clipboardFormats.includes("text/html"),
+      true,
+    );
+    assert.equal(state.draft.replaceAll("\r\n", "\n"), "Ada\nGrace\nHopper");
+    assert.equal(state.decoy, "");
+    assert.equal(state.submissions, 1);
+    console.log("SandiAutoIt Electron editor insertion verification passed");
+  } finally {
+    if (fixture.pid !== undefined) {
+      spawnSync("taskkill.exe", ["/pid", String(fixture.pid), "/t", "/f"], {
+        stdio: "ignore",
+      });
+      await waitUntil(
+        () => fixture.exitCode !== null,
+        () => "Electron editor termination",
+      );
+    }
+  }
+}
+
+function electronEditorMain(paths) {
+  return `const { app, BrowserWindow, Menu } = require("electron");
+const { writeFileSync } = require("node:fs");
+app.commandLine.appendSwitch("force-renderer-accessibility");
+app.whenReady().then(async () => {
+  Menu.setApplicationMenu(null);
+  const window = new BrowserWindow({
+    width: 640,
+    height: 420,
+    show: true,
+    webPreferences: { contextIsolation: false, nodeIntegration: true },
+  });
+  await window.loadFile(${JSON.stringify(paths.fixtureHtml)});
+  window.show();
+  window.focus();
+  await window.webContents.executeJavaScript('document.getElementById("composer").focus()');
+  const handle = window.getNativeWindowHandle();
+  writeFileSync(${JSON.stringify(paths.readyPath)}, String(handle.readBigUInt64LE()) + "|" + String(process.pid));
+});
+app.on("window-all-closed", () => app.quit());
+`;
+}
+
+function electronEditorHtml(paths) {
+  const state = JSON.stringify(paths.statePath);
+  const command = JSON.stringify(paths.commandPath);
+  return `<!doctype html>
+<html><body>
+  <main>
+    <div id="composer" role="document" aria-label="Sandi composer" contenteditable="true"></div>
+    <button id="submit" aria-label="Submit draft">Submit</button>
+    <input id="decoy" aria-label="Decoy editor" />
+  </main>
+  <style>
+    body { font-family: sans-serif; }
+    #composer { border: 1px solid #777; min-height: 160px; white-space: pre-wrap; }
+  </style>
+  <script>
+    const fs = require("node:fs");
+    const { clipboard } = require("electron");
+    const statePath = ${state};
+    const commandPath = ${command};
+    const composer = document.getElementById("composer");
+    const submit = document.getElementById("submit");
+    const decoy = document.getElementById("decoy");
+    let submissions = 0;
+    let command = "";
+    const persist = () => fs.writeFileSync(statePath, JSON.stringify({
+      draft: composer.innerText,
+      decoy: decoy.value,
+      submissions,
+      focus: document.activeElement?.id ?? "",
+      clipboardText: clipboard.readText(),
+      clipboardHtml: clipboard.readHTML(),
+      clipboardFormats: clipboard.availableFormats(),
+      command,
+    }));
+    composer.addEventListener("input", persist);
+    composer.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        submissions += 1;
+        persist();
+      }
+    });
+    submit.addEventListener("click", () => { submissions += 1; persist(); });
+    for (const element of [composer, submit, decoy]) element.addEventListener("focus", persist);
+    setInterval(() => {
+      if (!fs.existsSync(commandPath)) return;
+      const next = JSON.parse(fs.readFileSync(commandPath, "utf8"));
+      fs.unlinkSync(commandPath);
+      command = next.action;
+      if (next.action === "clear") {
+        composer.innerHTML = "";
+        decoy.value = "";
+        submissions = 0;
+        composer.focus();
+      } else if (next.action === "seed") {
+        composer.innerHTML = "";
+        decoy.value = "";
+        submissions = 0;
+        clipboard.write({ text: "Grace clipboard", html: "<b>Grace clipboard</b>" });
+        composer.focus();
+      } else if (next.action === "snapshot") {
+        persist();
+      } else if (next.action === "steal") {
+        composer.addEventListener("paste", (event) => {
+          event.preventDefault();
+          decoy.focus();
+          persist();
+        }, { once: true });
+        composer.focus();
+      } else {
+        document.getElementById(next.action)?.focus();
+      }
+      persist();
+    }, 10);
+    persist();
+  </script>
+</body></html>`;
+}
+
+function electronInspectionDriver(readyPath) {
+  return `#include <SandiAutoIt.au3>
+Local $parts = StringSplit(StringStripWS(FileRead(${autoItString(readyPath)}), 3), "|", 2)
+If UBound($parts) <> 2 Then Exit 10
+Local $hWnd = HWnd(Number($parts[0]))
+Local $iPid = Number($parts[1])
+WinActivate($hWnd)
+If Not WinWaitActive($hWnd, "", 3) Then Exit 11
+Local $inspection = ""
+Local $timer = TimerInit()
+While TimerDiff($timer) < 10000 And Not StringInStr($inspection, '"name":"Sandi composer"')
+    $inspection = SandiUIA_Inspect($hWnd, $iPid, "", 0, "", "", True, 128, 64)
+    If Not StringInStr($inspection, '"name":"Sandi composer"') Then Sleep(50)
+WEnd
+If Not StringInStr($inspection, '"name":"Sandi composer"') Then
+    ConsoleWriteError($inspection & @CRLF)
+    Exit 12
+EndIf
+ConsoleWrite($inspection & @CRLF)
+`;
+}
+
+function electronInsertionDriver(input) {
+  const composer = editorInsertArguments(
+    input.composer,
+    '"Ada" & @CR & "Grace" & @LF & "Hopper"',
+  );
+  const composerTooLarge = editorInsertArguments(
+    input.composer,
+    '_StringRepeat("x", 65537)',
+  );
+  const composerRedirected = editorInsertArguments(
+    input.composer,
+    '"redirected"',
+  );
+  const submit = identityArguments(input.submit);
+  const submitInsert = editorInsertArguments(input.submit, '"unsupported"');
+  return `#include <String.au3>
+#include <SandiAutoIt.au3>
+Local $parts = StringSplit(StringStripWS(FileRead(${autoItString(input.readyPath)}), 3), "|", 2)
+If UBound($parts) <> 2 Then Exit 10
+Local $hWnd = HWnd(Number($parts[0]))
+Local $iPid = Number($parts[1])
+WinActivate($hWnd)
+If Not WinWaitActive($hWnd, "", 3) Then Exit 11
+If Not __Command("seed", '"focus":"composer"') Then Exit 12
+Local $inserted = SandiEditor_InsertText($hWnd, $iPid, ${composer})
+Local $insertError = @error
+Local $insertExtended = @extended
+If Not $inserted Then
+    ConsoleWriteError("insertError=" & $insertError & "; extended=" & $insertExtended & @CRLF)
+    Exit 20
+EndIf
+If ClipGet() <> "Grace clipboard" Then Exit 21
+If Not __Command("snapshot", '"focus":"composer"') Then Exit 26
+If Not FileCopy(${autoItString(input.statePath)}, ${autoItString(input.clipboardSnapshotPath)}, 1) Then Exit 27
+Sleep(100)
+Local $beforeBounds = FileRead(${autoItString(input.statePath)})
+Local $tooLarge = SandiEditor_InsertText($hWnd, $iPid, ${composerTooLarge})
+If $tooLarge Or @error <> $SANDI_EDITOR_ERROR_PAYLOAD Then Exit 22
+If FileRead(${autoItString(input.statePath)}) <> $beforeBounds Then Exit 23
+Local $unsafeType = SandiInput_TypeText($hWnd, $iPid, ${autoItString(input.composer.automationId)}, ${input.composer.controlType}, ${autoItString(input.composer.name)}, "unsafe" & @LF & "submit")
+If $unsafeType Or @error <> $SANDI_INPUT_ERROR_ARGUMENT Then Exit 24
+If Not StringInStr(FileRead(${autoItString(input.statePath)}), '"submissions":0') Then Exit 25
+If Not __Command("steal", '"focus":"composer"') Then Exit 30
+ClipPut("Grace focus clipboard")
+Local $lostFocus = SandiEditor_InsertText($hWnd, $iPid, ${composerRedirected})
+Local $lostError = @error
+If $lostFocus Or $lostError <> $SANDI_EDITOR_ERROR_TARGET Then
+    ConsoleWriteError("lostFocus=" & $lostFocus & "; error=" & $lostError & @CRLF)
+    Exit 31
+EndIf
+If Not StringInStr(FileRead(${autoItString(input.statePath)}), '"decoy":""') Then Exit 32
+If ClipGet() <> "Grace focus clipboard" Then Exit 33
+If Not __Command("submit", '"focus":"submit"') Then Exit 40
+Local $unsupported = SandiEditor_InsertText($hWnd, $iPid, ${submitInsert})
+If $unsupported Or @error <> $SANDI_EDITOR_ERROR_UNSUPPORTED Then Exit 41
+If Not __Command("composer", '"focus":"composer"') Then Exit 42
+If Not SandiUIA_Invoke($hWnd, $iPid, ${submit}) Then Exit 43
+Local $timer = TimerInit()
+While TimerDiff($timer) < 3000 And Not StringInStr(FileRead(${autoItString(input.statePath)}), '"submissions":1')
+    Sleep(10)
+WEnd
+If Not StringInStr(FileRead(${autoItString(input.statePath)}), '"submissions":1') Then Exit 44
+ConsoleWrite("electron-editor=ok" & @CRLF)
+
+Func __Command($action, $expected)
+    FileDelete(${autoItString(input.commandPath)})
+    If Not FileWrite(${autoItString(input.commandPath)}, '{"action":"' & $action & '"}') Then Return False
+    Local $timer = TimerInit()
+    While TimerDiff($timer) < 3000
+        Local $state = FileRead(${autoItString(input.statePath)})
+        If StringInStr($state, $expected) And StringInStr($state, '"command":"' & $action & '"') Then Return True
+        Sleep(10)
+    WEnd
+    Return False
+EndFunc
+`;
+}
+
 function autoItNotepadInspector() {
   return `#include <SandiAutoIt.au3>
 
@@ -513,6 +813,17 @@ function setValueIdentityArguments(identity, value) {
       typeof item === "number" ? String(item) : autoItString(item),
     )
     .join(", ");
+}
+
+function editorInsertArguments(identity, valueExpression) {
+  return [
+    autoItString(identity.automationId),
+    String(identity.controlType),
+    autoItString(identity.name),
+    valueExpression,
+    autoItString(identity.className),
+    autoItString(identity.path),
+  ].join(", ");
 }
 
 function findElement(collection, predicate) {

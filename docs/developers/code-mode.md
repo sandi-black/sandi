@@ -36,13 +36,16 @@ const result = await desktopMcp.call({
   toolName,
   arguments: {},
 });
+await desktopMcp.disconnect({ serverId });
 console.log(JSON.stringify({ description, result }, null, 2));
 ```
 
 The runtime uses the current turn's broker ticket, so it is unavailable when no
 desktop was leased. Pass `desktop` to any operation when an identity has several
 connected machines. Persistent changes are also available through
-`desktopMcp.configure(...)` and are applied by the desktop host.
+`desktopMcp.configure(...)` and are applied by the desktop host. Disconnecting
+changes only the live connection; the enabled setting and cached catalog remain
+available for a later exact call.
 
 ## Output conventions
 

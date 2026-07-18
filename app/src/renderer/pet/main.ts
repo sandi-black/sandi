@@ -91,9 +91,13 @@ async function main(): Promise<void> {
           bridge.dragMove({ x: 0, y: 0 });
         });
       }
-      return;
     }
-    updateClickThrough(event);
+  });
+
+  // Electron only forwards mouse moves while the window ignores input. Listen
+  // to that guaranteed event so opaque pixels become interactive again.
+  canvas.addEventListener("mousemove", (event) => {
+    if (!pointerDownAt) updateClickThrough(event);
   });
 
   canvas.addEventListener("pointerup", (event) => {
@@ -113,7 +117,7 @@ async function main(): Promise<void> {
   // mouse input (with forwarding on, so these move events keep arriving and
   // can re-enable it). Only send transitions, not every move.
   let ignoring = false;
-  function updateClickThrough(event: PointerEvent): void {
+  function updateClickThrough(event: MouseEvent): void {
     const rect = canvas.getBoundingClientRect();
     const alpha = player.alphaAt(
       event.clientX - rect.left,

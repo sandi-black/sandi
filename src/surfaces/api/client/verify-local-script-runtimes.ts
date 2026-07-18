@@ -16,6 +16,10 @@ import {
   runLocalAutoIt,
   runLocalJavaScript,
 } from "@/surfaces/api/client/local-script-runtimes";
+import {
+  ACTION_RECEIPT_STDOUT_PREFIX,
+  buildActionReceipt,
+} from "@/surfaces/api/devices/action-receipt";
 
 const root = mkdtempSync(join(tmpdir(), "sandi-local-script-runtime-"));
 const context: LocalScriptRuntimeContext = {
@@ -170,8 +174,11 @@ try {
   writeFileSync(
     autoitRuntimeFixture,
     [
-      'import { appendFileSync } from "node:fs";',
+      'import { appendFileSync, readFileSync } from "node:fs";',
       'appendFileSync(process.env.SANDI_AUTOIT_FIXTURE_LOG, "ran\\n");',
+      'const source = readFileSync(process.argv.at(-1), "utf8");',
+      "const receipt = /^; EMIT_RECEIPT (.+)$/m.exec(source)?.[1];",
+      "if (receipt) console.log(receipt);",
       'console.log("fixture AutoIt executed");',
       "",
     ].join("\n"),
@@ -201,6 +208,57 @@ try {
     "checked",
     "ran",
   ]);
+  const actionReceipt = buildActionReceipt({
+    action: "set-value",
+    method: "uia-value-pattern",
+    target: {
+      pid: 1234,
+      hwnd: "5678",
+      control: { kind: "uia-path", path: "0/2" },
+    },
+    observation: {
+      status: "fresh",
+      observedAt: "2026-07-18T18:00:00.000Z",
+    },
+    execution: { status: "completed", result: { status: "succeeded" } },
+    verification: {
+      status: "succeeded",
+      basis: "post-action",
+      observedAt: "2026-07-18T18:00:01.000Z",
+    },
+    cleanup: { status: "not-required" },
+  });
+  const receiptedAutoIt = await runLocalAutoIt(
+    {
+      code: `; EMIT_RECEIPT ${ACTION_RECEIPT_STDOUT_PREFIX}${JSON.stringify(actionReceipt)}\nConsoleWrite("ordinary output")`,
+    },
+    root,
+    autoitContext,
+  );
+  assert.equal(receiptedAutoIt.ok, true);
+  assert.equal(receiptedAutoIt.isError, undefined);
+  assert.deepEqual(
+    receiptedAutoIt.structuredContent?.["actionReceipt"],
+    actionReceipt,
+  );
+  assert.doesNotMatch(text(receiptedAutoIt), /SANDI_ACTION_RECEIPT:/);
+  assert.match(text(receiptedAutoIt), /set-value via uia-value-pattern/);
+  assert.match(text(receiptedAutoIt), /fixture AutoIt executed/);
+
+  const malformedReceipt = await runLocalAutoIt(
+    {
+      code: `; EMIT_RECEIPT ${ACTION_RECEIPT_STDOUT_PREFIX}{\nConsoleWrite("ordinary output")`,
+    },
+    root,
+    autoitContext,
+  );
+  assert.equal(malformedReceipt.ok, true);
+  assert.equal(malformedReceipt.isError, true);
+  assert.equal(
+    malformedReceipt.structuredContent?.["actionReceiptError"],
+    "AutoIt emitted malformed action receipt JSON",
+  );
+  assert.doesNotMatch(text(malformedReceipt), /SANDI_ACTION_RECEIPT:/);
   const unfilteredAutoIt = await runLocalAutoIt(
     {
       code: [

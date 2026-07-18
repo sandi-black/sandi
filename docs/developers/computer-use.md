@@ -78,6 +78,75 @@ The facade never emits Enter. Submission is a separate retained-button invoke
 or explicit `SandiInput_PressKey(..., "{ENTER}")` call. `SandiInput_TypeText`
 rejects CR and LF and must not be used for multiline editors or chat composers.
 
+### Action receipts
+
+Native mutations use one versioned action receipt. The local tool's `ok` field
+reports whether the desktop transport accepted and ran the call. It does not
+report whether the native action reached its intended postcondition. That state
+is in `structuredContent.actionReceipt`:
+
+```json
+{
+  "version": 1,
+  "action": "set-value",
+  "method": "uia-value-pattern",
+  "target": {
+    "pid": 1234,
+    "hwnd": "5678",
+    "control": { "kind": "uia-path", "path": "0/2" }
+  },
+  "observation": {
+    "status": "fresh",
+    "observedAt": "2026-07-18T18:00:00.000Z"
+  },
+  "execution": {
+    "status": "completed",
+    "result": { "status": "succeeded" }
+  },
+  "verification": {
+    "status": "succeeded",
+    "basis": "post-action",
+    "observedAt": "2026-07-18T18:00:01.000Z"
+  },
+  "cleanup": { "status": "not-required" }
+}
+```
+
+`action` and `method` are bounded tokens. The target contains the retained PID,
+HWND, and an optional root-relative UIA path. The schema rejects extra fields,
+so values, selected text, clipboard data, credentials, and document contents do
+not belong in a receipt.
+
+Execution has four states. `not-started` records refusal, ambiguity, a stale
+target, or an unsupported operation. `completed` records whether the mutation
+call returned success or failure. `partial` records a known partial action.
+`unknown` covers cancellation, timeout, or transport failure and requires
+`next: "observe"`; callers must observe before retrying. A completed action may
+leave verification to the caller with `reason: "caller-observation-required"`.
+This is useful when invoke closes the observed control or a visual click needs a
+separate state observation.
+
+Cancellation or timeout cannot produce a completed receipt from the interrupted
+call alone. A later observation may construct a completed receipt only with an
+`interruption` naming the cancellation or timeout, completion evidence set to
+`post-interruption-observation`, and successful verification based on
+`post-interruption` observation.
+
+Typed helpers build and parse the contract with `buildActionReceipt` and
+`parseActionReceipt` from `src/surfaces/api/devices/action-receipt.ts`.
+`local_autoit_run` scripts emit the same receipt as one bounded line:
+
+```autoit
+#include <SandiAutoIt.au3>
+SandiActionReceipt_Emit('{"version":1,"action":"invoke","method":"uia-invoke-pattern","target":{"pid":1234,"hwnd":"5678","control":{"kind":"uia-path","path":"0/2"}},"observation":{"status":"fresh","observedAt":"2026-07-18T18:00:00.000Z"},"execution":{"status":"completed","result":{"status":"succeeded"}},"verification":{"status":"not-performed","reason":"caller-observation-required"},"cleanup":{"status":"not-required"}}')
+```
+
+The runtime removes that marker line from stdout, validates the JSON, and adds
+the parsed receipt to structured content. Other stdout remains untrusted
+evidence. Missing receipts are allowed for exploratory scripts. Malformed or
+multiple receipts are action errors. Human-readable action summaries come from
+the parsed receipt.
+
 ## Desktop activity and global input
 
 Call `local_desktop_activity` immediately before choosing a global keyboard or

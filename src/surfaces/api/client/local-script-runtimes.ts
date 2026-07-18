@@ -4,6 +4,11 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { runSupervisedAutoIt } from "@/surfaces/api/client/autoit-supervisor";
 import { runBoundedProcess } from "@/surfaces/api/client/process-runner";
+import {
+  type ActionReceiptExtraction,
+  extractActionReceipt,
+  formatActionReceipt,
+} from "@/surfaces/api/devices/action-receipt";
 import type {
   LocalAutoItRunParams,
   LocalJsRunParams,
@@ -205,9 +210,14 @@ async function runArtifact(input: {
   if (result.kind === "spawn_error") {
     return refused(result.error ?? `${input.runtimeName} failed to start`);
   }
+  const actionReceipt =
+    input.runtimeName === "autoit"
+      ? extractActionReceipt(result.stdout)
+      : undefined;
+  const executionStdout = actionReceipt?.stdout ?? result.stdout;
   const stdout = [
     ...(syntaxStdout ? [`Au3Check:\n${syntaxStdout}`] : []),
-    ...(result.stdout ? [result.stdout] : []),
+    ...(executionStdout ? [executionStdout] : []),
   ].join("\n");
   const stderr = [
     ...(syntaxStderr ? [`Au3Check:\n${syntaxStderr}`] : []),
@@ -225,6 +235,7 @@ async function runArtifact(input: {
     phase: "execution",
     syntaxCheck,
     elevated: input.elevated === true,
+    ...(actionReceipt !== undefined ? { actionReceipt } : {}),
   });
 }
 
@@ -245,10 +256,25 @@ function processOutcome(input: {
     | "failed"
     | "timed_out";
   elevated: boolean;
+  actionReceipt?: ActionReceiptExtraction;
 }): ToolCallOutcome {
   const { result } = input;
   const timedOut = result.kind === "timed_out";
-  const isError = timedOut || result.exitCode !== 0;
+  const receiptInvalid =
+    input.actionReceipt?.status === "invalid" ||
+    (timedOut &&
+      input.actionReceipt?.status === "parsed" &&
+      input.actionReceipt.receipt.execution.status === "completed");
+  const isError = timedOut || result.exitCode !== 0 || receiptInvalid;
+  const receiptError = receiptInvalid
+    ? input.actionReceipt?.status === "invalid"
+      ? input.actionReceipt.error
+      : "a timed-out AutoIt process cannot emit a completed action receipt"
+    : undefined;
+  const actionReceipt =
+    !receiptInvalid && input.actionReceipt?.status === "parsed"
+      ? input.actionReceipt.receipt
+      : undefined;
   const metadata = {
     runtime: input.input.runtimeName,
     runtimeVersion: input.input.runtime.version,
@@ -263,13 +289,22 @@ function processOutcome(input: {
     truncated: result.truncated,
     durationMs: Date.now() - input.startedAt,
     elevated: input.elevated,
+    ...(actionReceipt !== undefined ? { actionReceipt } : {}),
+    ...(receiptError !== undefined ? { actionReceiptError: receiptError } : {}),
   };
   return {
     ok: true,
     content: [
       {
         type: "text",
-        text: formatResult(metadata, result.stdout, result.stderr),
+        text: formatResult(
+          metadata,
+          result.stdout,
+          result.stderr,
+          actionReceipt === undefined
+            ? undefined
+            : formatActionReceipt(actionReceipt),
+        ),
       },
     ],
     ...(isError ? { isError: true } : {}),
@@ -299,6 +334,7 @@ function formatResult(
   },
   stdout: string,
   stderr: string,
+  actionReceiptSummary?: string,
 ): string {
   const lines = [
     `runtime: ${metadata.runtime} ${metadata.runtimeVersion}`,
@@ -313,6 +349,9 @@ function formatResult(
     `timed out: ${metadata.timedOut}`,
     `output truncated: ${metadata.truncated}`,
   ];
+  if (actionReceiptSummary !== undefined) {
+    lines.push(`action receipt: ${actionReceiptSummary}`);
+  }
   if (stdout.length > 0) lines.push("", untrustedOutput("stdout", stdout));
   if (stderr.length > 0) lines.push("", untrustedOutput("stderr", stderr));
   return lines.join("\n");

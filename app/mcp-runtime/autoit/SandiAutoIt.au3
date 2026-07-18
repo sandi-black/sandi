@@ -31,6 +31,10 @@ Global Const $SANDI_INPUT_ERROR_BLOCK = 21
 Global Const $SANDI_INPUT_ERROR_TARGET = 22
 Global Const $SANDI_INPUT_ERROR_ARGUMENT = 23
 
+Global Const $SANDI_ACTION_RECEIPT_ERROR_ARGUMENT = 40
+Global Const $SANDI_ACTION_RECEIPT_PREFIX = "SANDI_ACTION_RECEIPT:"
+Global Const $__SANDI_ACTION_RECEIPT_MAX_CHARS = 8192
+
 Global Const $__SANDI_CLSID_UIA = "{FF48DBA4-60EF-4201-AA87-54103EEF594E}"
 Global Const $__SANDI_IID_UIA = "{30CBE57D-D9D0-452A-AB13-7AC5AC4825EE}"
 Global Const $__SANDI_IID_ELEMENT = "{D22108AA-8AC5-49A5-837B-37BBB3D7591E}"
@@ -125,6 +129,16 @@ Global $__g_SandiInputBlocked = False
 Global $__g_SandiInputMouseButton = ""
 
 OnAutoItExitRegister("__SandiInput_Release")
+
+; The TypeScript boundary owns schema validation; this helper only frames one bounded JSON receipt.
+Func SandiActionReceipt_Emit($sReceiptJson)
+    If Not IsString($sReceiptJson) Or StringLen($sReceiptJson) = 0 Or _
+            StringLen($sReceiptJson) > $__SANDI_ACTION_RECEIPT_MAX_CHARS Or _
+            StringInStr($sReceiptJson, @CR) Or StringInStr($sReceiptJson, @LF) Then _
+            Return SetError($SANDI_ACTION_RECEIPT_ERROR_ARGUMENT, 0, False)
+    ConsoleWrite($SANDI_ACTION_RECEIPT_PREFIX & $sReceiptJson & @CRLF)
+    Return True
+EndFunc
 
 Func SandiUIA_Root($hWnd, $iPid)
     $hWnd = HWnd($hWnd)

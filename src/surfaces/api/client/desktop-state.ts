@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 
 import { z } from "zod/v4";
 import { errorMessage } from "@/lib/errors";
+import { VisualObservationSchema } from "@/surfaces/api/client/visual-observation";
 import {
   imageBytesMatchMime,
   isCanonicalBase64,
@@ -121,6 +122,21 @@ const CaptureSchema = z
     path: ["base64"],
   });
 type Capture = z.infer<typeof CaptureSchema>;
+
+const WindowCaptureSchema = z
+  .object({
+    originalWidth: z.number().int().positive(),
+    originalHeight: z.number().int().positive(),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+    base64: z.string().refine(isCanonicalBase64, "must be canonical base64"),
+    visualObservation: VisualObservationSchema,
+  })
+  .refine((capture) => imageBytesMatchMime("image/jpeg", capture.base64), {
+    message: "capture was not a JPEG image",
+    path: ["base64"],
+  });
+type WindowCapture = z.infer<typeof WindowCaptureSchema>;
 
 // Lists the monitors attached to this desktop with their pixel bounds, so Sandi
 // can pick one to screenshot by index or device name.
@@ -253,15 +269,22 @@ async function screenshotWindow(
       `window ${JSON.stringify(target.title)} is minimized; restore it before capturing`,
     );
   }
-  const capture = await captureWindow(target.handle, maxDimension, signal);
+  const capture = await captureWindow(
+    target.handle,
+    target.pid,
+    maxDimension,
+    signal,
+  );
   const tooLarge = imageTooLarge(capture.base64);
   if (tooLarge) return refused(tooLarge);
   const summary =
-    `Captured window ${JSON.stringify(target.title)} ` +
+    `Captured window client ${JSON.stringify(target.title)} ` +
     `(${target.processName}, pid ${target.pid}) ` +
     `(${capture.originalWidth}x${capture.originalHeight}), ` +
     `scaled to ${capture.width}x${capture.height}, ${describeSize(capture.base64)}.`;
-  return okImage(summary, capture.base64);
+  return okImage(summary, capture.base64, {
+    visualObservation: capture.visualObservation,
+  });
 }
 
 // Resolves a monitor selector: a numeric index, or a device name (with or
@@ -349,17 +372,19 @@ async function captureRegion(
 
 async function captureWindow(
   // The handle is a decimal IntPtr string already parsed by WindowSchema, so it
-  // is safe to interpolate into the capture script; no re-validation needed.
+  // is safe to interpolate into the capture script. The script still revalidates
+  // the HWND/PID pair before and after capture because identity is the safety boundary.
   handle: string,
+  pid: number,
   maxDimension: number,
   signal?: AbortSignal,
-): Promise<Capture> {
+): Promise<WindowCapture> {
   const result = await runPowerShell(
-    captureWindowScript(handle, maxDimension),
+    captureWindowScript(handle, pid, maxDimension),
     signal,
   );
   ensureExited(result, "capture the window");
-  return parseCapture(result.stdout);
+  return parseWindowCapture(result.stdout);
 }
 
 // Shared PowerShell tail: takes a $bmp and $maxDim already in scope, downscales
@@ -388,6 +413,15 @@ $ms.Dispose()
 $out.Dispose()
 $bmp.Dispose()
 $payload = [pscustomobject]@{ originalWidth = $ow; originalHeight = $oh; width = $nw; height = $nh; base64 = [Convert]::ToBase64String($bytes) }
+if ($null -ne $visualObservationBase) {
+  $visualObservationBase | Add-Member -NotePropertyName screenshot -NotePropertyValue ([pscustomobject]@{
+    width = $nw
+    height = $nh
+    scaleX = $nw / $visualObservationBase.clientRect.width
+    scaleY = $nh / $visualObservationBase.clientRect.height
+  })
+  $payload | Add-Member -NotePropertyName visualObservation -NotePropertyValue $visualObservationBase
+}
 $payload | ConvertTo-Json -Compress -Depth 3
 `;
 
@@ -507,7 +541,11 @@ $g.Dispose()
 ${ENCODE_TAIL}`;
 }
 
-function captureWindowScript(handle: string, maxDim: number): string {
+function captureWindowScript(
+  handle: string,
+  pid: number,
+  maxDim: number,
+): string {
   return `
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
@@ -515,28 +553,70 @@ Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public class SandiCap {
-  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, uint flags);
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr hWnd, out RECT r);
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref POINT p);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
   public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  public struct POINT { public int X; public int Y; }
 }
 "@
 $maxDim = ${maxDim}
-$hWnd = [IntPtr]${handle}
-$rect = New-Object SandiCap+RECT
-[void][SandiCap]::GetWindowRect($hWnd, [ref]$rect)
-$w = $rect.Right - $rect.Left
-$h = $rect.Bottom - $rect.Top
-if ($w -le 0 -or $h -le 0) { throw 'window has no visible area to capture' }
-$bmp = New-Object System.Drawing.Bitmap($w, $h)
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$hdc = $g.GetHdc()
-$ok = [SandiCap]::PrintWindow($hWnd, $hdc, 2)
-$g.ReleaseHdc($hdc)
-$g.Dispose()
-if (-not $ok) {
-  $g2 = [System.Drawing.Graphics]::FromImage($bmp)
-  $g2.CopyFromScreen($rect.Left, $rect.Top, 0, 0, (New-Object System.Drawing.Size($w, $h)))
-  $g2.Dispose()
+$target = [IntPtr]${handle}
+$priorDpiContext = [SandiCap]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
+if ($priorDpiContext -eq [IntPtr]::Zero) { throw 'SetThreadDpiAwarenessContext failed' }
+function Read-Geometry {
+  if (-not [SandiCap]::IsWindow($target)) { throw 'window no longer exists' }
+  $actualPid = [uint32]0
+  if ([SandiCap]::GetWindowThreadProcessId($target, [ref]$actualPid) -eq 0) { throw 'GetWindowThreadProcessId failed' }
+  if ($actualPid -ne [uint32]${pid}) { throw 'window process changed' }
+  $rect = New-Object SandiCap+RECT
+  if (-not [SandiCap]::GetClientRect($target, [ref]$rect)) { throw 'GetClientRect failed' }
+  $origin = New-Object SandiCap+POINT
+  $origin.X = $rect.Left
+  $origin.Y = $rect.Top
+  if (-not [SandiCap]::ClientToScreen($target, [ref]$origin)) { throw 'ClientToScreen failed' }
+  $width = $rect.Right - $rect.Left
+  $height = $rect.Bottom - $rect.Top
+  $dpi = [SandiCap]::GetDpiForWindow($target)
+  if ($width -le 0 -or $height -le 0 -or $dpi -eq 0) { throw 'window client geometry is unavailable' }
+  [pscustomobject]@{
+    pid = [int]$actualPid
+    active = [SandiCap]::GetForegroundWindow() -eq $target
+    x = $rect.Left
+    y = $rect.Top
+    width = $width
+    height = $height
+    originX = $origin.X
+    originY = $origin.Y
+    dpi = [int]$dpi
+  }
+}
+$before = Read-Geometry
+$bmp = New-Object System.Drawing.Bitmap($before.width, $before.height)
+$graphics = [System.Drawing.Graphics]::FromImage($bmp)
+$graphics.CopyFromScreen($before.originX, $before.originY, 0, 0, (New-Object System.Drawing.Size($before.width, $before.height)))
+$graphics.Dispose()
+$after = Read-Geometry
+if ($before.pid -ne $after.pid -or $before.active -ne $after.active -or
+    $before.x -ne $after.x -or $before.y -ne $after.y -or
+    $before.width -ne $after.width -or $before.height -ne $after.height -or
+    $before.originX -ne $after.originX -or $before.originY -ne $after.originY -or
+    $before.dpi -ne $after.dpi) {
+  $bmp.Dispose()
+  throw 'window changed during client capture'
+}
+$null = [SandiCap]::SetThreadDpiAwarenessContext($priorDpiContext)
+$visualObservationBase = [pscustomobject]@{
+  version = 1
+  target = [pscustomobject]@{ hwnd = '${handle}'; pid = $before.pid }
+  active = $before.active
+  clientRect = [pscustomobject]@{ x = $before.x; y = $before.y; width = $before.width; height = $before.height }
+  clientOriginScreen = [pscustomobject]@{ x = $before.originX; y = $before.originY }
+  dpi = $before.dpi
 }
 ${ENCODE_TAIL}`;
 }
@@ -677,6 +757,26 @@ function parseCapture(stdout: string): Capture {
   return parsed.data;
 }
 
+function parseWindowCapture(stdout: string): WindowCapture {
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const last = lines[lines.length - 1];
+  if (last === undefined) throw new Error("window capture produced no output");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(last);
+  } catch {
+    throw new Error("window capture returned output that was not valid JSON");
+  }
+  const parsed = WindowCaptureSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error("window capture returned a malformed visual observation");
+  }
+  return parsed.data;
+}
+
 // Only Windows is supported. Returns a refused outcome to use directly when this
 // is some other platform, or undefined to proceed.
 function ensureWindows(action: string): ToolCallOutcome | undefined {
@@ -712,13 +812,18 @@ function ok(output: string): ToolCallOutcome {
   return { ok: true, content: [{ type: "text", text: output }] };
 }
 
-function okImage(output: string, dataBase64: string): ToolCallOutcome {
+function okImage(
+  output: string,
+  dataBase64: string,
+  structuredContent?: Record<string, unknown>,
+): ToolCallOutcome {
   return {
     ok: true,
     content: [
       { type: "text", text: output },
       { type: "image", mimeType: SCREENSHOT_MIME, dataBase64 },
     ],
+    ...(structuredContent !== undefined ? { structuredContent } : {}),
   };
 }
 

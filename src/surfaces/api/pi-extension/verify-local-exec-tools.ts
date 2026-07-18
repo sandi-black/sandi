@@ -10,7 +10,13 @@ import { type Broker, readBroker } from "./tool-broker-client";
 
 type ServerMode =
   | { kind: "ok"; output: string }
-  | { kind: "image"; output: string; mimeType: string; dataBase64: string }
+  | {
+      kind: "image";
+      output: string;
+      mimeType: string;
+      dataBase64: string;
+      structuredContent?: Record<string, unknown>;
+    }
   | { kind: "mcp-error" }
   | { kind: "refuse"; error: string }
   | { kind: "status"; status: number }
@@ -41,6 +47,7 @@ async function verifyLocalExecTools(): Promise<void> {
       output: "captured primary monitor",
       mimeType: "image/jpeg",
       dataBase64: "/9j/4AAQ",
+      structuredContent: { visualObservation: { version: 1 } },
     });
     const shot = await callBrokerTool(broker, "local_screenshot", {});
     assertEqual(
@@ -58,6 +65,11 @@ async function verifyLocalExecTools(): Promise<void> {
       image?.data,
       "/9j/4AAQ",
       "a screenshot result carries the image bytes",
+    );
+    assertEqual(
+      JSON.stringify(shot.details["structuredContent"]),
+      JSON.stringify({ visualObservation: { version: 1 } }),
+      "a screenshot result carries its visual observation",
     );
     console.log("ok an image outcome is returned as an image content block");
 
@@ -270,6 +282,9 @@ async function withBroker(
               dataBase64: mode.dataBase64,
             },
           ],
+          ...(mode.structuredContent !== undefined
+            ? { structuredContent: mode.structuredContent }
+            : {}),
         });
       } else if (mode.kind === "mcp-error") {
         respond(response, 200, {

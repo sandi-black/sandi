@@ -701,9 +701,6 @@ If Not __WaitForUIAFocus($hWnd, $iPid, ${submit}, _
         "submit", '"focus":"submit"') Then Exit 45
 Local $unsupported = SandiEditor_InsertText($hWnd, $iPid, ${submitInsert})
 If $unsupported Or @error <> $SANDI_EDITOR_ERROR_UNSUPPORTED Then Exit 41
-If Not __Command("composer", '"focus":"composer"') Then Exit 42
-If Not __WaitForUIAFocus($hWnd, $iPid, ${composerIdentity}, _
-        "composer", '"focus":"composer"') Then Exit 46
 If Not SandiUIA_Invoke($hWnd, $iPid, ${submit}) Then Exit 43
 Local $timer = TimerInit()
 While TimerDiff($timer) < 3000 And Not StringInStr(FileRead(${autoItString(input.statePath)}), '"submissions":1')

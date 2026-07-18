@@ -640,6 +640,7 @@ ConsoleWrite($inspection & @CRLF)
 }
 
 function electronInsertionDriver(input) {
+  const composerIdentity = identityArguments(input.composer);
   const composer = editorInsertArguments(
     input.composer,
     '"Ada" & @CR & "Grace" & @LF & "Hopper"',
@@ -663,6 +664,8 @@ Local $iPid = Number($parts[1])
 WinActivate($hWnd)
 If Not WinWaitActive($hWnd, "", 3) Then Exit 11
 If Not __Command("seed", '"focus":"composer"') Then Exit 12
+If Not __WaitForUIAFocus($hWnd, $iPid, ${composerIdentity}, _
+        "composer", '"focus":"composer"') Then Exit 13
 Local $inserted = SandiEditor_InsertText($hWnd, $iPid, ${composer})
 Local $insertError = @error
 Local $insertExtended = @extended
@@ -682,6 +685,8 @@ Local $unsafeType = SandiInput_TypeText($hWnd, $iPid, ${autoItString(input.compo
 If $unsafeType Or @error <> $SANDI_INPUT_ERROR_ARGUMENT Then Exit 24
 If Not StringInStr(FileRead(${autoItString(input.statePath)}), '"submissions":0') Then Exit 25
 If Not __Command("steal", '"focus":"composer"') Then Exit 30
+If Not __WaitForUIAFocus($hWnd, $iPid, ${composerIdentity}, _
+        "composer", '"focus":"composer"') Then Exit 34
 ClipPut("Grace focus clipboard")
 Local $lostFocus = SandiEditor_InsertText($hWnd, $iPid, ${composerRedirected})
 Local $lostError = @error
@@ -692,9 +697,13 @@ EndIf
 If Not StringInStr(FileRead(${autoItString(input.statePath)}), '"decoy":""') Then Exit 32
 If ClipGet() <> "Grace focus clipboard" Then Exit 33
 If Not __Command("submit", '"focus":"submit"') Then Exit 40
+If Not __WaitForUIAFocus($hWnd, $iPid, ${submit}, _
+        "submit", '"focus":"submit"') Then Exit 45
 Local $unsupported = SandiEditor_InsertText($hWnd, $iPid, ${submitInsert})
 If $unsupported Or @error <> $SANDI_EDITOR_ERROR_UNSUPPORTED Then Exit 41
 If Not __Command("composer", '"focus":"composer"') Then Exit 42
+If Not __WaitForUIAFocus($hWnd, $iPid, ${composerIdentity}, _
+        "composer", '"focus":"composer"') Then Exit 46
 If Not SandiUIA_Invoke($hWnd, $iPid, ${submit}) Then Exit 43
 Local $timer = TimerInit()
 While TimerDiff($timer) < 3000 And Not StringInStr(FileRead(${autoItString(input.statePath)}), '"submissions":1')
@@ -710,6 +719,32 @@ Func __Command($action, $expected)
     While TimerDiff($timer) < 3000
         Local $state = FileRead(${autoItString(input.statePath)})
         If StringInStr($state, $expected) And StringInStr($state, '"command":"' & $action & '"') Then Return True
+        Sleep(10)
+    WEnd
+    Return False
+EndFunc
+
+Func __WaitForUIAFocus($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+        $sClassName, $sPath, $sFocusAction, $sExpected)
+    WinActivate($hWnd)
+    If Not WinWaitActive($hWnd, "", 3) Then
+        ConsoleWriteError("fixture window did not activate" & @CRLF)
+        Return False
+    EndIf
+    If Not __Command($sFocusAction, $sExpected) Then
+        ConsoleWriteError("fixture focus command failed: " & $sFocusAction & @CRLF)
+        Return False
+    EndIf
+    Local $timer = TimerInit()
+    While TimerDiff($timer) < 3000
+        If __SandiUIA_FocusedMatches($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sClassName, $sPath) Then Return True
+        If Not WinActive($hWnd) Then
+            WinActivate($hWnd)
+            If Not WinWaitActive($hWnd, "", 1) Or Not __Command($sFocusAction, $sExpected) Then
+                ConsoleWriteError("fixture focus recovery failed: " & $sFocusAction & @CRLF)
+                Return False
+            EndIf
+        EndIf
         Sleep(10)
     WEnd
     Return False

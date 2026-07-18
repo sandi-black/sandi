@@ -45,9 +45,14 @@ Use these interfaces in order:
    control type plus AutomationId and accessible name when the provider exposes
    them. Each mutation resolves the selector again instead of accepting a stale
    element object.
-3. Use the include's `SandiInput_*` functions only when neither targeted path
-   can act. Raw `Send`, `Mouse*`, dynamic dispatch, and native dispatch are
-   rejected by `local_autoit_run`.
+3. If neither targeted path can act and the user is present and actively using
+   the computer, use the include's guarded `SandiInput_*` functions. They keep
+   concurrent user input from redirecting the action.
+4. For unattended work, direct `Send` and `Mouse*` calls are allowed so the
+   script can run without waiting for UAC. Retain and revalidate the target
+   HWND/PID, keep each input sequence short, and verify the result before
+   continuing. `local_autoit_run` does not filter functions by name; the exact
+   artifact passes through `Au3Check` before execution.
 
 Use Chrome DevTools for page DOM content. Use `local_read`, `local_write`,
 `local_edit`, `local_bash`, or `local_js_run` for files and processes.
@@ -92,10 +97,11 @@ page-content path.
 
 ## Guarded global fallback
 
-Global keyboard and mouse helpers require `#RequireAdmin`. This is the explicit
-request for `local_autoit_run` to show UAC; the user may approve or decline it,
-and Sandi must not automate the prompt. Ordinary Control* and UIA scripts should
-remain unelevated.
+Use the guarded global keyboard and mouse helpers only when the user is present
+and actively using the computer. They require `#RequireAdmin`, which asks
+`local_autoit_run` to show UAC. The user may approve or decline it, and Sandi
+must not automate the prompt. Ordinary Control*, UIA, and unattended direct
+input scripts should remain unelevated.
 
 The helpers check `BlockInput`, register exit cleanup, validate the foreground
 HWND/PID after blocking, and revalidate before every short input chunk. Keyboard

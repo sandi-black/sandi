@@ -30,8 +30,12 @@ retain PID/HWND, then use this order:
    control id.
 2. Include `<SandiAutoIt.au3>` and use its scoped UIA facade for controls that
    do not expose a useful Win32 control interface.
-3. Use the facade's guarded `SandiInput_*` keyboard or mouse helpers only when
-   neither targeted path can perform the action.
+3. If neither targeted path can perform the action and the user is present and
+   actively using the computer, use the facade's guarded `SandiInput_*`
+   keyboard or mouse helpers.
+4. For unattended work, direct `Send` and `Mouse*` calls may perform the global
+   input without waiting for UAC. Keep the sequence short and revalidate the
+   target before and after it.
 
 The first-party UIA facade resolves from a validated HWND/PID root. Searches
 are bounded, skip document subtrees, and match control type with AutomationId
@@ -40,18 +44,21 @@ fail with candidate identities. Invoke, toggle, select, get-value, and set-value
 operations resolve the selector again before acting, so callers cannot mutate
 through a stale UIA element. Chrome DevTools remains the browser DOM path.
 
-Raw `Send`, `Mouse*`, `Call`, `Execute`, `Eval`, and native dispatch are rejected
-in submitted AutoIt source. Guarded helpers own `BlockInput`, validate the
-foreground HWND/PID after blocking, and revalidate before every short chunk.
-Keyboard helpers also compare the focused UIA element with the requested
-control. Focus or identity loss stops the remaining input rather than
-redirecting it.
+Submitted AutoIt source is not filtered by function name. The exact artifact
+passes through `Au3Check`, then runs under the normal process supervisor. Direct
+`Send`, `Mouse*`, and `SendKeys` input is allowed for unattended work. Guarded
+helpers own `BlockInput`, validate the foreground HWND/PID after blocking, and
+revalidate before every short chunk. Keyboard helpers also compare the focused
+UIA element with the requested control. Focus or identity loss stops the
+remaining input rather than redirecting it.
 
-Guarded global fallback requires `#RequireAdmin`, which is an explicit,
-on-demand elevation request. `local_autoit_run` pre-elevates its supervisor, so
-the actual script inherits administrator rights without AutoIt's detached
-relaunch. The user may approve or decline UAC, and Sandi must not automate that
-decision. Control* and UIA scripts do not need elevation.
+When the user is present and actively using the computer, guarded global
+fallback prevents their input from redirecting the action. It requires
+`#RequireAdmin`, an explicit on-demand elevation request. `local_autoit_run`
+pre-elevates its supervisor, so the actual script inherits administrator rights
+without AutoIt's detached relaunch. The user may approve or decline UAC, and
+Sandi must not automate that decision. Control*, UIA, and unattended direct
+input scripts do not need elevation.
 
 The supervisor captures output and exit status, enforces timeout and
 cancellation, kills descendants, and releases blocked input and pressed mouse

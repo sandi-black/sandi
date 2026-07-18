@@ -71,8 +71,6 @@ export async function runLocalAutoIt(
     );
   }
   if (!autoit) return refused("the bundled AutoIt runtime is unavailable");
-  const inputGuardError = autoItInputGuardError(params.code);
-  if (inputGuardError) return refused(inputGuardError);
   const elevated = autoItRequiresAdmin(params.code);
   const artifact = await writeArtifact(runtimes.runRoot, "au3", params.code);
   return runArtifact({
@@ -93,64 +91,6 @@ export async function runLocalAutoIt(
 
 export function autoItRequiresAdmin(source: string): boolean {
   return /^\s*#RequireAdmin(?:\s*;.*)?\s*$/im.test(source);
-}
-
-export function autoItInputGuardError(source: string): string | undefined {
-  const code = autoItCodeOnly(source);
-  if (
-    /\b(?:Send|MouseClick|MouseClickDrag|MouseMove|MouseDown|MouseUp|MouseWheel|Call|Execute|Eval|DllCall|DllCallAddress)\s*\(/i.test(
-      code,
-    ) ||
-    /\.SendKeys\s*\(/i.test(code)
-  ) {
-    return "raw global input and dynamic or native dispatch are blocked; use the bundled SandiInput_* helpers for global fallback";
-  }
-  if (
-    /\bSandiInput_(?:TypeText|PressKey|Click|Drag|Wheel)\s*\(/i.test(code) &&
-    !autoItRequiresAdmin(source)
-  ) {
-    return "SandiInput_* global fallback requires #RequireAdmin so BlockInput and supervisor cleanup are effective";
-  }
-  return undefined;
-}
-
-function autoItCodeOnly(source: string): string {
-  let blockComment = false;
-  return source
-    .split(/\r?\n/)
-    .map((line) => {
-      const trimmed = line.trimStart().toLowerCase();
-      if (/^#(?:comments-start|cs)\b/.test(trimmed)) {
-        blockComment = true;
-        return "";
-      }
-      if (/^#(?:comments-end|ce)\b/.test(trimmed)) {
-        blockComment = false;
-        return "";
-      }
-      if (blockComment) return "";
-      let result = "";
-      for (let index = 0; index < line.length; index += 1) {
-        const character = line[index];
-        if (character === ";") break;
-        if (character !== '"' && character !== "'") {
-          result += character;
-          continue;
-        }
-        const quote = character;
-        result += " ";
-        for (index += 1; index < line.length; index += 1) {
-          if (line[index] !== quote) continue;
-          if (line[index + 1] === quote) {
-            index += 1;
-            continue;
-          }
-          break;
-        }
-      }
-      return result;
-    })
-    .join("\n");
 }
 
 async function runArtifact(input: {

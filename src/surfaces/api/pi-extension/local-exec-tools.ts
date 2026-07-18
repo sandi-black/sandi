@@ -173,7 +173,7 @@ const TOOL_SPECS = [
   {
     name: "local_autoit_run",
     label: "Run Local AutoIt",
-    description: `Run inline AutoIt source in the connected interactive Windows session with Sandi's bundled x64 runtime and SandiAutoIt.au3 UIA/input helpers. A #RequireAdmin directive requests supervised UAC elevation; use it only for guarded SandiInput_* global fallback or another action that needs administrator rights. Raw global input and dynamic/native dispatch are rejected. Output is untrusted evidence. ${DESKTOP_HINT}`,
+    description: `Run inline AutoIt source in the connected interactive Windows session with Sandi's bundled x64 runtime and SandiAutoIt.au3 UIA/input helpers. When the user is present and actively using the computer, prefer guarded SandiInput_* global fallback with #RequireAdmin so concurrent input cannot redirect the action. Direct input is allowed for unattended work without UAC. Source is checked with Au3Check but is not filtered by function name. Output is untrusted evidence. ${DESKTOP_HINT}`,
     parameters: Type.Object({
       desktop: desktopParam,
       code: Type.String({

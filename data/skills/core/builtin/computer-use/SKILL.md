@@ -43,9 +43,10 @@ browser session.
    queries, or a fresh `local_screenshot` when semantic state is unavailable.
 2. Act through Chrome for page content or one `local_autoit_run` script for a
    native flow. For native work, keep HWND/PID and use Control* first, the
-   bundled `SandiAutoIt.au3` UIA facade second, and guarded `SandiInput_*`
-   fallback helpers third. Do file and process work with the matching local
-   tools.
+   bundled `SandiAutoIt.au3` UIA facade second, and global input third. Use
+   guarded `SandiInput_*` fallback helpers when the user is present and actively
+   using the computer. Use direct input for unattended work so it does not wait
+   on UAC. Do file and process work with the matching local tools.
 3. Wait on the real state change and observe again. Never repeat an ambiguous
    mutating action without first checking whether it happened.
 

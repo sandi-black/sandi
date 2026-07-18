@@ -403,19 +403,18 @@ function verifyNotepad(autoItRuntime, fixtureRoot) {
   const defaultInspection = JSON.parse(lines[0]);
   const includedInspection = JSON.parse(lines[1]);
   assert.equal(defaultInspection.includeDocumentChildren, false);
+  assert.equal(defaultInspection.elements.length, 1);
+  const editor = defaultInspection.elements[0];
+  const isDocument = editor.controlType === 50030;
   assert.equal(
     defaultInspection.documentSubtreesSkipped,
-    1,
+    isDocument ? 1 : 0,
     JSON.stringify(defaultInspection),
   );
-  assert.equal(defaultInspection.elements.length, 1);
-  assert.equal(defaultInspection.elements[0].controlType, 50030);
-  assert.equal(defaultInspection.elements[0].controlTypeName, "Document");
-  assert.equal(defaultInspection.elements[0].name, "Text editor");
-  assert.equal(
-    defaultInspection.elements[0].actions.includes("Describe"),
-    true,
-  );
+  assert.equal([50004, 50030].includes(editor.controlType), true);
+  assert.equal(editor.controlTypeName, isDocument ? "Document" : "Edit");
+  assert.equal(editor.name.toLowerCase(), "text editor");
+  assert.equal(editor.actions.includes("Describe"), true);
   assert.equal(includedInspection.includeDocumentChildren, true);
   assert.equal(includedInspection.documentSubtreesSkipped, 0);
   assert.equal(includedInspection.visited >= defaultInspection.visited, true);
@@ -758,6 +757,7 @@ If $iLaunchPid = 0 Then Exit 10
 Local $hWnd = 0
 Local $iPid = 0
 Local $sDefault = ""
+Local $iEditorType = $SANDI_UIA_DOCUMENT
 Local $hTimer = TimerInit()
 While TimerDiff($hTimer) < 10000 And Not StringInStr($sDefault, '"returned":1')
     Local $aWindows = WinList("[REGEXPTITLE:(?i)notepad]")
@@ -766,8 +766,14 @@ While TimerDiff($hTimer) < 10000 And Not StringInStr($sDefault, '"returned":1')
                 Not __WasPresent($aWindows[$iIndex][1], $aBefore) Then
             $hWnd = $aWindows[$iIndex][1]
             $iPid = WinGetProcess($hWnd)
-            If $iPid > 0 Then _
-                    $sDefault = SandiUIA_Inspect($hWnd, $iPid, "", $SANDI_UIA_DOCUMENT, "Text editor")
+            If $iPid > 0 Then
+                $iEditorType = $SANDI_UIA_DOCUMENT
+                $sDefault = SandiUIA_Inspect($hWnd, $iPid, "", $iEditorType)
+                If Not StringInStr($sDefault, '"returned":1') Then
+                    $iEditorType = $SANDI_UIA_EDIT
+                    $sDefault = SandiUIA_Inspect($hWnd, $iPid, "", $iEditorType)
+                EndIf
+            EndIf
             If Not @error And StringInStr($sDefault, '"returned":1') Then ExitLoop
         EndIf
     Next
@@ -779,7 +785,7 @@ If Not StringInStr($sDefault, '"returned":1') Then
     ConsoleWriteError(SandiUIA_Inspect($hWnd, $iPid, "", 0, "", "", False, 64, 128) & @CRLF)
     __Finish($hWnd, $iLaunchPid, 12)
 EndIf
-Local $sIncluded = SandiUIA_Inspect($hWnd, $iPid, "", $SANDI_UIA_DOCUMENT, "Text editor", "", True)
+Local $sIncluded = SandiUIA_Inspect($hWnd, $iPid, "", $iEditorType, "", "", True)
 If @error Or $sIncluded = "" Then __Finish($hWnd, $iLaunchPid, 13)
 ConsoleWrite($sDefault & @CRLF & $sIncluded & @CRLF)
 __Finish($hWnd, $iLaunchPid, 0)

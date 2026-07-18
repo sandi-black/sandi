@@ -21,16 +21,30 @@ const ready = join(root, "fixture.ready");
 const applied = join(root, "applied.txt");
 const toggled = join(root, "toggled.txt");
 const selected = join(root, "selected.txt");
+const inspection = join(root, "inspection.json");
+const inspectionRepeat = join(root, "inspection-repeat.json");
+const limitedInspection = join(root, "inspection-limited.json");
 const remove = join(root, "remove-temp");
 const removed = join(root, "temp-removed");
 const fixturePath = join(root, "fixture.au3");
+const inspectionDriverPath = join(root, "inspection-driver.au3");
 const driverPath = join(root, "driver.au3");
 let fixture;
 
 try {
+  verifyNotepad(runtime, root);
   writeFileSync(
     fixturePath,
     autoItFixture({ ready, applied, toggled, selected, remove, removed }),
+  );
+  writeFileSync(
+    inspectionDriverPath,
+    autoItInspectionDriver({
+      ready,
+      inspection,
+      inspectionRepeat,
+      limitedInspection,
+    }),
   );
   writeFileSync(
     driverPath,
@@ -50,6 +64,117 @@ try {
     () => `AutoIt fixture readiness; stderr=${fixtureError}`,
   );
 
+  const inspectionRun = spawnSync(
+    runtime,
+    ["/ErrorStdOut", inspectionDriverPath],
+    {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 120_000,
+    },
+  );
+  assert.equal(
+    inspectionRun.status,
+    0,
+    inspectionRun.stderr || inspectionRun.stdout,
+  );
+  assert.equal(inspectionRun.stdout.trim(), "inspection=ok");
+  const inspected = JSON.parse(readFileSync(inspection, "utf8"));
+  assert.deepEqual(
+    inspected,
+    JSON.parse(readFileSync(inspectionRepeat, "utf8")),
+  );
+  assert.equal(inspected.root.pid > 0, true);
+  assert.equal(inspected.root.hwnd > 0, true);
+  assert.deepEqual(inspected.filters, {
+    automationId: "",
+    controlType: 0,
+    name: "",
+    className: "",
+  });
+  assert.deepEqual(inspected.limits, { nodes: 64, results: 32 });
+  assert.equal(inspected.includeDocumentChildren, false);
+  assert.equal(inspected.truncated, false);
+  assert.deepEqual(inspected.truncation, { nodes: false, results: false });
+  assert.equal(inspected.returned, inspected.elements.length);
+  assert.equal(inspected.matched, inspected.elements.length);
+  assert.equal(inspected.visited >= inspected.returned, true);
+  for (const element of inspected.elements) {
+    assert.deepEqual(Object.keys(element.identity), [
+      "automationId",
+      "controlType",
+      "name",
+      "className",
+      "path",
+    ]);
+    assert.equal(typeof element.automationId, "string");
+    assert.equal(typeof element.controlType, "number");
+    assert.equal(typeof element.controlTypeName, "string");
+    assert.equal(typeof element.name, "string");
+    assert.equal(typeof element.className, "string");
+    assert.equal(typeof element.nativeHwnd, "number");
+    assert.equal(Array.isArray(element.patterns), true);
+    assert.equal(Array.isArray(element.actions), true);
+    assert.equal(element.actions.includes("Describe"), true);
+  }
+  const edit = findElement(
+    inspected,
+    (element) => element.automationId === "3",
+  );
+  assert.equal(edit.controlType, 50004);
+  assert.equal(edit.patterns.includes("Value"), true);
+  assert.equal(edit.actions.includes("GetValue"), true);
+  assert.equal(edit.actions.includes("SetValue"), true);
+  assert.equal(
+    findElement(
+      inspected,
+      (element) => element.automationId === "4",
+    ).actions.includes("Invoke"),
+    true,
+  );
+  assert.equal(
+    findElement(
+      inspected,
+      (element) => element.automationId === "5",
+    ).actions.includes("Toggle"),
+    true,
+  );
+  assert.equal(
+    findElement(
+      inspected,
+      (element) =>
+        element.controlType === 50007 && element.name === "Ada Lovelace",
+    ).actions.includes("Select"),
+    true,
+  );
+  const limited = JSON.parse(readFileSync(limitedInspection, "utf8"));
+  assert.equal(limited.returned, 2);
+  assert.equal(limited.truncated, true);
+  assert.equal(limited.truncation.results, true);
+  assert.equal(limited.elements.length, 2);
+
+  const identityDriverPath = join(root, "identity-driver.au3");
+  writeFileSync(
+    identityDriverPath,
+    autoItIdentityDriver(
+      { ready, applied, toggled, selected },
+      inspected.elements,
+    ),
+  );
+  const identityResult = spawnSync(
+    runtime,
+    ["/ErrorStdOut", identityDriverPath],
+    { cwd: root, encoding: "utf8", timeout: 120_000 },
+  );
+  assert.equal(
+    identityResult.status,
+    0,
+    identityResult.stderr || identityResult.stdout,
+  );
+  assert.equal(identityResult.stdout.trim(), "identities=ok");
+  for (const path of [applied, toggled, selected]) {
+    rmSync(path, { force: true });
+  }
   const result = spawnSync(runtime, ["/ErrorStdOut", driverPath], {
     cwd: root,
     encoding: "utf8",
@@ -57,12 +182,12 @@ try {
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(result.stdout.trim(), "uia=ok");
-  assert.match(result.stderr, /ambiguous selector/);
-  assert.match(result.stderr, /automationId="7"/);
-  assert.match(result.stderr, /automationId="8"/);
   assert.equal(readFileSync(applied, "utf8"), "Grace Hopper");
   assert.equal(readFileSync(toggled, "utf8"), "1");
   assert.equal(readFileSync(selected, "utf8"), "Ada Lovelace");
+  assert.match(result.stderr, /ambiguous selector/);
+  assert.match(result.stderr, /automationId="7"/);
+  assert.match(result.stderr, /automationId="8"/);
   console.log("SandiAutoIt UIA verification passed");
 } finally {
   if (fixture?.pid !== undefined) {
@@ -192,6 +317,162 @@ EndFunc
 `;
 }
 
+function autoItInspectionDriver(paths) {
+  return `#include <SandiAutoIt.au3>
+
+Local $aFixture = StringSplit(StringStripWS(FileRead(${autoItString(paths.ready)}), 3), "|", 2)
+If UBound($aFixture) <> 3 Then Exit 10
+Local $hTarget = HWnd(Number($aFixture[0]))
+Local $iPid = Number($aFixture[2])
+Local $sInspection = SandiUIA_Inspect($hTarget, $iPid)
+If @error Or $sInspection = "" Then Exit 51
+FileWrite(${autoItString(paths.inspection)}, $sInspection)
+Local $sInspectionRepeat = SandiUIA_Inspect($hTarget, $iPid)
+If @error Or $sInspectionRepeat <> $sInspection Then Exit 52
+FileWrite(${autoItString(paths.inspectionRepeat)}, $sInspectionRepeat)
+Local $sLimitedInspection = SandiUIA_Inspect($hTarget, $iPid, "", 0, "", "", False, 64, 2)
+If @error Or $sLimitedInspection = "" Then Exit 53
+FileWrite(${autoItString(paths.limitedInspection)}, $sLimitedInspection)
+Local $sFilteredInspection = SandiUIA_Inspect($hTarget, $iPid, "3", $SANDI_UIA_EDIT)
+If @error Or Not StringInStr($sFilteredInspection, '"returned":1') Then Exit 54
+Local $sWrongPidInspection = SandiUIA_Inspect($hTarget, $iPid + 1)
+If $sWrongPidInspection <> "" Or @error <> $SANDI_UIA_ERROR_ROOT Then Exit 55
+Local $sStaleInspection = SandiUIA_Inspect(HWnd(1), $iPid)
+If $sStaleInspection <> "" Or @error <> $SANDI_UIA_ERROR_ROOT Then Exit 57
+Local $sBadLimitInspection = SandiUIA_Inspect($hTarget, $iPid, "", 0, "", "", False, 0, 2)
+If $sBadLimitInspection <> "" Or @error <> $SANDI_UIA_ERROR_SELECTOR Then Exit 56
+ConsoleWrite("inspection=ok" & @CRLF)
+`;
+}
+
+function autoItIdentityDriver(paths, elements) {
+  const describes = elements
+    .map((element, index) => {
+      const args = identityArguments(element.identity);
+      return `If SandiUIA_Describe($hTarget, $iPid, ${args}) = "" Then Exit ${60 + index}`;
+    })
+    .join("\n");
+  const edit = findElement(elements, (element) => element.automationId === "3");
+  const apply = findElement(
+    elements,
+    (element) => element.automationId === "4",
+  );
+  const toggle = findElement(
+    elements,
+    (element) => element.automationId === "5",
+  );
+  const listItem = findElement(
+    elements,
+    (element) =>
+      element.controlType === 50007 && element.name === "Ada Lovelace",
+  );
+  return `#include <SandiAutoIt.au3>
+
+Local $aFixture = StringSplit(StringStripWS(FileRead(${autoItString(paths.ready)}), 3), "|", 2)
+If UBound($aFixture) <> 3 Then Exit 10
+Local $hTarget = HWnd(Number($aFixture[0]))
+Local $iPid = Number($aFixture[2])
+${describes}
+If Not SandiUIA_SetValue($hTarget, $iPid, ${setValueIdentityArguments(edit.identity, "Grace Hopper")}) Then Exit 81
+If SandiUIA_GetValue($hTarget, $iPid, ${identityArguments(edit.identity)}) <> "Grace Hopper" Then Exit 80
+If Not SandiUIA_Invoke($hTarget, $iPid, ${identityArguments(apply.identity)}) Then Exit 82
+If Not SandiUIA_Toggle($hTarget, $iPid, ${identityArguments(toggle.identity)}) Then Exit 83
+Sleep(100)
+If Not SandiUIA_Toggle($hTarget, $iPid, ${identityArguments(toggle.identity)}) Then Exit 85
+If Not SandiUIA_Select($hTarget, $iPid, ${identityArguments(listItem.identity)}) Then Exit 84
+Sleep(100)
+ConsoleWrite("identities=ok" & @CRLF)
+`;
+}
+
+function verifyNotepad(autoItRuntime, fixtureRoot) {
+  const script = join(fixtureRoot, "notepad-inspector.au3");
+  writeFileSync(script, autoItNotepadInspector());
+  const result = spawnSync(autoItRuntime, ["/ErrorStdOut", script], {
+    cwd: fixtureRoot,
+    encoding: "utf8",
+    timeout: 120_000,
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const lines = result.stdout.trim().split(/\r?\n/);
+  assert.equal(lines.length, 2);
+  const defaultInspection = JSON.parse(lines[0]);
+  const includedInspection = JSON.parse(lines[1]);
+  assert.equal(defaultInspection.includeDocumentChildren, false);
+  assert.equal(
+    defaultInspection.documentSubtreesSkipped,
+    1,
+    JSON.stringify(defaultInspection),
+  );
+  assert.equal(defaultInspection.elements.length, 1);
+  assert.equal(defaultInspection.elements[0].controlType, 50030);
+  assert.equal(defaultInspection.elements[0].controlTypeName, "Document");
+  assert.equal(defaultInspection.elements[0].name, "Text editor");
+  assert.equal(
+    defaultInspection.elements[0].actions.includes("Describe"),
+    true,
+  );
+  assert.equal(includedInspection.includeDocumentChildren, true);
+  assert.equal(includedInspection.documentSubtreesSkipped, 0);
+  assert.equal(includedInspection.visited >= defaultInspection.visited, true);
+}
+
+function autoItNotepadInspector() {
+  return `#include <SandiAutoIt.au3>
+
+Local $aBefore = WinList("[REGEXPTITLE:(?i)notepad]")
+Local $iLaunchPid = Run('"' & @WindowsDir & '\\System32\\notepad.exe"')
+If $iLaunchPid = 0 Then Exit 10
+Local $hWnd = 0
+Local $iPid = 0
+Local $sDefault = ""
+Local $hTimer = TimerInit()
+While TimerDiff($hTimer) < 10000 And Not StringInStr($sDefault, '"returned":1')
+    Local $aWindows = WinList("[REGEXPTITLE:(?i)notepad]")
+    For $iIndex = 1 To $aWindows[0][0]
+        If BitAND(WinGetState($aWindows[$iIndex][1]), 2) And _
+                Not __WasPresent($aWindows[$iIndex][1], $aBefore) Then
+            $hWnd = $aWindows[$iIndex][1]
+            $iPid = WinGetProcess($hWnd)
+            If $iPid > 0 Then _
+                    $sDefault = SandiUIA_Inspect($hWnd, $iPid, "", $SANDI_UIA_DOCUMENT, "Text editor")
+            If Not @error And StringInStr($sDefault, '"returned":1') Then ExitLoop
+        EndIf
+    Next
+    If Not StringInStr($sDefault, '"returned":1') Then Sleep(50)
+WEnd
+If $hWnd = 0 Then __Finish($hWnd, $iLaunchPid, 11)
+If $iPid = 0 Then __Finish($hWnd, $iLaunchPid, 14)
+If Not StringInStr($sDefault, '"returned":1') Then
+    ConsoleWriteError(SandiUIA_Inspect($hWnd, $iPid, "", 0, "", "", False, 64, 128) & @CRLF)
+    __Finish($hWnd, $iLaunchPid, 12)
+EndIf
+Local $sIncluded = SandiUIA_Inspect($hWnd, $iPid, "", $SANDI_UIA_DOCUMENT, "Text editor", "", True)
+If @error Or $sIncluded = "" Then __Finish($hWnd, $iLaunchPid, 13)
+ConsoleWrite($sDefault & @CRLF & $sIncluded & @CRLF)
+__Finish($hWnd, $iLaunchPid, 0)
+
+Func __WasPresent($hWnd, ByRef $aWindows)
+    For $iIndex = 1 To $aWindows[0][0]
+        If $aWindows[$iIndex][1] = $hWnd Then Return True
+    Next
+    Return False
+EndFunc
+
+Func __Finish($hWnd, $iLaunchPid, $iExitCode)
+    If $hWnd <> 0 Then
+        WinClose($hWnd)
+        WinWaitClose($hWnd, "", 3)
+    EndIf
+    If ProcessExists($iLaunchPid) Then
+        ProcessClose($iLaunchPid)
+        ProcessWaitClose($iLaunchPid, 5)
+    EndIf
+    Exit $iExitCode
+EndFunc
+`;
+}
+
 async function waitUntil(condition, label, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -203,4 +484,41 @@ async function waitUntil(condition, label, timeoutMs = 10_000) {
 
 function autoItString(value) {
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+function identityArguments(identity) {
+  return [
+    identity.automationId,
+    identity.controlType,
+    identity.name,
+    identity.className,
+    identity.path,
+  ]
+    .map((value) =>
+      typeof value === "number" ? String(value) : autoItString(value),
+    )
+    .join(", ");
+}
+
+function setValueIdentityArguments(identity, value) {
+  return [
+    identity.automationId,
+    identity.controlType,
+    identity.name,
+    value,
+    identity.className,
+    identity.path,
+  ]
+    .map((item) =>
+      typeof item === "number" ? String(item) : autoItString(item),
+    )
+    .join(", ");
+}
+
+function findElement(collection, predicate) {
+  const element = Array.isArray(collection)
+    ? collection.find(predicate)
+    : collection.elements.find(predicate);
+  assert.notEqual(element, undefined);
+  return element;
 }

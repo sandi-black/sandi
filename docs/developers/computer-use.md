@@ -37,12 +37,28 @@ retain PID/HWND, then use this order:
    input without waiting for UAC. Keep the sequence short and revalidate the
    target before and after it.
 
-The first-party UIA facade resolves from a validated HWND/PID root. Searches
-are bounded, skip document subtrees, and match control type with AutomationId
-and accessible name when those properties exist. Zero and ambiguous matches
-fail with candidate identities. Invoke, toggle, select, get-value, and set-value
-operations resolve the selector again before acting, so callers cannot mutate
-through a stale UIA element. Chrome DevTools remains the browser DOM path.
+The first-party UIA facade resolves from a validated HWND/PID root.
+`SandiUIA_Inspect` walks the control view in breadth-first provider order and
+returns structured JSON from that root without a desktop-wide enumeration. Its
+optional exact filters cover AutomationId, control type, accessible name, and
+class. Defaults limit traversal to 64 nodes and output to 32 elements; hard
+limits are 256 nodes and 128 results. The result reports both limits,
+visited/matched/returned counts, and separate node and result truncation flags.
+
+Each inspected element includes AutomationId, numeric and named control type,
+accessible name, class, native HWND when present, supported patterns/actions,
+and an identity with a root-relative control-view path. Describe, invoke,
+toggle, select, get-value, and set-value accept those identity fields and
+resolve the element again before acting. Calls without an inspector path keep
+the existing zero-match and ambiguity failures. A stale/recycled HWND, PID
+mismatch, changed path, or changed identity fails instead of selecting a nearby
+element.
+
+Document controls are returned, so Notepad's `Text editor` remains discoverable,
+but their descendants are excluded by default and counted in
+`documentSubtreesSkipped`. `includeDocumentChildren` is an explicit opt-in for
+native document content. Do not enable it for Chrome or another browser;
+Chrome DevTools remains the browser DOM path.
 
 Submitted AutoIt source is not filtered by function name. The exact artifact
 passes through `Au3Check`, then runs under the normal process supervisor. Direct
@@ -95,10 +111,12 @@ elevation, execution phase, and syntax-check metadata.
 
 ## Verification
 
-The normal Windows runtime gate is non-elevated and includes a real separate
-AutoIt GUI fixture. It verifies background UIA value and invoke behavior,
-toggle, selection, exact AutomationId selectors, duplicate-name ambiguity,
-stale selector refusal, wrong PID, stale HWND, and bundled include resolution.
+The normal Windows runtime gate is non-elevated and launches Notepad plus a
+separate AutoIt GUI fixture. It verifies discovery of Notepad's `Text editor`,
+default and opt-in document traversal, valid deterministic JSON, filters, bounds
+and truncation, identity reuse across every facade action, background UIA value
+and invoke behavior, toggle, selection, duplicate-name ambiguity, stale selector
+refusal, wrong PID, stale HWND, and bundled include resolution.
 
 ```powershell
 npm run prepare:mcp-runtime -w app

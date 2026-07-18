@@ -253,8 +253,13 @@ the script; warnings remain untrusted evidence and execution continues within
 the call's original timeout and output budgets.
 
 The packaged AutoIt include provides bounded HWND/PID-scoped UIA operations and
-guarded global-input helpers. Submitted scripts may use Control*, the UIA
-facade, direct global input, dynamic dispatch, or native calls. There is no
+guarded global-input helpers. `SandiUIA_Inspect` returns deterministic
+control-view JSON with optional property filters, node/result limits,
+truncation metadata, reusable action identities, and supported UIA
+patterns/actions. Document controls are visible while descendant traversal is
+opt-in, which keeps browser DOM trees out of the native discovery path.
+Submitted scripts may use Control*, the UIA facade, direct global input,
+dynamic dispatch, or native calls. There is no
 function-name policy scanner; the exact artifact passes through `Au3Check`
 before execution. When the user is present and actively using the computer,
 guidance prefers `SandiInput_*` with `#RequireAdmin` so the supervised elevation

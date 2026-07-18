@@ -40,11 +40,11 @@ Use these interfaces in order:
    HWND and a stable control id. These work without moving the user's mouse or
    foregrounding the window.
 2. Include `<SandiAutoIt.au3>` for modern or custom controls. Its UIA functions
-   search only beneath the validated HWND/PID, skip document subtrees, and fail
-   on zero or ambiguous matches with compact candidate identities. Select by
-   control type plus AutomationId and accessible name when the provider exposes
-   them. Each mutation resolves the selector again instead of accepting a stale
-   element object.
+   inspect and search only beneath the validated HWND/PID. Inspection returns
+   bounded JSON identities; searches skip document descendants unless an
+   inspector identity explicitly points into one. Select by the returned
+   identity instead of guessing control constants. Each mutation resolves the
+   identity again and fails on stale or ambiguous matches.
 3. If neither targeted path can act and the user is present and actively using
    the computer, use the include's guarded `SandiInput_*` functions. They keep
    concurrent user input from redirecting the action.
@@ -57,12 +57,46 @@ Use these interfaces in order:
 Use Chrome DevTools for page DOM content. Use `local_read`, `local_write`,
 `local_edit`, `local_bash`, or `local_js_run` for files and processes.
 
-## Scoped UIA
+## Inspect and use scoped UIA
 
-The bundled facade exposes `SandiUIA_Describe`, `SandiUIA_Invoke`,
-`SandiUIA_Toggle`, `SandiUIA_Select`, `SandiUIA_GetValue`, and
-`SandiUIA_SetValue`. AutomationId may be empty when a provider does not expose
-one, but the control type is required and every selector must resolve uniquely.
+Call `SandiUIA_Inspect` when an application's controls are unknown. It walks the
+control view beneath the retained HWND/PID in breadth-first provider order and
+returns JSON. Exact AutomationId, control type, accessible name, and class
+filters are optional. The default limits are 64 visited nodes and 32 returned
+elements; callers may lower them or raise them to the hard limits of 256 nodes
+and 128 results.
+
+```autoit
+#include <SandiAutoIt.au3>
+
+Local $hWnd = WinGetHandle("[TITLE:Example application]")
+If $hWnd = 0 Then Exit 10
+Local $iPid = WinGetProcess($hWnd)
+If $iPid = 0 Then Exit 11
+
+Local $sInspection = SandiUIA_Inspect($hWnd, $iPid, "", $SANDI_UIA_EDIT, "", "", False, 64, 16)
+If @error Then Exit 12
+ConsoleWrite($sInspection & @CRLF)
+```
+
+Each element contains `identity`, `automationId`, `controlType`,
+`controlTypeName`, `name`, `className`, `nativeHwnd`, `patterns`, and `actions`.
+The identity has `automationId`, `controlType`, `name`, `className`, and `path`;
+pass those fields in that order to `SandiUIA_Describe`, `SandiUIA_GetValue`,
+`SandiUIA_Invoke`, `SandiUIA_Toggle`, or `SandiUIA_Select`. `SandiUIA_SetValue`
+takes the new value after `name`, followed by `className` and `path`. The path is
+root-relative control-view identity, so do not construct or edit it.
+
+The JSON also reports `visited`, `matched`, `returned`, `limits`, `truncated`,
+per-limit `truncation`, and `documentSubtreesSkipped`. A document control such
+as Notepad's `Text editor` is returned, but its descendants are excluded by
+default. Pass `True` as `includeDocumentChildren` only for a native document
+whose subtree is needed. Browser DOM work stays in Chrome DevTools.
+
+The other bundled facade functions require a positive control type. An empty
+AutomationId, name, or class remains a wildcard, but the complete identity from
+the inspector resolves one path. Calls without a path retain zero-match and
+ambiguity failures.
 
 This example retains the target, changes a value without global input, waits on
 the real value, and verifies it:
@@ -90,10 +124,9 @@ WEnd
 Exit 14
 ```
 
-Use `SandiUIA_Invoke`, `SandiUIA_Toggle`, or `SandiUIA_Select` with the same
-five-part identity: HWND, PID, AutomationId, control type, and accessible name.
-Do not enumerate the desktop or a browser document tree. Chrome DevTools is the
-page-content path.
+Use the same returned identity for `SandiUIA_Invoke`, `SandiUIA_Toggle`, or
+`SandiUIA_Select`. Do not enumerate the desktop or opt into a browser document
+tree. Chrome DevTools is the page-content path.
 
 ## Guarded global fallback
 

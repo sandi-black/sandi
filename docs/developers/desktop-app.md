@@ -261,16 +261,20 @@ Persistent state lives under Electron's `userData` directory:
   snapshot.
 
 `local_mcp` with `operation: "servers"` is the first diagnostic: it reports
-whether each catalog is cached, missing, or connecting and includes the latest
-bounded connection error. Tool-call logs contain the server id, tool name,
-duration, cancellation state, and error status; MCP stderr and result bodies are
-not logged. Corrupt config or catalog files are moved aside with a
-`.corrupt-<id>` suffix instead of being trusted.
+enabled configuration, cached or missing catalog state, and a separate
+`disconnected`, `connecting`, `connected`, or `failed` connection state. Failed
+connections include the latest bounded error. Tool-call logs contain the server
+id, tool name, duration, cancellation state, and error status; MCP stderr and
+result bodies are not logged. Corrupt config or catalog files are moved aside
+with a `.corrupt-<id>` suffix instead of being trusted.
 
 The host starts only the server named by an exact call. Healthy processes
-survive ordinary calls and device-link reconnects, while disable, replacement,
-removal, transport failure, and app quit close them. Run
-`npm run verify:packaged-mcp -w app` after changing this boundary. It builds an
+disconnect after 30 seconds without active connection startup, catalog refresh,
+or tool calls. `local_mcp` with `operation: "disconnect"` uses the same lifecycle
+path for an earlier close. Configuration and the last catalog remain intact, so
+the next exact call reconnects. Cancellation, disable, replacement, removal,
+transport failure, and app quit also close the MCP client and its stdio child.
+Run `npm run verify:packaged-mcp -w app` after changing this boundary. It builds an
 NSIS installer and portable app, launches the real Electron composition root,
 and drives configuration, cached discovery, a brokered call over the
 authenticated device link, multiple-desktop selection, disable, removal, and
@@ -284,8 +288,8 @@ The source bridge smoke covers the host and broker behavior without packaging.
 The Windows artifacts include one immutable payload at `resources/mcp`:
 
 - `autoit/` contains pinned AutoIt x64, `Au3Check` with its data file, the
-  standard includes, and the first-party `SandiAutoIt.au3` scoped UIA and
-  guarded-input facade.
+  standard includes, and the first-party `SandiAutoIt.au3` scoped inspector,
+  UIA actions, and guarded-input helpers.
 - `servers/chrome-devtools/` contains the complete pinned server dependency
   tree. It and `local_js_run` use the packaged Electron executable in documented
   `ELECTRON_RUN_AS_NODE` mode, so no separate Node runtime is downloaded or

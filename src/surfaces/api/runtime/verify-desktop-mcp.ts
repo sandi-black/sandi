@@ -63,8 +63,9 @@ try {
       toolName: "click",
       arguments: { target: "Save" },
     });
+    await desktopMcp.disconnect({ serverId: "grace" });
 
-    assertEqual(calls.length, 3, "one runtime can make dependent broker calls");
+    assertEqual(calls.length, 4, "one runtime can make dependent broker calls");
     assertEqual(calls[0]?.params["operation"], "search", "search is routed");
     assertEqual(
       calls[1]?.params["toolName"],
@@ -72,6 +73,11 @@ try {
       "first call is routed",
     );
     assertEqual(calls[2]?.params["toolName"], "click", "second call is routed");
+    assertEqual(
+      calls[3]?.params["operation"],
+      "disconnect",
+      "explicit disconnect is routed",
+    );
     assertEqual(
       search.structuredContent?.["sequence"],
       1,

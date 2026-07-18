@@ -101,6 +101,14 @@ function verifyAutoIt(root) {
     root,
   );
   assert.equal(facadeCheck.status, 0, facadeCheck.stderr || facadeCheck.stdout);
+  assert(
+    existsSync(join(bundle, "autoit", "Include", "SandiEditor.au3")),
+    "atomic editor facade is missing",
+  );
+  assert(
+    existsSync(join(bundle, "autoit", "Include", "SandiVisual.au3")),
+    "guarded visual facade is missing",
+  );
 
   const script = join(root, "verify-autoit-success.au3");
   writeFileSync(
@@ -119,6 +127,25 @@ function verifyAutoIt(root) {
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(result.stdout.trim(), `${lock.commands.autoit.version}|1|0`);
+
+  const facadeScript = join(root, "verify-autoit-facade.au3");
+  writeFileSync(
+    facadeScript,
+    [
+      "#include <SandiAutoIt.au3>",
+      "Local $sInspection = SandiUIA_Inspect(HWnd(0), 0)",
+      "Local $iInspectionError = @error",
+      'Local $bInsertion = SandiEditor_InsertText(HWnd(0), 0, "", $SANDI_UIA_CUSTOM, "", "")',
+      "Local $iInsertionError = @error",
+      "Local $bVisual = SandiVisual_Click(HWnd(0), 0, 0.5, 0.5, True, 0, 0, 100, 100, 0, 0, 96, 100, 100)",
+      "Local $iVisualError = @error",
+      'ConsoleWrite($iInspectionError & "|" & $iInsertionError & "|" & $iVisualError & "|" & $SANDI_EDITOR_ERROR_PAYLOAD & "|" & $SANDI_VISUAL_ERROR_TARGET & @CRLF)',
+      "",
+    ].join("\r\n"),
+  );
+  const facade = runAutoIt(facadeScript, root);
+  assert.equal(facade.status, 0, facade.stderr || facade.stdout);
+  assert.equal(facade.stdout.trim(), "2|40|51|40|51");
   const checked = runAu3Check(script, root);
   assert.equal(checked.status, 0, checked.stderr || checked.stdout);
 

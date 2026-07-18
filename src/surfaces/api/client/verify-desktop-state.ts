@@ -5,6 +5,7 @@ import {
   screenshot,
   WindowEnumerationResultSchema,
 } from "@/surfaces/api/client/desktop-state";
+import { verifyVisualObservationBoundary } from "@/surfaces/api/client/verify-visual-observation";
 import { verifyWindowEnumerationBoundary } from "@/surfaces/api/client/verify-window-enumeration";
 import {
   DeviceImageSchema,
@@ -26,6 +27,7 @@ function text(outcome: ToolCallOutcome): string {
 
 async function verifyDesktopState(): Promise<void> {
   verifyWindowEnumerationBoundary();
+  verifyVisualObservationBoundary();
   verifyImageBoundary();
   if (process.platform === "win32") {
     await verifyOnWindows();

@@ -21,10 +21,17 @@ export type LocalScriptRuntime = {
   env?: Readonly<Record<string, string>>;
 };
 
+export type LocalAutoItRuntime = LocalScriptRuntime & {
+  checker: {
+    executable: string;
+    argsPrefix?: readonly string[];
+  };
+};
+
 export type LocalScriptRuntimeContext = {
   runRoot: string;
   javascript: LocalScriptRuntime;
-  autoit?: LocalScriptRuntime | (() => Promise<LocalScriptRuntime | undefined>);
+  autoit?: LocalAutoItRuntime | (() => Promise<LocalAutoItRuntime | undefined>);
 };
 
 export async function runLocalJavaScript(
@@ -52,7 +59,7 @@ export async function runLocalAutoIt(
   runtimes: LocalScriptRuntimeContext,
   signal?: AbortSignal,
 ): Promise<ToolCallOutcome> {
-  let autoit: LocalScriptRuntime | undefined;
+  let autoit: LocalAutoItRuntime | undefined;
   try {
     autoit =
       typeof runtimes.autoit === "function"
@@ -75,6 +82,10 @@ export async function runLocalAutoIt(
     args: ["/ErrorStdOut", artifact],
     cwd: rootDir,
     elevated,
+    syntaxChecker: {
+      executable: autoit.checker.executable,
+      args: [...(autoit.checker.argsPrefix ?? []), "-q", "-d", artifact],
+    },
     ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
     ...(signal !== undefined ? { signal } : {}),
   });
@@ -151,12 +162,79 @@ async function runArtifact(input: {
   elevated?: boolean;
   timeoutMs?: number;
   signal?: AbortSignal;
+  syntaxChecker?: {
+    executable: string;
+    args: readonly string[];
+  };
 }): Promise<ToolCallOutcome> {
+  const startedAt = Date.now();
   const timeoutMs = Math.min(
     MAX_LOCAL_SCRIPT_TIMEOUT_MS,
     input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
   );
   const env = { ...process.env, ...input.runtime.env };
+  let syntaxCheck: "not_applicable" | "passed" | "warnings" = "not_applicable";
+  let syntaxStdout = "";
+  let syntaxStderr = "";
+  let syntaxTruncated = false;
+  if (input.syntaxChecker) {
+    const checked = await runBoundedProcess({
+      executable: input.syntaxChecker.executable,
+      args: input.syntaxChecker.args,
+      cwd: input.cwd,
+      env,
+      timeoutMs,
+      maxOutputChars: MAX_STREAM_CHARS,
+      ...(input.signal !== undefined ? { signal: input.signal } : {}),
+    });
+    if (checked.kind === "cancelled") return refused("cancelled");
+    if (checked.kind === "spawn_error") {
+      return refused(
+        checked.error ?? "the bundled AutoIt checker failed to start",
+      );
+    }
+    syntaxStdout = checked.stdout;
+    syntaxStderr = checked.stderr;
+    syntaxTruncated = checked.truncated;
+    const syntaxFailed =
+      checked.kind === "timed_out" ||
+      checked.exitCode === null ||
+      checked.exitCode >= 2;
+    if (syntaxFailed) {
+      return processOutcome({
+        input,
+        result: checked,
+        startedAt,
+        phase: "syntax_check",
+        syntaxCheck: checked.kind === "timed_out" ? "timed_out" : "failed",
+        elevated: false,
+      });
+    }
+    syntaxCheck = checked.exitCode === 1 ? "warnings" : "passed";
+  }
+  const elapsedMs = Date.now() - startedAt;
+  if (elapsedMs >= timeoutMs) {
+    return processOutcome({
+      input,
+      result: {
+        kind: "timed_out",
+        exitCode: null,
+        signal: null,
+        stdout: syntaxStdout,
+        stderr: syntaxStderr,
+        truncated: syntaxTruncated,
+        durationMs: elapsedMs,
+      },
+      startedAt,
+      phase: "syntax_check",
+      syntaxCheck: "timed_out",
+      elevated: false,
+    });
+  }
+  const remainingOutputChars = Math.max(
+    1,
+    MAX_STREAM_CHARS - syntaxStdout.length - syntaxStderr.length,
+  );
   const result =
     input.runtimeName === "autoit" && input.elevated === true
       ? await runSupervisedAutoIt({
@@ -165,8 +243,8 @@ async function runArtifact(input: {
           runDir: dirname(input.artifact),
           cwd: input.cwd,
           env,
-          timeoutMs,
-          maxOutputChars: MAX_STREAM_CHARS,
+          timeoutMs: timeoutMs - elapsedMs,
+          maxOutputChars: remainingOutputChars,
           elevation: "require_admin",
           ...(input.signal !== undefined ? { signal: input.signal } : {}),
         })
@@ -175,28 +253,72 @@ async function runArtifact(input: {
           args: [...(input.runtime.argsPrefix ?? []), ...input.args],
           cwd: input.cwd,
           env,
-          timeoutMs,
-          maxOutputChars: MAX_STREAM_CHARS,
+          timeoutMs: timeoutMs - elapsedMs,
+          maxOutputChars: remainingOutputChars,
           ...(input.signal !== undefined ? { signal: input.signal } : {}),
         });
   if (result.kind === "cancelled") return refused("cancelled");
   if (result.kind === "spawn_error") {
     return refused(result.error ?? `${input.runtimeName} failed to start`);
   }
+  const stdout = [
+    ...(syntaxStdout ? [`Au3Check:\n${syntaxStdout}`] : []),
+    ...(result.stdout ? [result.stdout] : []),
+  ].join("\n");
+  const stderr = [
+    ...(syntaxStderr ? [`Au3Check:\n${syntaxStderr}`] : []),
+    ...(result.stderr ? [result.stderr] : []),
+  ].join("\n");
+  return processOutcome({
+    input,
+    result: {
+      ...result,
+      stdout,
+      stderr,
+      truncated: syntaxTruncated || result.truncated,
+    },
+    startedAt,
+    phase: "execution",
+    syntaxCheck,
+    elevated: input.elevated === true,
+  });
+}
+
+function processOutcome(input: {
+  input: {
+    runtimeName: "node" | "autoit";
+    runtime: LocalScriptRuntime;
+    artifact: string;
+    cwd: string;
+  };
+  result: Awaited<ReturnType<typeof runBoundedProcess>>;
+  startedAt: number;
+  phase: "syntax_check" | "execution";
+  syntaxCheck:
+    | "not_applicable"
+    | "passed"
+    | "warnings"
+    | "failed"
+    | "timed_out";
+  elevated: boolean;
+}): ToolCallOutcome {
+  const { result } = input;
   const timedOut = result.kind === "timed_out";
   const isError = timedOut || result.exitCode !== 0;
   const metadata = {
-    runtime: input.runtimeName,
-    runtimeVersion: input.runtime.version,
-    artifactPath: input.artifact,
-    cwd: input.cwd,
+    runtime: input.input.runtimeName,
+    runtimeVersion: input.input.runtime.version,
+    artifactPath: input.input.artifact,
+    cwd: input.input.cwd,
+    phase: input.phase,
+    syntaxCheck: input.syntaxCheck,
     exitCode: result.exitCode,
     signal: result.signal,
     timedOut,
     cancelled: false,
     truncated: result.truncated,
-    durationMs: result.durationMs,
-    elevated: input.elevated === true,
+    durationMs: Date.now() - input.startedAt,
+    elevated: input.elevated,
   };
   return {
     ok: true,
@@ -217,6 +339,13 @@ function formatResult(
     runtimeVersion: string;
     artifactPath: string;
     cwd: string;
+    phase: "syntax_check" | "execution";
+    syntaxCheck:
+      | "not_applicable"
+      | "passed"
+      | "warnings"
+      | "failed"
+      | "timed_out";
     exitCode: number | null;
     signal: NodeJS.Signals | null;
     timedOut: boolean;
@@ -231,6 +360,8 @@ function formatResult(
     `runtime: ${metadata.runtime} ${metadata.runtimeVersion}`,
     `artifact: ${metadata.artifactPath}`,
     `cwd: ${metadata.cwd}`,
+    `phase: ${metadata.phase}`,
+    `syntax check: ${metadata.syntaxCheck}`,
     `exit code: ${metadata.exitCode ?? "none"}`,
     `signal: ${metadata.signal ?? "none"}`,
     `duration ms: ${metadata.durationMs}`,

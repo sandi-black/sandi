@@ -58,6 +58,13 @@ cancellation, kills descendants, and releases blocked input and pressed mouse
 buttons during cleanup. Windows also releases `BlockInput` when the blocking
 thread exits unexpectedly.
 
+Every submitted artifact first runs through the bundled `Au3Check` with strict
+variable declarations. This catches undefined functions, variables, macros,
+argument-count errors, and missing includes before AutoIt or UAC starts. Exit 1
+means warnings and allows execution; syntax or checker errors stop in the
+`syntax_check` phase. `Aut2Exe` is not a substitute because AutoIt's compiler
+does not check syntax.
+
 ## Desktop routing and results
 
 Every local tool accepts the optional `desktop` selector. A desktop-originated
@@ -70,7 +77,7 @@ from that root. AutoIt uses the same root as its process working directory,
 while `@ScriptDir` identifies the unique persisted run artifact. Both tools
 return separate bounded stdout and stderr as untrusted evidence plus runtime
 version, artifact path, cwd, exit code, signal, timeout, truncation, duration,
-and elevation metadata.
+elevation, execution phase, and syntax-check metadata.
 
 ## Verification
 
@@ -105,4 +112,6 @@ npm run verify:packaged-mcp -w app
 The packaged check prepares the pinned AutoIt and Chrome payload, verifies each
 staged file's size and SHA256, builds the NSIS and portable targets, relocates
 and extracts both, launches the real Electron composition root, and runs
-brokered JavaScript and AutoIt without downloading a runtime at execution time.
+brokered JavaScript and checked AutoIt without downloading a runtime at
+execution time. Its invalid AutoIt fixture proves the checker rejects the
+artifact before its first mutation.

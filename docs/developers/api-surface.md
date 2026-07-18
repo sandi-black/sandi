@@ -246,6 +246,12 @@ in the desktop app's interactive session. Both capture stdout and stderr as
 untrusted evidence, return structured exit and timeout metadata, and kill
 descendants on cancellation or timeout.
 
+Before any AutoIt process or elevation request, the desktop runs the exact
+artifact through the manifest-verified `Au3Check` from the same pinned AutoIt
+distribution. Syntax errors stop in the `syntax_check` phase without executing
+the script; warnings remain untrusted evidence and execution continues within
+the call's original timeout and output budgets.
+
 The packaged AutoIt include provides bounded HWND/PID-scoped UIA operations and
 guarded global-input helpers. Submitted scripts may use Control* and the UIA
 facade directly. Raw global input and dynamic/native dispatch fail closed;

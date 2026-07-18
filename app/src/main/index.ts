@@ -1,4 +1,4 @@
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 import type {
   LinkStatus,
@@ -249,6 +249,9 @@ async function main(): Promise<void> {
               return {
                 executable: command.executable,
                 version: command.version ?? "unknown",
+                checker: {
+                  executable: join(dirname(command.executable), "Au3Check.exe"),
+                },
               };
             },
           }

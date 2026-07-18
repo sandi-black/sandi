@@ -11,6 +11,23 @@ and runs it with Sandi's bundled AutoIt x64 runtime in the connected interactive
 Windows session. Pass `desktop` when more than one connected machine is in
 scope.
 
+`local_autoit_run` checks the complete artifact with the bundled `Au3Check`
+before starting AutoIt or requesting elevation. Undefined functions, variables,
+macros, wrong argument counts, and missing includes fail without partially
+running the script. Checker warnings are returned as untrusted evidence but do
+not prevent execution. Do not compile an executable first: `Aut2Exe` does not
+check syntax, and a compiled child would bypass the tool's direct process
+ownership.
+
+Do not guess function or constant names. AutoIt built-ins need no include, but
+standard UDFs and named constants do. For example, `_StringRepeat` requires
+`<String.au3>` and `$SEND_RAW` requires `<AutoItConstants.au3>`; there is no
+`StringRepeat` built-in. When uncertain, consult the official
+[function](https://www.autoitscript.com/autoit3/docs/functions.htm),
+[UDF](https://www.autoitscript.com/autoit3/docs/libfunctions.htm), and
+[keyword](https://www.autoitscript.com/autoit3/docs/keywords.htm) references
+before submitting the one observe-act-wait-verify script.
+
 ## Keep the target identity
 
 Discover the application once, then retain its PID and HWND. Check both again

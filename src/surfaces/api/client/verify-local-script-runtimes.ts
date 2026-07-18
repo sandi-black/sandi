@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -150,6 +151,116 @@ try {
   );
   assert.equal(corruptRuntime.ok, false);
   assert.match(corruptRuntime.error ?? "", /failed verification/);
+  const autoitLog = join(root, "autoit-fixture.log");
+  const autoitCheckerFixture = join(root, "autoit-checker-fixture.mjs");
+  const autoitRuntimeFixture = join(root, "autoit-runtime-fixture.mjs");
+  writeFileSync(
+    autoitCheckerFixture,
+    [
+      'import { appendFileSync, readFileSync } from "node:fs";',
+      "const artifact = process.argv.at(-1);",
+      'if (!artifact) throw new Error("artifact is required");',
+      'const source = readFileSync(artifact, "utf8");',
+      'appendFileSync(process.env.SANDI_AUTOIT_FIXTURE_LOG, "checked\\n");',
+      'if (source.includes("CHECK_HANG")) setInterval(() => {}, 1000);',
+      'if (source.includes("CHECK_WARNING")) { console.error("fixture warning"); process.exit(1); }',
+      'if (source.includes("CHECK_ERROR")) { console.error("fixture syntax error"); process.exit(2); }',
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    autoitRuntimeFixture,
+    [
+      'import { appendFileSync } from "node:fs";',
+      'appendFileSync(process.env.SANDI_AUTOIT_FIXTURE_LOG, "ran\\n");',
+      'console.log("fixture AutoIt executed");',
+      "",
+    ].join("\n"),
+  );
+  const autoitContext: LocalScriptRuntimeContext = {
+    ...context,
+    autoit: {
+      executable: process.execPath,
+      version: "fixture",
+      argsPrefix: [autoitRuntimeFixture],
+      env: { SANDI_AUTOIT_FIXTURE_LOG: autoitLog },
+      checker: {
+        executable: process.execPath,
+        argsPrefix: [autoitCheckerFixture],
+      },
+    },
+  };
+  const checkedAutoIt = await runLocalAutoIt(
+    { code: 'ConsoleWrite("Grace Hopper")' },
+    root,
+    autoitContext,
+  );
+  assert.equal(checkedAutoIt.isError, undefined);
+  assert.equal(checkedAutoIt.structuredContent?.["phase"], "execution");
+  assert.equal(checkedAutoIt.structuredContent?.["syntaxCheck"], "passed");
+  assert.deepEqual(readFileSync(autoitLog, "utf8").trim().split(/\r?\n/), [
+    "checked",
+    "ran",
+  ]);
+
+  writeFileSync(autoitLog, "", "utf8");
+  const invalidAutoIt = await runLocalAutoIt(
+    { code: '; CHECK_ERROR\nConsoleWrite("must not run")' },
+    root,
+    autoitContext,
+  );
+  assert.equal(invalidAutoIt.isError, true);
+  assert.equal(invalidAutoIt.structuredContent?.["phase"], "syntax_check");
+  assert.equal(invalidAutoIt.structuredContent?.["syntaxCheck"], "failed");
+  assert.equal(readFileSync(autoitLog, "utf8").trim(), "checked");
+  assert.match(text(invalidAutoIt), /fixture syntax error/);
+  assert.match(text(invalidAutoIt), /untrusted_process_output/);
+
+  writeFileSync(autoitLog, "", "utf8");
+  const warnedAutoIt = await runLocalAutoIt(
+    { code: '; CHECK_WARNING\nConsoleWrite("Anna Winlock")' },
+    root,
+    autoitContext,
+  );
+  assert.equal(warnedAutoIt.isError, undefined);
+  assert.equal(warnedAutoIt.structuredContent?.["syntaxCheck"], "warnings");
+  assert.match(text(warnedAutoIt), /fixture warning/);
+  assert.deepEqual(readFileSync(autoitLog, "utf8").trim().split(/\r?\n/), [
+    "checked",
+    "ran",
+  ]);
+
+  writeFileSync(autoitLog, "", "utf8");
+  const checkerController = new AbortController();
+  const checkingAutoIt = runLocalAutoIt(
+    { code: '; CHECK_HANG\nConsoleWrite("must not run")' },
+    root,
+    autoitContext,
+    checkerController.signal,
+  );
+  await waitUntil(
+    () => readFileSync(autoitLog, "utf8").includes("checked"),
+    "active AutoIt syntax checker",
+  );
+  checkerController.abort();
+  const cancelledAutoIt = await checkingAutoIt;
+  assert.equal(cancelledAutoIt.ok, false);
+  assert.equal(cancelledAutoIt.error, "cancelled");
+  assert.equal(readFileSync(autoitLog, "utf8").trim(), "checked");
+
+  writeFileSync(autoitLog, "", "utf8");
+  const checkerTimeout = await runLocalAutoIt(
+    {
+      code: '; CHECK_HANG\nConsoleWrite("must not run")',
+      timeoutMs: 100,
+    },
+    root,
+    autoitContext,
+  );
+  assert.equal(checkerTimeout.isError, true);
+  assert.equal(checkerTimeout.structuredContent?.["phase"], "syntax_check");
+  assert.equal(checkerTimeout.structuredContent?.["timedOut"], true);
+  assert.equal(readFileSync(autoitLog, "utf8").trim(), "checked");
   assert.match(
     autoItInputGuardError('Send("unsafe")') ?? "",
     /raw global input/,

@@ -53,6 +53,12 @@ try {
     join(autoitSource, "AutoIt3_x64.exe"),
     join(autoitDestination, "AutoIt3_x64.exe"),
   );
+  for (const checkerFile of ["Au3Check.exe", "Au3Check.dat"]) {
+    copyFileSync(
+      join(autoitSource, checkerFile),
+      join(autoitDestination, checkerFile),
+    );
+  }
   cpSync(join(autoitSource, "Include"), join(autoitDestination, "Include"), {
     recursive: true,
   });

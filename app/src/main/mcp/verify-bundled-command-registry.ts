@@ -75,6 +75,20 @@ try {
   const autoit = await registry.resolve("autoit", []);
   assert(autoit?.executable.includes("AutoIt3_x64.exe"));
 
+  const missingChecker = join(root, "missing AutoIt checker");
+  writeBundle(missingChecker);
+  rmSync(join(missingChecker, "mcp", "autoit", "Au3Check.exe"));
+  await assert.rejects(
+    () =>
+      createBundledMcpCommandRegistry({
+        resourcesRoot: missingChecker,
+        userDataDir: join(root, "missing checker user"),
+        realLocalAppData: undefined,
+        electronExecutable,
+      }).resolve("autoit", []),
+    /component autoit\/Au3Check\.exe is unavailable/,
+  );
+
   const corruptResources = join(root, "corrupt resources");
   writeBundle(corruptResources);
   writeFileSync(
@@ -210,6 +224,8 @@ function writeBundle(resourcesRoot: string): void {
   const bundle = join(resourcesRoot, "mcp");
   const files: Record<string, string> = {
     "autoit/AutoIt3_x64.exe": "autoit",
+    "autoit/Au3Check.dat": "checker data",
+    "autoit/Au3Check.exe": "checker",
     "autoit/Include/AutoItConstants.au3": "constants",
     "autoit/Include/SandiAutoIt.au3": "sandi include",
     "servers/chrome-devtools/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js":

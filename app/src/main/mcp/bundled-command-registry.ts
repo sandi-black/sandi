@@ -72,6 +72,8 @@ const definitions: Record<string, CommandDefinition> = {
     argsPrefix: () => [],
     requiredFiles: [
       "autoit/AutoIt3_x64.exe",
+      "autoit/Au3Check.exe",
+      "autoit/Au3Check.dat",
       "autoit/Include/AutoItConstants.au3",
       "autoit/Include/SandiAutoIt.au3",
     ],

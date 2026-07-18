@@ -389,8 +389,10 @@ Func SandiInput_Drag($hWnd, $iPid, $iStartX, $iStartY, $iEndX, $iEndY, $sButton 
     EndIf
     MouseDown($sButton)
     $__g_SandiInputMouseButton = $sButton
-    Local $iDistance = Max(Abs($iEndX - $iStartX), Abs($iEndY - $iStartY))
-    Local $iSteps = Max(1, Ceiling($iDistance / $__SANDI_INPUT_MOVE_PIXELS))
+    Local $iDistance = Abs($iEndX - $iStartX)
+    If Abs($iEndY - $iStartY) > $iDistance Then $iDistance = Abs($iEndY - $iStartY)
+    Local $iSteps = Ceiling($iDistance / $__SANDI_INPUT_MOVE_PIXELS)
+    If $iSteps < 1 Then $iSteps = 1
     For $iStep = 1 To $iSteps
         If Not __SandiInput_Valid($hWnd, $iPid, "", 0, "", False) Then
             __SandiInput_Release()

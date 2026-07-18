@@ -90,6 +90,18 @@ try {
 }
 
 function verifyAutoIt(root) {
+  const checker = join(bundle, "autoit", "Au3Check.exe");
+  assert(existsSync(checker), "AutoIt syntax checker is missing");
+  assert(
+    existsSync(join(bundle, "autoit", "Au3Check.dat")),
+    "AutoIt syntax checker data is missing",
+  );
+  const facadeCheck = runAu3Check(
+    join(bundle, "autoit", "Include", "SandiAutoIt.au3"),
+    root,
+  );
+  assert.equal(facadeCheck.status, 0, facadeCheck.stderr || facadeCheck.stdout);
+
   const script = join(root, "verify-autoit-success.au3");
   writeFileSync(
     script,
@@ -107,9 +119,14 @@ function verifyAutoIt(root) {
   );
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(result.stdout.trim(), `${lock.commands.autoit.version}|1|0`);
+  const checked = runAu3Check(script, root);
+  assert.equal(checked.status, 0, checked.stderr || checked.stdout);
 
   const syntaxScript = join(root, "verify-autoit-syntax.au3");
   writeFileSync(syntaxScript, "This Is Not Valid(\r\n");
+  const syntaxCheck = runAu3Check(syntaxScript, root);
+  assert.equal(syntaxCheck.status, 2);
+  assert.match(syntaxCheck.stdout, /error/i);
   const syntax = runAutoIt(syntaxScript, root);
   assert.equal(syntax.status, 1);
   assert.match(syntax.stdout, /ERROR/);
@@ -145,6 +162,14 @@ function verifyAutoIt(root) {
   const controls = runAutoIt(controlScript, root);
   assert.equal(controls.status, 0, controls.stderr || controls.stdout);
   assert.equal(controls.stdout.trim(), "controls=ok");
+}
+
+function runAu3Check(script, cwd) {
+  return spawnSync(
+    join(bundle, "autoit", "Au3Check.exe"),
+    ["-q", "-d", script],
+    { encoding: "utf8", cwd },
+  );
 }
 
 function runAutoIt(script, cwd) {

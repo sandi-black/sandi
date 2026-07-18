@@ -180,6 +180,23 @@ try {
     assert.match(textOf(autoitRun), /3\.3\.18\.0\|1\|50000/);
     assert.equal(autoitRun.structuredContent?.["runtime"], "autoit");
     assert.equal(autoitRun.structuredContent?.["exitCode"], 0);
+    assert.equal(autoitRun.structuredContent?.["syntaxCheck"], "passed");
+    const syntaxMarker = join(root, "invalid-autoit-ran.marker");
+    const invalidAutoIt = await callBroker(origin.ticket, "local_autoit_run", {
+      code: [
+        `FileWrite(${JSON.stringify(syntaxMarker)}, "must-not-run")`,
+        'StringRepeat("x", 2)',
+      ].join("\n"),
+    });
+    assert.equal(invalidAutoIt.ok, true);
+    assert.equal(invalidAutoIt.isError, true);
+    assert.equal(invalidAutoIt.structuredContent?.["phase"], "syntax_check");
+    assert.equal(invalidAutoIt.structuredContent?.["syntaxCheck"], "failed");
+    assert.equal(
+      existsSync(syntaxMarker),
+      false,
+      "a syntax error is rejected before the script can mutate the desktop",
+    );
     const config = {
       id: "packaged-fixture",
       label: "Packaged Grace Hopper fixture",

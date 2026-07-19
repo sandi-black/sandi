@@ -192,7 +192,12 @@ async function verifyConcurrentWorkers(path: string): Promise<void> {
 }
 
 async function verifyLongClaimRenewal(path: string): Promise<void> {
+  let now = Date.parse("2026-07-10T01:30:00.000Z");
   let calls = 0;
+  let markStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
   let release: (() => void) | undefined;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -202,30 +207,61 @@ async function verifyLongClaimRenewal(path: string): Promise<void> {
     retryMaxMs: 100,
     claimLeaseMs: 30,
     pollMaxMs: 100,
+    now: () => now,
   };
   const first = new DurableOutbox(path, options);
   const second = new DurableOutbox(path, options);
-  const handler = async () => {
+  first.register("slow", async () => {
     calls += 1;
+    markStarted?.();
     await gate;
     return { status: "complete" as const };
-  };
-  first.register("slow", handler);
-  second.register("slow", handler);
+  });
+  second.register("slow", async () => {
+    calls += 1;
+    return { status: "complete" as const };
+  });
   await first.enqueue({
     idempotencyKey: "slow:winlock",
     kind: "slow",
     payload: null,
   });
   const active = first.deliverNow("slow:winlock");
-  for (let index = 0; calls === 0 && index < 100; index += 1) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  try {
+    await started;
+    const originalLease = (await first.get("slow:winlock"))?.claim?.leaseUntil;
+    assert(
+      originalLease,
+      "the active delivery records its initial claim lease",
+    );
+
+    now += 20;
+    let renewedLease = originalLease;
+    for (
+      let index = 0;
+      index < 100 && renewedLease === originalLease;
+      index += 1
+    ) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      renewedLease =
+        (await first.get("slow:winlock"))?.claim?.leaseUntil ?? originalLease;
+    }
+    assert.notEqual(
+      renewedLease,
+      originalLease,
+      "a live worker persists a renewed claim lease",
+    );
+
+    await second.deliverNow("slow:winlock");
+    assert.equal(
+      calls,
+      1,
+      "a live worker renews before its claim can be stolen",
+    );
+  } finally {
+    release?.();
+    await active;
   }
-  await new Promise<void>((resolve) => setTimeout(resolve, 60));
-  await second.deliverNow("slow:winlock");
-  assert.equal(calls, 1, "a live worker renews before its claim can be stolen");
-  release?.();
-  await active;
   assert.equal((await first.get("slow:winlock"))?.status, "completed");
   console.log("ok outbox renews live claims during long deliveries");
 }

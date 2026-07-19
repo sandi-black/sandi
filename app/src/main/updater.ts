@@ -5,6 +5,7 @@ import { app } from "electron";
 import electronUpdater from "electron-updater";
 
 import {
+  canInstallAutomatically,
   isNewerVersion,
   reduceUpdate,
   type UpdateEvent,
@@ -23,8 +24,9 @@ import { z } from "zod/v4";
 //   release tag and points the human at the download page.
 // - dev: no updater at all (index.ts never creates one).
 //
-// Checks run shortly after launch and then on a slow cycle, gated by the
-// autoUpdate setting; the tray's "Check for updates" always works.
+// With automatic updates enabled, checks run shortly after launch and then on
+// a slow cycle. An installed update applies once Sandi has no active or queued
+// work. The tray's manual check and install actions always remain available.
 
 const GITHUB_OWNER = "sandi-black";
 const GITHUB_REPO = "sandi";
@@ -36,6 +38,7 @@ const LATEST_RELEASE_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${G
 const FIRST_CHECK_DELAY_MS = 30_000;
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const PORTABLE_CHECK_TIMEOUT_MS = 15_000;
+const AUTO_INSTALL_RETRY_MS = 30_000;
 
 export type UpdateFlavor = "installed" | "portable" | "dev";
 
@@ -54,23 +57,80 @@ export type UpdaterController = {
   // Installs the staged update immediately. Meaningful only in the "ready"
   // phase; the tray only wires it to the ready line.
   quitAndInstall(): void;
-  // Follows the autoUpdate setting: gates the scheduled checks (manual checks
-  // stay available either way).
-  setAutoCheck(enabled: boolean): void;
+  // Follows the autoUpdate setting: gates scheduled checks and idle-time
+  // installation. Manual checks and manual installation remain available.
+  setAutomaticUpdates(enabled: boolean): void;
   dispose(): void;
 };
 
-export function createUpdater(input: {
-  flavor: "installed" | "portable";
-  autoCheck: boolean;
+type UpdaterInput = {
+  automaticUpdates: boolean;
   onState(state: UpdateState): void;
-}): UpdaterController {
+} & (
+  | {
+      flavor: "installed";
+      isSandiIdle(): boolean;
+    }
+  | { flavor: "portable" }
+);
+
+export function createUpdater(input: UpdaterInput): UpdaterController {
   let state: UpdateState = { phase: "idle" };
+  let automaticUpdates = input.automaticUpdates;
+  let disposed = false;
+  let installRetry: NodeJS.Timeout | undefined;
+
+  const stopInstallRetry = (): void => {
+    if (installRetry) clearTimeout(installRetry);
+    installRetry = undefined;
+  };
+
+  const scheduleAutomaticInstall = (delayMs: number): void => {
+    stopInstallRetry();
+    if (
+      disposed ||
+      input.flavor !== "installed" ||
+      !automaticUpdates ||
+      state.phase !== "ready"
+    ) {
+      return;
+    }
+    installRetry = setTimeout(() => {
+      installRetry = undefined;
+      tryAutomaticInstall();
+    }, delayMs);
+  };
+
+  const tryAutomaticInstall = (): void => {
+    if (
+      disposed ||
+      input.flavor !== "installed" ||
+      !automaticUpdates ||
+      state.phase !== "ready"
+    ) {
+      return;
+    }
+    if (
+      canInstallAutomatically({
+        state,
+        automaticUpdates,
+        sandiIdle: input.isSandiIdle(),
+      })
+    ) {
+      // Silent mode keeps NSIS from showing UI or taking focus. forceRunAfter
+      // makes the relaunch explicit for that mode.
+      electronUpdater.autoUpdater.quitAndInstall(true, true);
+      return;
+    }
+    scheduleAutomaticInstall(AUTO_INSTALL_RETRY_MS);
+  };
+
   const dispatch = (event: UpdateEvent): void => {
     const next = reduceUpdate(state, event);
     if (next === state) return;
     state = next;
     input.onState(state);
+    if (state.phase === "ready") scheduleAutomaticInstall(0);
   };
 
   const check =
@@ -93,13 +153,18 @@ export function createUpdater(input: {
     firstCheck = undefined;
     cycle = undefined;
   };
-  const setAutoCheck = (enabled: boolean): void => {
+  const setAutomaticUpdates = (enabled: boolean): void => {
+    automaticUpdates = enabled;
     stopTimers();
-    if (!enabled) return;
+    if (!enabled) {
+      stopInstallRetry();
+      return;
+    }
     firstCheck = setTimeout(checkNow, FIRST_CHECK_DELAY_MS);
     cycle = setInterval(checkNow, CHECK_INTERVAL_MS);
+    if (state.phase === "ready") scheduleAutomaticInstall(0);
   };
-  setAutoCheck(input.autoCheck);
+  setAutomaticUpdates(input.automaticUpdates);
 
   return {
     state: () => state,
@@ -110,8 +175,12 @@ export function createUpdater(input: {
       // hidden-not-closed windows and the device link tear down normally.
       electronUpdater.autoUpdater.quitAndInstall();
     },
-    setAutoCheck,
-    dispose: stopTimers,
+    setAutomaticUpdates,
+    dispose() {
+      disposed = true;
+      stopTimers();
+      stopInstallRetry();
+    },
   };
 }
 

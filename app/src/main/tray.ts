@@ -57,7 +57,7 @@ export function createTray(input: {
   const updateItems = (): MenuItemConstructorOptions[] => {
     const updates = input.updates;
     if (!updates) return [];
-    const entry = updateMenuEntry(updateState);
+    const entry = updateMenuEntry(updateState, input.settings.get().autoUpdate);
     const busy =
       updateState.phase === "checking" || updateState.phase === "downloading";
     return [

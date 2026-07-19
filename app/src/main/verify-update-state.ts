@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import {
+  canInstallAutomatically,
   isNewerVersion,
   reduceUpdate,
   type UpdateState,
@@ -105,6 +106,13 @@ function testMenuEntries(): void {
     label: "Restart to update to 0.2.0",
     action: "install",
   });
+  assert.deepEqual(
+    updateMenuEntry({ phase: "ready", version: "0.2.0" }, true),
+    {
+      label: "Update 0.2.0 ready; installs when idle",
+      action: "install",
+    },
+  );
   assert.deepEqual(updateMenuEntry({ phase: "up-to-date" }), {
     label: "Sandi is up to date",
   });
@@ -112,6 +120,28 @@ function testMenuEntries(): void {
     updateMenuEntry({ phase: "error", message: "socket hang up" }),
     { label: "Update check failed" },
     "the error line stays terse; the full message goes to the console",
+  );
+}
+
+function testAutomaticInstallGate(): void {
+  const ready: UpdateState = { phase: "ready", version: "0.2.0" };
+  const allowed = {
+    state: ready,
+    automaticUpdates: true,
+    sandiIdle: true,
+  };
+  assert.equal(canInstallAutomatically(allowed), true);
+  assert.equal(
+    canInstallAutomatically({ ...allowed, state: { phase: "checking" } }),
+    false,
+  );
+  assert.equal(
+    canInstallAutomatically({ ...allowed, automaticUpdates: false }),
+    false,
+  );
+  assert.equal(
+    canInstallAutomatically({ ...allowed, sandiIdle: false }),
+    false,
   );
 }
 
@@ -152,6 +182,7 @@ function main(): void {
   testUpToDateAndError();
   testReadyIsSticky();
   testMenuEntries();
+  testAutomaticInstallGate();
   testVersionComparison();
   console.log("verify-update-state: ok");
 }

@@ -51,6 +51,7 @@ export type TurnManager = {
   cancelQueued(turnId: string): void;
   queueState(conversationId: string): QueueState;
   hasWork(conversationId: string): boolean;
+  isIdle(): boolean;
 };
 
 export function createTurnManager(input: {
@@ -180,6 +181,9 @@ export function createTurnManager(input: {
     hasWork(conversationId) {
       const queue = queues.get(conversationId);
       return Boolean(queue?.inflight || queue?.pending.length);
+    },
+    isIdle() {
+      return queues.size === 0;
     },
   };
 }

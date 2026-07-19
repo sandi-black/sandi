@@ -66,6 +66,7 @@ export type UpdateMenuEntry = {
 
 export function updateMenuEntry(
   state: UpdateState,
+  automaticUpdates = false,
 ): UpdateMenuEntry | undefined {
   switch (state.phase) {
     case "idle":
@@ -78,7 +79,9 @@ export function updateMenuEntry(
       return { label: `Update ${state.version} available`, action: "download" };
     case "ready":
       return {
-        label: `Restart to update to ${state.version}`,
+        label: automaticUpdates
+          ? `Update ${state.version} ready; installs when idle`
+          : `Restart to update to ${state.version}`,
         action: "install",
       };
     case "up-to-date":
@@ -86,6 +89,18 @@ export function updateMenuEntry(
     case "error":
       return { label: "Update check failed" };
   }
+}
+
+// Automatic installation is deliberately narrower than ordinary app quit. A
+// staged release waits until Sandi has no active or queued work to lose.
+export function canInstallAutomatically(input: {
+  state: UpdateState;
+  automaticUpdates: boolean;
+  sandiIdle: boolean;
+}): boolean {
+  return (
+    input.state.phase === "ready" && input.automaticUpdates && input.sandiIdle
+  );
 }
 
 // Strict-enough semver comparison for release tags: is `candidate` a real

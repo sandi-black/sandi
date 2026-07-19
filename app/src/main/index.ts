@@ -46,6 +46,7 @@ import { createTranscriptStore } from "./transcript-store";
 import { createTray, type TrayController } from "./tray";
 import { createTurnManager } from "./turn-manager";
 import { createTurnPipeline } from "./turn-pipeline";
+import type { UpdateState } from "./update-state";
 import {
   createUpdater,
   detectUpdateFlavor,
@@ -142,6 +143,42 @@ async function main(): Promise<void> {
     userDataDir: userData,
     resolveBundled: bundledMcpCommands.resolve,
   });
+  let activeDesktopToolCalls = 0;
+  const executeDesktopTool = createDesktopToolExecutor(mcpHost, {
+    runRoot: join(userData, "local-runs"),
+    javascript: {
+      executable: process.execPath,
+      version: process.versions.node,
+      env: { ELECTRON_RUN_AS_NODE: "1" },
+    },
+    ...(app.isPackaged
+      ? {
+          autoit: async () => {
+            const command = await bundledMcpCommands.resolve("autoit", []);
+            if (!command) return undefined;
+            return {
+              executable: command.executable,
+              version: command.version ?? "unknown",
+              checker: {
+                executable: join(dirname(command.executable), "Au3Check.exe"),
+              },
+            };
+          },
+        }
+      : {}),
+  });
+  const trackedDesktopTool: typeof executeDesktopTool = async (
+    call,
+    context,
+    signal,
+  ) => {
+    activeDesktopToolCalls++;
+    try {
+      return await executeDesktopTool(call, context, signal);
+    } finally {
+      activeDesktopToolCalls--;
+    }
+  };
 
   // Shared by the pet's own open gesture and the tray's: interrupt both
   // ambient schedulers, clear the reply-alert marker, greet if this is the
@@ -234,29 +271,7 @@ async function main(): Promise<void> {
     // Sandi's relative tool paths resolve against the home directory; her
     // reach is the human's own, so their home is the natural anchor.
     rootDir: app.getPath("home"),
-    executeTool: createDesktopToolExecutor(mcpHost, {
-      runRoot: join(userData, "local-runs"),
-      javascript: {
-        executable: process.execPath,
-        version: process.versions.node,
-        env: { ELECTRON_RUN_AS_NODE: "1" },
-      },
-      ...(app.isPackaged
-        ? {
-            autoit: async () => {
-              const command = await bundledMcpCommands.resolve("autoit", []);
-              if (!command) return undefined;
-              return {
-                executable: command.executable,
-                version: command.version ?? "unknown",
-                checker: {
-                  executable: join(dirname(command.executable), "Au3Check.exe"),
-                },
-              };
-            },
-          }
-        : {}),
-    }),
+    executeTool: trackedDesktopTool,
     events: {
       onStatus: (status: LinkStatus) => {
         tray?.setLinkStatus(status);
@@ -452,17 +467,27 @@ async function main(): Promise<void> {
   // section. A smoke install must stay on the artifact under test instead of
   // replacing itself from the production release feed during shutdown.
   const updateFlavor = detectUpdateFlavor();
+  const onUpdateState = (state: UpdateState): void =>
+    tray?.setUpdateState(state);
   const updater: UpdaterController | undefined =
     updateFlavor === "dev" ||
     process.env["SANDI_PACKAGED_SMOKE_EXIT_FILE"] !== undefined
       ? undefined
-      : createUpdater({
-          flavor: updateFlavor,
-          autoCheck: settings.get().autoUpdate,
-          // The optional chain covers the first checks racing tray creation
-          // just below; every later state change lands on the live menu.
-          onState: (state) => tray?.setUpdateState(state),
-        });
+      : updateFlavor === "installed"
+        ? createUpdater({
+            flavor: "installed",
+            automaticUpdates: settings.get().autoUpdate,
+            // The optional chain covers the first checks racing tray creation
+            // just below; every later state change lands on the live menu.
+            onState: onUpdateState,
+            isSandiIdle: () =>
+              turnManager.isIdle() && activeDesktopToolCalls === 0,
+          })
+        : createUpdater({
+            flavor: "portable",
+            automaticUpdates: settings.get().autoUpdate,
+            onState: onUpdateState,
+          });
 
   tray = createTray({
     settings,
@@ -480,7 +505,8 @@ async function main(): Promise<void> {
                 console.error("failed to open the releases page", error);
               });
             },
-            onAutoUpdateChange: (enabled) => updater.setAutoCheck(enabled),
+            onAutoUpdateChange: (enabled) =>
+              updater.setAutomaticUpdates(enabled),
           },
         }
       : {}),

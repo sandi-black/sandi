@@ -47,6 +47,11 @@ function main(): void {
     [],
     "the failed conversation queue is released",
   );
+  assert.equal(
+    synchronousThrowManager.isIdle(),
+    true,
+    "Sandi is idle after the failed turn settles",
+  );
 
   const inFlight: Pending[] = [];
   const started: string[] = [];
@@ -95,6 +100,7 @@ function main(): void {
     attachmentIds: [],
   });
   assert.deepEqual(started, ["t1"], "only the first turn is in flight");
+  assert.equal(manager.isIdle(), false, "queued or running turns are work");
   assert.equal(inFlight.length, 1, "one socket per conversation");
   const state = manager.queueState("c1");
   assert.equal(state.inflightTurnId, "t1");
@@ -141,6 +147,11 @@ function main(): void {
         manager.queueState("c1").inflightTurnId,
         undefined,
         "c1 queue is empty again",
+      );
+      assert.equal(
+        manager.isIdle(),
+        false,
+        "the other conversation still keeps Sandi busy",
       );
       // Queue-state events fired for every transition (submit, start, stop,
       // drain); the exact count matters less than that the final state is

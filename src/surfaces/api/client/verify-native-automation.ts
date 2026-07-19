@@ -23,6 +23,7 @@ import {
 const retainedEditor = {
   hwnd: "4242",
   pid: 101,
+  nativeHwnd: 31337,
   automationId: "TextEditor",
   controlType: 50004,
   name: "Text editor",
@@ -51,6 +52,20 @@ function verifySchemas(): void {
       target: { hwnd: "4242", pid: 101, name: "Save" },
     }).success,
     "a mutation rejects a partial control identity",
+  );
+  assert(
+    !LocalNativeParamsSchema.safeParse({
+      action: "invoke",
+      target: { ...retainedEditor, nativeHwnd: undefined },
+    }).success,
+    "a retained control identity requires its native HWND evidence",
+  );
+  assert(
+    LocalNativeParamsSchema.safeParse({
+      action: "invoke",
+      target: { ...retainedEditor, nativeHwnd: 0 },
+    }).success,
+    "provider controls without a native HWND retain zero explicitly",
   );
   assert(
     !LocalNativeParamsSchema.safeParse({
@@ -117,7 +132,7 @@ function verifyGeneratedSources(): void {
   assert.match(insert.code, /SandiEditor_InsertText/);
   assert.match(insert.code, /HWnd\("4242"\), 101/);
   assert.match(insert.code, /"TextEditor", 50004, "Text editor"/);
-  assert.match(insert.code, /"RichEditD2DPT", "0\/1"/);
+  assert.match(insert.code, /"RichEditD2DPT", "0\/1", 31337/);
 
   const setValue = generateNativeAutoIt({
     action: "set_value",
@@ -210,7 +225,7 @@ async function verifyStructuredResults(root: string): Promise<void> {
       '} else if (source.includes("No marker target")) {',
       "  process.exit(9);",
       '} else if (source.includes("SandiUIA_Inspect")) {',
-      '  console.log(\'SANDI_NATIVE_RESULT:{"status":"ok","action":"inspect","data":{"root":{"pid":101,"hwnd":4242},"elements":[{"identity":{"automationId":"TextEditor","controlType":50004,"name":"Text editor","className":"RichEditD2DPT","path":"0/1"},"actions":["GetValue","SetValue"]}]}}\');',
+      '  console.log(\'SANDI_NATIVE_RESULT:{"status":"ok","action":"inspect","data":{"root":{"pid":101,"hwnd":4242},"elements":[{"identity":{"nativeHwnd":31337,"automationId":"TextEditor","controlType":50004,"name":"Text editor","className":"RichEditD2DPT","path":"0/1"},"actions":["GetValue","SetValue"]}]}}\');',
       '} else if (source.includes("SandiUIA_Describe")) {',
       '  console.log(\'SANDI_NATIVE_RESULT:{"status":"ok","action":"describe","data":{"summary":"Edit control"}}\');',
       '} else if (source.includes("SandiUIA_SetValue")) {',
@@ -439,6 +454,8 @@ async function verifyStructuredResults(root: string): Promise<void> {
     reason: "refused",
   });
   assert.equal(actionReceipt(missing).observation.status, "stale");
+  assert.match(textContent(missing), /native error no_match$/);
+  assert.doesNotMatch(textContent(missing), /Missing target/);
 
   const unsupported = await runLocalNative(
     {
@@ -452,6 +469,7 @@ async function verifyStructuredResults(root: string): Promise<void> {
     status: "not-started",
     reason: "unsupported",
   });
+  assert.match(textContent(unsupported), /native error unsupported_pattern$/);
 
   const staleVisual = await runLocalNative(
     {

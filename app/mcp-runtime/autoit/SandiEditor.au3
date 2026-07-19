@@ -19,18 +19,20 @@ Global $__g_SandiEditorClipboardHandles[$__SANDI_EDITOR_MAX_CLIPBOARD_FORMATS]
 Global $__g_SandiEditorClipboardFormatCount = 0
 
 Func SandiEditor_InsertText($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sText, _
-        $sClassName = "", $sPath = "")
+        $sClassName = "", $sPath = "", $iNativeHwnd = -1)
     Local $hTimer = TimerInit()
     Local $sNormalized = __SandiEditor_NormalizeNewlines($sText)
     Local $iLength = StringLen($sNormalized)
     If $iLength < 1 Or $iLength > $__SANDI_EDITOR_MAX_CHARS Then _
             Return SetError($SANDI_EDITOR_ERROR_PAYLOAD, $iLength, False)
 
-    Local $oElement = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sClassName, $sPath)
+    Local $oElement = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+            $sClassName, $sPath, $iNativeHwnd)
     Local $iError = @error
     Local $iExtended = @extended
     If $iError Then Return SetError($iError, $iExtended, False)
-    If Not __SandiUIA_FocusedMatches($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sClassName, $sPath) Then _
+    If Not __SandiUIA_FocusedMatches($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+            $sClassName, $sPath, $iNativeHwnd) Then _
             Return SetError($SANDI_EDITOR_ERROR_TARGET, 0, False)
 
     Local $oValue = __SandiUIA_Pattern($oElement, $__SANDI_UIA_VALUE_PATTERN)
@@ -44,7 +46,8 @@ Func SandiEditor_InsertText($hWnd, $iPid, $sAutomationId, $iControlType, $sName,
             If $iHr <> 0 Then Return SetError($SANDI_UIA_ERROR_COM, $iHr, False)
             If TimerDiff($hTimer) > $__SANDI_EDITOR_MAX_DURATION_MS Then _
                     Return SetError($SANDI_EDITOR_ERROR_TIMEOUT, 0, False)
-            If Not __SandiUIA_FocusedMatches($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sClassName, $sPath) Then _
+            If Not __SandiUIA_FocusedMatches($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+                    $sClassName, $sPath, $iNativeHwnd) Then _
                     Return SetError($SANDI_EDITOR_ERROR_TARGET, 1, False)
             Return True
         EndIf
@@ -58,13 +61,15 @@ Func SandiEditor_InsertText($hWnd, $iPid, $sAutomationId, $iControlType, $sName,
         __SandiInput_Release()
         Return SetError($iError, $iExtended, False)
     EndIf
-    If Not __SandiInput_Valid($hWnd, $iPid, $sAutomationId, $iControlType, $sName, True, $sClassName, $sPath) Then
+    If Not __SandiInput_Valid($hWnd, $iPid, $sAutomationId, $iControlType, $sName, True, _
+            $sClassName, $sPath, $iNativeHwnd) Then
         __SandiInput_Release()
         Return SetError($SANDI_EDITOR_ERROR_TARGET, 2, False)
     EndIf
     Local $bSent = Send("^v")
     Sleep(50)
-    Local $bStillFocused = __SandiInput_Valid($hWnd, $iPid, $sAutomationId, $iControlType, $sName, True, $sClassName, $sPath)
+    Local $bStillFocused = __SandiInput_Valid($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+            True, $sClassName, $sPath, $iNativeHwnd)
     Local $bReleased = __SandiInput_Release()
     $iError = @error
     If Not $bReleased Then Return SetError($iError, 0, False)

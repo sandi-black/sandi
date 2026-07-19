@@ -81,6 +81,7 @@ const RawInspectionSchema = z
       z
         .object({
           identity: z.object({
+            nativeHwnd: z.number().int().min(0).max(4_294_967_295),
             automationId: z.string(),
             controlType: z.number().int().positive(),
             name: z.string(),
@@ -461,6 +462,7 @@ function mutationErrorOutcome(
     },
     raw,
     true,
+    code,
   );
 }
 
@@ -469,11 +471,20 @@ function mutationReceiptOutcome(
   nativeAutomation: unknown,
   raw: ToolCallOutcome,
   isError: boolean,
+  errorCode?: z.infer<typeof NativeErrorCodeSchema>,
 ): ToolCallOutcome {
   return {
     ok: true,
     ...(isError ? { isError: true } : {}),
-    content: [{ type: "text", text: formatActionReceipt(receipt) }],
+    content: [
+      {
+        type: "text",
+        text:
+          errorCode === undefined
+            ? formatActionReceipt(receipt)
+            : `${formatActionReceipt(receipt)}; native error ${errorCode}`,
+      },
+    ],
     structuredContent: {
       actionReceipt: receipt,
       nativeAutomation,
@@ -703,6 +714,7 @@ function nativeErrorOutcome(
 function targetArgs(target: {
   hwnd: string;
   pid: number;
+  nativeHwnd: number;
   automationId: string;
   controlType: number;
   name: string;
@@ -717,6 +729,7 @@ function targetArgs(target: {
     autoItString(target.name),
     autoItString(target.className),
     autoItString(target.path),
+    String(target.nativeHwnd),
   ].join(", ");
 }
 
@@ -724,6 +737,7 @@ function targetValueArgs(
   target: {
     hwnd: string;
     pid: number;
+    nativeHwnd: number;
     automationId: string;
     controlType: number;
     name: string;
@@ -741,6 +755,7 @@ function targetValueArgs(
     valueExpression,
     autoItString(target.className),
     autoItString(target.path),
+    String(target.nativeHwnd),
   ].join(", ");
 }
 

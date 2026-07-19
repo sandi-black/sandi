@@ -162,7 +162,8 @@ Func SandiUIA_Root($hWnd, $iPid)
     Return $oRoot
 EndFunc
 
-; Paths let later actions re-resolve inspector output without retaining cross-process COM objects.
+; Paths provide fast cross-process lookup. Retained properties recover the same
+; unique control when provider order changes.
 Func SandiUIA_Inspect($hWnd, $iPid, $sAutomationId = "", $iControlType = 0, $sName = "", _
         $sClassName = "", $bIncludeDocumentChildren = False, _
         $iMaxNodes = $__SANDI_UIA_INSPECT_DEFAULT_NODES, _
@@ -281,8 +282,9 @@ Func SandiUIA_Inspect($hWnd, $iPid, $sAutomationId = "", $iControlType = 0, $sNa
             '"elements":' & $sElements & "}"
 EndFunc
 
-Func SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sClassName = "", $sPath = "")
-    If $iControlType <= 0 Then _
+Func SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sClassName = "", _
+        $sPath = "", $iNativeHwnd = -1)
+    If $iControlType <= 0 Or $iNativeHwnd < -1 Or Int($iNativeHwnd) <> $iNativeHwnd Then _
             Return SetError($SANDI_UIA_ERROR_SELECTOR, 0, 0)
     Local $oRoot = SandiUIA_Root($hWnd, $iPid)
     Local $iRootError = @error
@@ -292,6 +294,27 @@ Func SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sC
     Local $iConditionError = @error
     Local $iConditionExtended = @extended
     If Not $bConditionReady Then Return SetError($iConditionError, $iConditionExtended, 0)
+
+    Local $bRetained = $sPath <> "" Or $iNativeHwnd >= 0
+    Local $oMatch = __SandiUIA_FindPass($oRoot, $iPid, $sAutomationId, $iControlType, $sName, _
+            $sClassName, $sPath, $iNativeHwnd, $bRetained, $sPath = "")
+    Local $iFindError = @error
+    Local $iFindExtended = @extended
+    If Not $iFindError Then Return $oMatch
+    If $iFindError <> $SANDI_UIA_ERROR_NOT_FOUND Or $sPath = "" Then _
+            Return SetError($iFindError, $iFindExtended, 0)
+
+    $oMatch = __SandiUIA_FindPass($oRoot, $iPid, $sAutomationId, $iControlType, $sName, _
+            $sClassName, "", $iNativeHwnd, True)
+    $iFindError = @error
+    $iFindExtended = @extended
+    Return SetError($iFindError, $iFindExtended, $oMatch)
+EndFunc
+
+; Resolve the retained path first. A pathless retry uses the same bounded walk
+; and requires one exact identity match.
+Func __SandiUIA_FindPass($oRoot, $iPid, $sAutomationId, $iControlType, $sName, _
+        $sClassName, $sPath, $iNativeHwnd, $bRetained, $bReportNotFound = True)
 
     Local $aQueue[$__SANDI_UIA_MAX_NODES]
     Local $aDepth[$__SANDI_UIA_MAX_NODES]
@@ -341,7 +364,8 @@ Func SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sC
                 $iCandidateCount += 1
             EndIf
 
-            If __SandiUIA_Matches($oElement, $sAutomationId, $iControlType, $sName, $sClassName, $sPath, $sElementPath) Then
+            If __SandiUIA_Matches($oElement, $sAutomationId, $iControlType, $sName, _
+                    $sClassName, $sPath, $sElementPath, $iNativeHwnd, $bRetained) Then
                 $iMatchCount += 1
                 If $iMatchCount = 1 Then $oMatch = $oElement
                 If $iMatchCount > 1 Then
@@ -353,7 +377,7 @@ Func SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sC
                 EndIf
             EndIf
 
-            If ($vElementType <> $SANDI_UIA_DOCUMENT Or $sPath <> "") And _
+            If ($vElementType <> $SANDI_UIA_DOCUMENT Or $bRetained) And _
                     __SandiUIA_PathCanContain($sPath, $sElementPath) Then
                 If $iTail < $__SANDI_UIA_MAX_NODES Then
                     $aQueue[$iTail] = $oElement
@@ -374,43 +398,53 @@ Func SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sC
     EndIf
     If $iMatchCount = 1 Then Return $oMatch
 
-    ConsoleWriteError("SandiUIA: no element matched " & _
-            __SandiUIA_SelectorText($sAutomationId, $iControlType, $sName) & _
-            "; candidates=" & __SandiUIA_StringCandidates($aCandidates, $iCandidateCount) & @CRLF)
+    If $bReportNotFound Then ConsoleWriteError("SandiUIA: no element matched " & _
+                __SandiUIA_SelectorText($sAutomationId, $iControlType, $sName) & _
+                "; candidates=" & __SandiUIA_StringCandidates($aCandidates, $iCandidateCount) & @CRLF)
     Return SetError($SANDI_UIA_ERROR_NOT_FOUND, 0, 0)
 EndFunc
 
-Func SandiUIA_Describe($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sClassName = "", $sPath = "")
-    Local $oElement = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sClassName, $sPath)
+Func SandiUIA_Describe($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sClassName = "", _
+        $sPath = "", $iNativeHwnd = -1)
+    Local $oElement = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+            $sClassName, $sPath, $iNativeHwnd)
     Local $iError = @error
     Local $iExtended = @extended
     If $iError Then Return SetError($iError, $iExtended, "")
     Return __SandiUIA_ElementText($oElement)
 EndFunc
 
-Func SandiUIA_Invoke($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sClassName = "", $sPath = "")
-    Local $bResult = __SandiUIA_Mutate($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $__SANDI_UIA_INVOKE_PATTERN, $sClassName, $sPath)
+Func SandiUIA_Invoke($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sClassName = "", _
+        $sPath = "", $iNativeHwnd = -1)
+    Local $bResult = __SandiUIA_Mutate($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+            $__SANDI_UIA_INVOKE_PATTERN, $sClassName, $sPath, $iNativeHwnd)
     Local $iError = @error
     Local $iExtended = @extended
     Return SetError($iError, $iExtended, $bResult)
 EndFunc
 
-Func SandiUIA_Toggle($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sClassName = "", $sPath = "")
-    Local $bResult = __SandiUIA_Mutate($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $__SANDI_UIA_TOGGLE_PATTERN, $sClassName, $sPath)
+Func SandiUIA_Toggle($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sClassName = "", _
+        $sPath = "", $iNativeHwnd = -1)
+    Local $bResult = __SandiUIA_Mutate($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+            $__SANDI_UIA_TOGGLE_PATTERN, $sClassName, $sPath, $iNativeHwnd)
     Local $iError = @error
     Local $iExtended = @extended
     Return SetError($iError, $iExtended, $bResult)
 EndFunc
 
-Func SandiUIA_Select($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sClassName = "", $sPath = "")
-    Local $bResult = __SandiUIA_Mutate($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $__SANDI_UIA_SELECTION_ITEM_PATTERN, $sClassName, $sPath)
+Func SandiUIA_Select($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sClassName = "", _
+        $sPath = "", $iNativeHwnd = -1)
+    Local $bResult = __SandiUIA_Mutate($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+            $__SANDI_UIA_SELECTION_ITEM_PATTERN, $sClassName, $sPath, $iNativeHwnd)
     Local $iError = @error
     Local $iExtended = @extended
     Return SetError($iError, $iExtended, $bResult)
 EndFunc
 
-Func SandiUIA_GetValue($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sClassName = "", $sPath = "")
-    Local $oElement = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sClassName, $sPath)
+Func SandiUIA_GetValue($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "", $sClassName = "", _
+        $sPath = "", $iNativeHwnd = -1)
+    Local $oElement = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+            $sClassName, $sPath, $iNativeHwnd)
     Local $iError = @error
     Local $iExtended = @extended
     If $iError Then Return SetError($iError, $iExtended, "")
@@ -424,8 +458,10 @@ Func SandiUIA_GetValue($hWnd, $iPid, $sAutomationId, $iControlType, $sName = "",
     Return $sValue
 EndFunc
 
-Func SandiUIA_SetValue($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sValue, $sClassName = "", $sPath = "")
-    Local $oElement = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sClassName, $sPath)
+Func SandiUIA_SetValue($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sValue, _
+        $sClassName = "", $sPath = "", $iNativeHwnd = -1)
+    Local $oElement = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+            $sClassName, $sPath, $iNativeHwnd)
     Local $iError = @error
     Local $iExtended = @extended
     If $iError Then Return SetError($iError, $iExtended, False)
@@ -562,8 +598,9 @@ Func SandiInput_Wheel($hWnd, $iPid, $sDirection, $iSteps)
 EndFunc
 
 Func __SandiUIA_Mutate($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $iPatternId, _
-        $sClassName = "", $sPath = "")
-    Local $oElement = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sClassName, $sPath)
+        $sClassName = "", $sPath = "", $iNativeHwnd = -1)
+    Local $oElement = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+            $sClassName, $sPath, $iNativeHwnd)
     Local $iError = @error
     Local $iExtended = @extended
     If $iError Then Return SetError($iError, $iExtended, False)
@@ -614,17 +651,22 @@ Func __SandiUIA_EnsureTrueCondition()
 EndFunc
 
 Func __SandiUIA_Matches($oElement, $sAutomationId, $iControlType, $sName, _
-        $sClassName = "", $sPath = "", $sElementPath = "")
+        $sClassName = "", $sPath = "", $sElementPath = "", $iNativeHwnd = -1, _
+        $bRetained = False)
     Local $vValue = 0
     If Not __SandiUIA_Property($oElement, $__SANDI_UIA_CONTROL_TYPE, $vValue) Or $vValue <> $iControlType Then Return False
-    If $sAutomationId <> "" Then
+    If $bRetained Or $sAutomationId <> "" Then
         If Not __SandiUIA_Property($oElement, $__SANDI_UIA_AUTOMATION_ID, $vValue) Or $vValue <> $sAutomationId Then Return False
     EndIf
-    If $sName <> "" Then
+    If $bRetained Or $sName <> "" Then
         If Not __SandiUIA_Property($oElement, $__SANDI_UIA_NAME, $vValue) Or $vValue <> $sName Then Return False
     EndIf
-    If $sClassName <> "" Then
+    If $bRetained Or $sClassName <> "" Then
         If Not __SandiUIA_Property($oElement, $__SANDI_UIA_CLASS_NAME, $vValue) Or $vValue <> $sClassName Then Return False
+    EndIf
+    If $iNativeHwnd >= 0 Then
+        If Not __SandiUIA_Property($oElement, $__SANDI_UIA_NATIVE_WINDOW_HANDLE, $vValue) Or _
+                Number($vValue) <> $iNativeHwnd Then Return False
     EndIf
     If $sPath <> "" And $sPath <> $sElementPath Then Return False
     Return True
@@ -695,7 +737,8 @@ Func __SandiUIA_ElementJson($oElement, $sPath)
     Local $sActions = ""
     __SandiUIA_Capabilities($oElement, $sPatterns, $sActions)
     Return "{" & _
-            '"identity":{"automationId":' & __SandiUIA_JsonString($vAutomationId) & _
+            '"identity":{"nativeHwnd":' & Number($vHWnd) & _
+            ',"automationId":' & __SandiUIA_JsonString($vAutomationId) & _
             ',"controlType":' & $vControlType & ',"name":' & __SandiUIA_JsonString($vName) & _
             ',"className":' & __SandiUIA_JsonString($vClassName) & _
             ',"path":' & __SandiUIA_JsonString($sPath) & "}," & _
@@ -905,8 +948,9 @@ Func __SandiUIA_Clean($vValue)
 EndFunc
 
 Func __SandiUIA_FocusedMatches($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
-        $sClassName = "", $sPath = "")
-    Local $oExpected = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sClassName, $sPath)
+        $sClassName = "", $sPath = "", $iNativeHwnd = -1)
+    Local $oExpected = SandiUIA_Find($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+            $sClassName, $sPath, $iNativeHwnd)
     If @error Then Return False
     Local $pFocused = 0
     Local $iHr = $__g_SandiUIA.GetFocusedElement($pFocused)
@@ -939,11 +983,12 @@ Func __SandiUIA_DestroySafeArray($pSafeArray)
 EndFunc
 
 Func __SandiInput_Begin($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $bRequireFocus, _
-        $sClassName = "", $sPath = "")
+        $sClassName = "", $sPath = "", $iNativeHwnd = -1)
     If $__g_SandiInputBlocked Then Return SetError($SANDI_INPUT_ERROR_BUSY, 0, False)
     If Not BlockInput($BI_DISABLE) Then Return SetError($SANDI_INPUT_ERROR_BLOCK, 0, False)
     $__g_SandiInputBlocked = True
-    If Not __SandiInput_Valid($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $bRequireFocus, $sClassName, $sPath) Then
+    If Not __SandiInput_Valid($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+            $bRequireFocus, $sClassName, $sPath, $iNativeHwnd) Then
         __SandiInput_Release()
         Return SetError($SANDI_INPUT_ERROR_TARGET, 0, False)
     EndIf
@@ -951,12 +996,13 @@ Func __SandiInput_Begin($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $bR
 EndFunc
 
 Func __SandiInput_Valid($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $bRequireFocus, _
-        $sClassName = "", $sPath = "")
+        $sClassName = "", $sPath = "", $iNativeHwnd = -1)
     $hWnd = HWnd($hWnd)
     If $hWnd = 0 Or Not WinExists($hWnd) Or WinGetProcess($hWnd) <> $iPid Then Return False
     If WinGetHandle("[ACTIVE]") <> $hWnd Then Return False
     If Not $bRequireFocus Then Return True
-    Return __SandiUIA_FocusedMatches($hWnd, $iPid, $sAutomationId, $iControlType, $sName, $sClassName, $sPath)
+    Return __SandiUIA_FocusedMatches($hWnd, $iPid, $sAutomationId, $iControlType, $sName, _
+            $sClassName, $sPath, $iNativeHwnd)
 EndFunc
 
 Func __SandiInput_PointInWindow($hWnd, $iX, $iY)

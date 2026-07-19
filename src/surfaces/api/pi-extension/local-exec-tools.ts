@@ -45,6 +45,7 @@ const nativeWindowIdentity = Type.Object({
 const nativeControlIdentity = Type.Object({
   hwnd: Type.String({ pattern: "^[1-9][0-9]*$" }),
   pid: Type.Integer({ minimum: 1 }),
+  nativeHwnd: Type.Integer({ minimum: 0, maximum: 4_294_967_295 }),
   automationId: Type.String({ maxLength: 1_024 }),
   controlType: Type.Integer({ minimum: 1 }),
   name: Type.String({ maxLength: 4_096 }),

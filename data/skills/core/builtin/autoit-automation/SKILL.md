@@ -98,12 +98,12 @@ ConsoleWrite($sInspection & @CRLF)
 
 Each element contains `identity`, `automationId`, `controlType`,
 `controlTypeName`, `name`, `className`, `nativeHwnd`, `patterns`, and `actions`.
-The identity has `automationId`, `controlType`, `name`, `className`, and `path`;
-pass those fields in that order to `SandiUIA_Describe`, `SandiUIA_GetValue`,
-`SandiUIA_Invoke`, `SandiUIA_Toggle`, or `SandiUIA_Select`. `SandiUIA_SetValue`
-and `SandiEditor_InsertText` take the new value after `name`, followed by
-`className` and `path`. The path is root-relative control-view identity, so do
-not construct or edit it.
+The identity has `nativeHwnd`, `automationId`, `controlType`, `name`,
+`className`, and `path`. Pass the semantic fields to the UIA facade in the
+existing order, followed by `nativeHwnd` after `path`. `SandiUIA_SetValue` and
+`SandiEditor_InsertText` take the new value after `name`. Pass `className`,
+`path`, and `nativeHwnd` after the value. The path is root-relative
+control-view identity, so do not construct or edit it.
 
 The JSON also reports `visited`, `matched`, `returned`, `limits`, `truncated`,
 per-limit `truncation`, and `documentSubtreesSkipped`. A document control such
@@ -111,10 +111,14 @@ as Notepad's `Text editor` is returned, but its descendants are excluded by
 default. Pass `True` as `includeDocumentChildren` only for a native document
 whose subtree is needed. Browser DOM work stays in Chrome DevTools.
 
-The other bundled facade functions require a positive control type. An empty
-AutomationId, name, or class remains a wildcard, but the complete identity from
-the inspector resolves one path. Calls without a path retain zero-match and
-ambiguity failures.
+The other bundled facade functions require a positive control type. They try a
+retained path first. If provider order changed, they search the same HWND/PID
+subtree within the hard node bound and require one exact match across the
+retained native HWND, AutomationId, control type, name, and class. A nonzero
+native HWND is required to match but is not sufficient by itself. Zero is an
+exact retained value for controls without a native HWND. Calls without a path
+remain selectors: empty AutomationId, name, or class values are wildcards, and
+zero or multiple matches fail.
 
 This example retains the target, changes a value without global input, waits on
 the real value, and verifies it:
@@ -162,7 +166,7 @@ clipboard format. `TextPattern` is read-only and is never used to mutate text.
 Local $sDraft = "Ada Lovelace" & @LF & "Grace Hopper"
 ; These identity fields are copied verbatim from one SandiUIA_Inspect element.
 If Not SandiEditor_InsertText($hWnd, $iPid, "composer", $SANDI_UIA_CUSTOM, _
-        "Message", $sDraft, "", "0/1/2") Then
+        "Message", $sDraft, "", "0/1/2", 424242) Then
     ConsoleWriteError("editor-insert-refused; error=" & @error & "; extended=" & @extended & @CRLF)
     Exit 15
 EndIf

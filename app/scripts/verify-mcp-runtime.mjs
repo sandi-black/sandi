@@ -27,6 +27,7 @@ const userRoot = mkdtempSync(join(tmpdir(), "sandi-runtime-user-"));
 try {
   await verifyManifest(bundle, lock);
   verifyAutoIt(userRoot);
+  await (await import("./verify-uia.mjs")).verify(bundle, userRoot);
 
   const chromePackage = JSON.parse(
     readFileSync(

@@ -115,6 +115,7 @@ const NativeWindowIdentitySchema = z.object({
 });
 
 const NativeControlIdentitySchema = NativeWindowIdentitySchema.extend({
+  nativeHwnd: z.number().int().min(0).max(4_294_967_295),
   automationId: z.string().max(1_024),
   controlType: z.number().int().positive(),
   name: z.string().max(4_096),

@@ -29,7 +29,8 @@ research does not need this server.
 
 Use `local_native` for routine native control work. Its `inspect` action takes
 one retained HWND/PID and returns controls whose identities include that window,
-AutomationId, control type, accessible name, class, and root-relative path.
+native HWND evidence, AutomationId, control type, accessible name, class, and
+root-relative path.
 Pass the returned identity unchanged to `describe`, `get_value`, `set_value`,
 `insert_text`, `invoke`, `toggle`, `select`, or `wait_value`. `wait_window`
 checks one retained HWND/PID for existence or closure. `visual_click` requires
@@ -44,6 +45,10 @@ are removed after checking and execution; cleanup failure is reported instead
 of success. `set_value` reads the control back before it reports verified
 success. Other mutations report `observe_next`; take another inspection, value
 read, or screenshot to verify their effect.
+
+Failed typed mutations include the safe native error code in their visible
+receipt summary. The receipt does not include control names, values, candidate
+text, or document content.
 
 Use `local_autoit_run` for application research and unusual multi-step flows
 that the typed action union cannot express. It remains the expert escape hatch
@@ -81,17 +86,20 @@ visited/matched/returned counts, and separate node and result truncation flags.
 
 Each inspected element includes AutomationId, numeric and named control type,
 accessible name, class, native HWND when present, supported patterns/actions,
-and an identity with a root-relative control-view path. Describe, invoke,
-toggle, select, get-value, and set-value accept those identity fields and
-resolve the element again before acting. Calls without an inspector path keep
-the existing zero-match and ambiguity failures. A stale/recycled HWND, PID
-mismatch, changed path, or changed identity fails instead of selecting a nearby
-element.
+and an identity with a root-relative control-view path. The path is tried first.
+If provider order changed, the facade searches the same HWND/PID subtree within
+the 256-node bound and requires exactly one match for every retained property.
+A nonzero native HWND must match but is never trusted without the semantic
+properties. Zero is retained explicitly for provider controls without a native
+HWND. A recycled root, PID mismatch, changed identity, ambiguous match, or
+truncated search fails before mutation. Calls without an inspector path remain
+selectors, so empty properties are wildcards and zero or multiple matches fail.
 
 `SandiEditor_InsertText(hwnd, pid, automationId, controlType, name, text,
-className="", path="")` is the no-submit editor facade. It requires the exact
-focused identity, normalizes CR/LF variants to CRLF, caps the normalized payload
-at 65,536 characters, and uses one five-second operation budget. A writable
+className="", path="", nativeHwnd=-1)` is the no-submit editor facade. It
+requires the exact focused identity, normalizes CR/LF variants to CRLF, caps the
+normalized payload at 65,536 characters, and uses one five-second operation
+budget. A writable
 `ValuePattern` receives one `SetValue`; otherwise only a focused Edit, Document,
 or Custom control with `TextPattern` may take the single paste path. UIA
 `TextPattern` is read-only, so it proves text capability but never performs the
@@ -326,12 +334,15 @@ elevation, execution phase, and syntax-check metadata.
 
 ## Verification
 
-The normal Windows runtime gate is non-elevated and launches Notepad plus a
-separate AutoIt GUI fixture. It verifies discovery of Notepad's `Text editor`,
-default and opt-in document traversal, valid deterministic JSON, filters, bounds
-and truncation, identity reuse across every facade action, background UIA value
-and invoke behavior, toggle, selection, duplicate-name ambiguity, stale selector
-refusal, wrong PID, stale HWND, and bundled include resolution.
+The normal Windows runtime gate is non-elevated. It verifies the bundled include
+and launches an AutoIt GUI fixture for stable lookup, provider path churn,
+zero-native-HWND fallback, native-HWND mismatch, semantic mismatch, ambiguity,
+wrong PID, stale HWND, and verified value mutation. A Notepad smoke discovers
+`Text editor` and uses separate helper processes for inspect, get, set,
+verification, and restoration. It skips when Notepad is already running so the
+gate never touches a user-owned session. `npm run verify:native-automation`
+covers generated sources, typed result parsing, action receipts, and every typed
+facade action.
 
 The same gate launches a custom-rendered window for the visual fallback. It
 checks 96 and synthetic mixed-DPI conversion, stale movement and resizing, DPI

@@ -146,6 +146,7 @@ function verifyDeviceProtocol(): void {
         target: {
           hwnd: "4242",
           pid: 101,
+          nativeHwnd: 31337,
           automationId: "SaveButton",
           controlType: 50000,
           name: "Save",

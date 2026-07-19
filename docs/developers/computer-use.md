@@ -334,21 +334,13 @@ elevation, execution phase, and syntax-check metadata.
 
 ## Verification
 
-The normal Windows runtime gate is non-elevated. It verifies the bundled include
-and launches an AutoIt GUI fixture for stable lookup, provider path churn,
-zero-native-HWND fallback, native-HWND mismatch, semantic mismatch, ambiguity,
-wrong PID, stale HWND, and verified value mutation. A Notepad smoke discovers
-`Text editor` and uses separate helper processes for inspect, get, set,
-verification, and restoration. It skips when Notepad is already running so the
-gate never touches a user-owned session. `npm run verify:native-automation`
-covers generated sources, typed result parsing, action receipts, and every typed
-facade action.
-
-The same gate launches a custom-rendered window for the visual fallback. It
-checks 96 and synthetic mixed-DPI conversion, stale movement and resizing, DPI
-change, focus loss, HWND/PID recycling, bounds, screenshot scale, one guarded
-click, cancellation cleanup, and a fresh screenshot showing the rendered state
-change.
+The normal Windows runtime gate is non-elevated. It verifies the bundled AutoIt
+include and facade error behavior without launching an interactive window.
+`npm run verify:native-automation` covers generated sources, typed result
+parsing, action receipts, and every typed facade action. Synthetic desktop-state
+checks cover DPI conversion, stale observations, focus loss, HWND/PID recycling,
+bounds, screenshot scale, and cancellation without interacting with the active
+desktop session.
 
 ```powershell
 npm run prepare:mcp-runtime -w app

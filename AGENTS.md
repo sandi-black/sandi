@@ -33,6 +33,8 @@ Pi extension files are loaded directly by the Pi CLI, outside the app's `tsx` ru
 
 There is no dedicated test suite checked in yet. Treat `npm run check` as the verification gate. When adding tests, use `*.test.ts`, place them near covered code or in a clear test directory, and add the runner command to `package.json`.
 
+Tests must not open visible windows, move the pointer, type, click, or take foreground focus. Prefer no test to one that can steal focus from the active desktop session.
+
 ## Commit & Pull Request Guidelines
 
 Recent commits use short, imperative subjects such as `Add Sandi reminder tools`. Capitalize the first word, keep the subject focused, and avoid bundling unrelated changes.

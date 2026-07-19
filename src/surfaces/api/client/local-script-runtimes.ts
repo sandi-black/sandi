@@ -125,7 +125,9 @@ async function runAutoItSource(
     content,
     path: join(dirname(artifact), name),
   }));
-  let outcome: ToolCallOutcome;
+  let outcome: ToolCallOutcome = refused(
+    "generated AutoIt execution did not produce an outcome",
+  );
   try {
     for (const companion of companions) {
       await writeFile(companion.path, companion.content, "utf8");
@@ -158,9 +160,21 @@ async function runAutoItSource(
       }
     }
     if (cleanupFailures.length > 0) {
-      outcome = refused(
-        `generated AutoIt companion cleanup failed: ${cleanupFailures.join(", ")}`,
-      );
+      outcome = {
+        ...outcome,
+        ok: true,
+        isError: true,
+        structuredContent: {
+          ...(outcome.structuredContent ?? {}),
+          generatedCompanionCleanup: {
+            status: "failed",
+            files: cleanupFailures,
+            ...(!outcome.ok
+              ? { priorRefusal: outcome.error ?? "unknown refusal" }
+              : {}),
+          },
+        },
+      };
     }
   }
   return outcome;

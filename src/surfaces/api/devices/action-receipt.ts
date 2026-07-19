@@ -3,6 +3,7 @@ import { z } from "zod/v4";
 export const ACTION_RECEIPT_VERSION = 1;
 export const ACTION_RECEIPT_STDOUT_PREFIX = "SANDI_ACTION_RECEIPT:";
 export const MAX_ACTION_RECEIPT_JSON_CHARS = 8_192;
+export const MAX_NATIVE_CONTROL_PATH_CHARS = 2_048;
 
 const ActionTokenSchema = z
   .string()
@@ -20,7 +21,7 @@ const TargetSchema = z
         path: z
           .string()
           .regex(/^[0-9]+(?:\/[0-9]+)*$/)
-          .max(256),
+          .max(MAX_NATIVE_CONTROL_PATH_CHARS),
       })
       .strict()
       .optional(),

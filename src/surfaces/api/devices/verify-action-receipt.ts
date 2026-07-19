@@ -7,6 +7,7 @@ import {
   extractActionReceipt,
   formatActionReceipt,
   MAX_ACTION_RECEIPT_JSON_CHARS,
+  MAX_NATIVE_CONTROL_PATH_CHARS,
   parseActionReceipt,
 } from "@/surfaces/api/devices/action-receipt";
 
@@ -79,6 +80,33 @@ assert.equal(
   }).success,
   false,
   "the receipt root rejects raw values",
+);
+const longestRetainedPath = `10/${Array.from(
+  { length: (MAX_NATIVE_CONTROL_PATH_CHARS - 2) / 2 },
+  () => "0",
+).join("/")}`;
+assert.equal(longestRetainedPath.length, MAX_NATIVE_CONTROL_PATH_CHARS);
+assert.equal(
+  ActionReceiptSchema.safeParse({
+    ...succeeded,
+    target: {
+      ...succeeded.target,
+      control: { kind: "uia-path", path: longestRetainedPath },
+    },
+  }).success,
+  true,
+  "the receipt retains the longest valid native control path",
+);
+assert.equal(
+  ActionReceiptSchema.safeParse({
+    ...succeeded,
+    target: {
+      ...succeeded.target,
+      control: { kind: "uia-path", path: `${longestRetainedPath}/0` },
+    },
+  }).success,
+  false,
+  "the receipt and native request share the control path bound",
 );
 const callerMustObserve = buildActionReceipt({
   ...succeeded,

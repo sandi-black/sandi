@@ -1,5 +1,6 @@
 import { z } from "zod/v4";
 import { VisualObservationSchema } from "@/surfaces/api/client/visual-observation";
+import { MAX_NATIVE_CONTROL_PATH_CHARS } from "@/surfaces/api/devices/action-receipt";
 import {
   DesktopFileAttachmentSchema,
   DesktopFileTransferParamsSchema,
@@ -121,7 +122,7 @@ const NativeControlIdentitySchema = NativeWindowIdentitySchema.extend({
   path: z
     .string()
     .regex(/^\d+(?:\/\d+)*$/)
-    .max(2_048),
+    .max(MAX_NATIVE_CONTROL_PATH_CHARS),
 });
 
 const NativeInspectFiltersSchema = z.object({

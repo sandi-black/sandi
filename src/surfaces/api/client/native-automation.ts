@@ -5,6 +5,11 @@ import {
   isFreshVisualObservation,
   MAX_VISUAL_OBSERVATION_AGE_MS,
 } from "@/surfaces/api/client/visual-observation";
+import {
+  type ActionReceipt,
+  buildActionReceipt,
+  formatActionReceipt,
+} from "@/surfaces/api/devices/action-receipt";
 import type {
   LocalNativeParams,
   ToolCallOutcome,
@@ -12,6 +17,33 @@ import type {
 
 const RESULT_PREFIX = "SANDI_NATIVE_RESULT:";
 const PAYLOAD_FILE = "payload.txt";
+
+type MutationAction =
+  | "set_value"
+  | "insert_text"
+  | "invoke"
+  | "toggle"
+  | "select"
+  | "visual_click";
+type MutationParams = Extract<LocalNativeParams, { action: MutationAction }>;
+
+const RECEIPT_ACTIONS: Readonly<Record<MutationAction, string>> = {
+  set_value: "set-value",
+  insert_text: "insert-text",
+  invoke: "invoke",
+  toggle: "toggle",
+  select: "select",
+  visual_click: "visual-click",
+};
+
+const RECEIPT_METHODS: Readonly<Record<MutationAction, string>> = {
+  set_value: "uia-value-pattern",
+  insert_text: "uia-editor-insert",
+  invoke: "uia-invoke-pattern",
+  toggle: "uia-toggle-pattern",
+  select: "uia-selection-item-pattern",
+  visual_click: "guarded-visual-click",
+};
 
 const NativeErrorCodeSchema = z.enum([
   "no_match",
@@ -109,10 +141,14 @@ export async function runLocalNative(
     params.action === "visual_click" &&
     !isFreshVisualObservation(params.visualObservation)
   ) {
-    return nativeErrorOutcome(params.action, "stale_target", {
-      ok: true,
-      content: [],
-    });
+    return mutationErrorOutcome(
+      params,
+      "stale_target",
+      { ok: true, content: [] },
+      0,
+      0,
+      "stale",
+    );
   }
   const generated = generateNativeAutoIt(params);
   const raw = await runGeneratedAutoIt(
@@ -267,47 +303,76 @@ function nativeResultOutcome(
   raw: ToolCallOutcome,
 ): ToolCallOutcome {
   if (!raw.ok && raw.error === "cancelled") {
-    return nativeErrorOutcome(params.action, "cancelled", raw);
+    return isMutationParams(params)
+      ? mutationErrorOutcome(params, "cancelled", raw)
+      : nativeErrorOutcome(params.action, "cancelled", raw);
   }
-  if (
-    !raw.ok &&
-    raw.error?.startsWith("generated AutoIt companion cleanup failed")
-  ) {
-    return nativeErrorOutcome(params.action, "cleanup_failure", raw);
+  if (!raw.ok) {
+    return raw;
+  }
+  if (cleanupPriorRefusal(raw) === "cancelled" && isMutationParams(params)) {
+    return mutationErrorOutcome(params, "cancelled", raw);
   }
   if (raw.structuredContent?.["timedOut"] === true) {
-    return nativeErrorOutcome(params.action, "timeout", raw);
+    return isMutationParams(params)
+      ? mutationErrorOutcome(params, "timeout", raw)
+      : nativeErrorOutcome(params.action, "timeout", raw);
   }
   const marker = textContent(raw)
     .split(/\r?\n/)
     .find((line) => line.startsWith(RESULT_PREFIX));
   if (marker === undefined) {
-    return nativeErrorOutcome(params.action, "execution_failure", raw);
+    return isMutationParams(params)
+      ? mutationErrorOutcome(
+          params,
+          hasCleanupFailure(raw) ? "cleanup_failure" : "execution_failure",
+          raw,
+        )
+      : nativeErrorOutcome(params.action, "execution_failure", raw);
   }
   let decoded: unknown;
   try {
     decoded = JSON.parse(marker.slice(RESULT_PREFIX.length));
   } catch {
-    return nativeErrorOutcome(params.action, "execution_failure", raw);
+    return isMutationParams(params)
+      ? mutationErrorOutcome(params, "execution_failure", raw)
+      : nativeErrorOutcome(params.action, "execution_failure", raw);
   }
   const parsed = NativeScriptResultSchema.safeParse(decoded);
   if (!parsed.success || parsed.data.action !== params.action) {
-    return nativeErrorOutcome(params.action, "execution_failure", raw);
+    return isMutationParams(params)
+      ? mutationErrorOutcome(params, "execution_failure", raw)
+      : nativeErrorOutcome(params.action, "execution_failure", raw);
   }
   if (parsed.data.status === "error") {
-    return nativeErrorOutcome(
-      params.action,
-      parsed.data.error.code,
-      raw,
-      parsed.data.error.facadeCode,
-      parsed.data.error.extended,
-    );
+    return isMutationParams(params)
+      ? mutationErrorOutcome(
+          params,
+          parsed.data.error.code,
+          raw,
+          parsed.data.error.facadeCode,
+          parsed.data.error.extended,
+          undefined,
+          true,
+        )
+      : nativeErrorOutcome(
+          params.action,
+          parsed.data.error.code,
+          raw,
+          parsed.data.error.facadeCode,
+          parsed.data.error.extended,
+        );
   }
   const normalized = normalizeNativeData(params, parsed.data.data);
   if (!normalized.success) {
-    return nativeErrorOutcome(params.action, "execution_failure", raw);
+    return isMutationParams(params)
+      ? mutationErrorOutcome(params, "execution_failure", raw)
+      : nativeErrorOutcome(params.action, "execution_failure", raw);
   }
   const data = normalized.data;
+  if (isMutationParams(params)) {
+    return mutationSuccessOutcome(params, data, raw);
+  }
   return {
     ok: true,
     content: [
@@ -325,6 +390,256 @@ function nativeResultOutcome(
       },
     },
   };
+}
+
+function mutationSuccessOutcome(
+  params: MutationParams,
+  data: unknown,
+  raw: ToolCallOutcome,
+): ToolCallOutcome {
+  const observedAt = new Date().toISOString();
+  const receipt = buildActionReceipt({
+    action: RECEIPT_ACTIONS[params.action],
+    method: RECEIPT_METHODS[params.action],
+    target: receiptTarget(params),
+    observation: receiptObservation(params),
+    execution: { status: "completed", result: { status: "succeeded" } },
+    verification:
+      params.action === "set_value"
+        ? { status: "succeeded", basis: "post-action", observedAt }
+        : {
+            status: "not-performed",
+            reason: "caller-observation-required",
+          },
+    cleanup: receiptCleanup(params.action, raw),
+  });
+  return mutationReceiptOutcome(
+    receipt,
+    {
+      version: 1,
+      action: params.action,
+      status: "ok",
+      data,
+    },
+    raw,
+    hasCleanupFailure(raw),
+  );
+}
+
+function mutationErrorOutcome(
+  params: MutationParams,
+  code: z.infer<typeof NativeErrorCodeSchema>,
+  raw: ToolCallOutcome,
+  facadeCode = 0,
+  extended = 0,
+  observationStatus?: "fresh" | "stale" | "unavailable",
+  markerEvidence = false,
+): ToolCallOutcome {
+  const receipt = buildActionReceipt({
+    action: RECEIPT_ACTIONS[params.action],
+    method: RECEIPT_METHODS[params.action],
+    target: receiptTarget(params),
+    observation: receiptObservation(
+      params,
+      observationStatus ?? receiptErrorObservation(code, markerEvidence),
+    ),
+    ...receiptFailureState(code, raw),
+    cleanup: receiptCleanup(params.action, raw, code),
+  });
+  return mutationReceiptOutcome(
+    receipt,
+    {
+      version: 1,
+      action: params.action,
+      status: "error",
+      error: {
+        code,
+        message: ERROR_MESSAGES[code],
+        facadeCode,
+        extended,
+      },
+    },
+    raw,
+    true,
+  );
+}
+
+function mutationReceiptOutcome(
+  receipt: ActionReceipt,
+  nativeAutomation: unknown,
+  raw: ToolCallOutcome,
+  isError: boolean,
+): ToolCallOutcome {
+  return {
+    ok: true,
+    ...(isError ? { isError: true } : {}),
+    content: [{ type: "text", text: formatActionReceipt(receipt) }],
+    structuredContent: {
+      actionReceipt: receipt,
+      nativeAutomation,
+      runtime: raw.structuredContent ?? {},
+    },
+  };
+}
+
+function receiptFailureState(
+  code: z.infer<typeof NativeErrorCodeSchema>,
+  raw: ToolCallOutcome,
+): Pick<ActionReceipt, "execution" | "verification"> {
+  switch (code) {
+    case "no_match":
+      return {
+        execution: { status: "not-started", reason: "refused" },
+        verification: { status: "not-performed", reason: "not-started" },
+      };
+    case "ambiguity":
+      return {
+        execution: { status: "not-started", reason: "ambiguous-target" },
+        verification: { status: "not-performed", reason: "not-started" },
+      };
+    case "stale_target":
+      return {
+        execution: { status: "not-started", reason: "stale-target" },
+        verification: { status: "not-performed", reason: "not-started" },
+      };
+    case "unsupported_pattern":
+      return {
+        execution: { status: "not-started", reason: "unsupported" },
+        verification: { status: "not-performed", reason: "not-started" },
+      };
+    case "verification_failure":
+      return {
+        execution: {
+          status: "completed",
+          result: { status: "succeeded" },
+        },
+        verification: { status: "failed", reason: "state-mismatch" },
+      };
+    case "cancelled":
+      return {
+        execution: { status: "unknown", reason: "cancelled", next: "observe" },
+        verification: { status: "not-performed", reason: "interrupted" },
+      };
+    case "timeout":
+      return {
+        execution: { status: "unknown", reason: "timed-out", next: "observe" },
+        verification: { status: "not-performed", reason: "interrupted" },
+      };
+    case "cleanup_failure":
+      return {
+        execution: {
+          status: "unknown",
+          reason: "transport-failure",
+          next: "observe",
+        },
+        verification: { status: "not-performed", reason: "interrupted" },
+      };
+    case "execution_failure":
+      return raw.structuredContent?.["phase"] === "syntax_check"
+        ? {
+            execution: { status: "not-started", reason: "refused" },
+            verification: {
+              status: "not-performed",
+              reason: "not-started",
+            },
+          }
+        : {
+            execution: {
+              status: "unknown",
+              reason: "transport-failure",
+              next: "observe",
+            },
+            verification: {
+              status: "not-performed",
+              reason: "interrupted",
+            },
+          };
+  }
+}
+
+function receiptCleanup(
+  action: MutationAction,
+  raw: ToolCallOutcome,
+  code?: z.infer<typeof NativeErrorCodeSchema>,
+): ActionReceipt["cleanup"] {
+  if (hasCleanupFailure(raw) || code === "cleanup_failure") {
+    return { status: "failed", reason: "process-cleanup" };
+  }
+  if (code === "cancelled" || code === "timeout") {
+    return { status: "succeeded" };
+  }
+  return action === "set_value" || action === "insert_text"
+    ? { status: "succeeded" }
+    : { status: "not-required" };
+}
+
+function hasCleanupFailure(raw: ToolCallOutcome): boolean {
+  const cleanup = raw.structuredContent?.["generatedCompanionCleanup"];
+  return (
+    typeof cleanup === "object" &&
+    cleanup !== null &&
+    Reflect.get(cleanup, "status") === "failed"
+  );
+}
+
+function cleanupPriorRefusal(raw: ToolCallOutcome): unknown {
+  const cleanup = raw.structuredContent?.["generatedCompanionCleanup"];
+  return typeof cleanup === "object" && cleanup !== null
+    ? Reflect.get(cleanup, "priorRefusal")
+    : undefined;
+}
+
+function receiptTarget(params: MutationParams): ActionReceipt["target"] {
+  if (params.action === "visual_click") {
+    return params.visualObservation.target;
+  }
+  return {
+    pid: params.target.pid,
+    hwnd: params.target.hwnd,
+    control: { kind: "uia-path", path: params.target.path },
+  };
+}
+
+function receiptObservation(
+  params: MutationParams,
+  status: "fresh" | "stale" | "unavailable" = "fresh",
+): ActionReceipt["observation"] {
+  if (status === "unavailable") return { status };
+  if (params.action === "visual_click") {
+    return {
+      status,
+      observedAt: new Date(params.visualObservation.capturedAtMs).toISOString(),
+    };
+  }
+  return { status, observedAt: new Date().toISOString() };
+}
+
+function receiptErrorObservation(
+  code: z.infer<typeof NativeErrorCodeSchema>,
+  markerEvidence: boolean,
+): "fresh" | "stale" | "unavailable" {
+  if (code === "no_match" || code === "stale_target") return "stale";
+  if (
+    markerEvidence &&
+    (code === "ambiguity" ||
+      code === "unsupported_pattern" ||
+      code === "verification_failure")
+  ) {
+    return "fresh";
+  }
+  return "unavailable";
+}
+
+function isMutationParams(params: LocalNativeParams): params is MutationParams {
+  const { action } = params;
+  return (
+    action === "set_value" ||
+    action === "insert_text" ||
+    action === "invoke" ||
+    action === "toggle" ||
+    action === "select" ||
+    action === "visual_click"
+  );
 }
 
 function normalizeNativeData(

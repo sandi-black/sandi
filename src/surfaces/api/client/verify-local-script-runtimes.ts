@@ -8,11 +8,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   autoItRequiresAdmin,
   type LocalScriptRuntimeContext,
+  runGeneratedAutoIt,
   runLocalAutoIt,
   runLocalJavaScript,
 } from "@/surfaces/api/client/local-script-runtimes";
@@ -176,9 +177,12 @@ try {
     [
       'import { appendFileSync, readFileSync } from "node:fs";',
       'appendFileSync(process.env.SANDI_AUTOIT_FIXTURE_LOG, "ran\\n");',
-      'const source = readFileSync(process.argv.at(-1), "utf8");',
+      "const artifact = process.argv.at(-1);",
+      'if (!artifact) throw new Error("artifact missing");',
+      'const source = readFileSync(artifact, "utf8");',
       "const receipt = /^; EMIT_RECEIPT (.+)$/m.exec(source)?.[1];",
       "if (receipt) console.log(receipt);",
+      'if (source.includes("RUN_HANG")) setInterval(() => {}, 1000);',
       'console.log("fixture AutoIt executed");',
       "",
     ].join("\n"),
@@ -303,6 +307,28 @@ try {
     "checked",
     "ran",
   ]);
+
+  const generatedTimeout = await runGeneratedAutoIt(
+    {
+      code: "; RUN_HANG\nConsoleWrite('must time out')",
+      files: { "payload.txt": "Grace Hopper private draft" },
+      timeoutMs: 100,
+    },
+    root,
+    autoitContext,
+  );
+  assert.equal(generatedTimeout.structuredContent?.["timedOut"], true);
+  const generatedArtifact =
+    generatedTimeout.structuredContent?.["artifactPath"];
+  assert.equal(typeof generatedArtifact, "string");
+  assert(
+    existsSync(String(generatedArtifact)),
+    "generated source persists after timeout",
+  );
+  assert(
+    !existsSync(join(dirname(String(generatedArtifact)), "payload.txt")),
+    "generated companion payload is deleted after timeout",
+  );
 
   writeFileSync(autoitLog, "", "utf8");
   const checkerController = new AbortController();

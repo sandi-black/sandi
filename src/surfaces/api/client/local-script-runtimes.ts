@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { runSupervisedAutoIt } from "@/surfaces/api/client/autoit-supervisor";
@@ -114,26 +114,56 @@ async function runAutoItSource(
   if (!autoit) return refused("the bundled AutoIt runtime is unavailable");
   const elevated = autoItRequiresAdmin(params.code);
   const artifact = await writeArtifact(runtimes.runRoot, "au3", params.code);
-  for (const [name, content] of Object.entries(params.files ?? {})) {
+  const companionEntries = Object.entries(params.files ?? {});
+  for (const [name] of companionEntries) {
     if (!/^[a-z0-9][a-z0-9.-]*$/i.test(name)) {
       return refused("generated AutoIt artifact has an invalid companion name");
     }
-    await writeFile(join(dirname(artifact), name), content, "utf8");
   }
-  return runArtifact({
-    runtimeName: "autoit",
-    runtime: autoit,
-    artifact,
-    args: ["/ErrorStdOut", artifact],
-    cwd: rootDir,
-    elevated,
-    syntaxChecker: {
-      executable: autoit.checker.executable,
-      args: [...(autoit.checker.argsPrefix ?? []), "-q", "-d", artifact],
-    },
-    ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
-    ...(signal !== undefined ? { signal } : {}),
-  });
+  const companions = companionEntries.map(([name, content]) => ({
+    name,
+    content,
+    path: join(dirname(artifact), name),
+  }));
+  let outcome: ToolCallOutcome;
+  try {
+    for (const companion of companions) {
+      await writeFile(companion.path, companion.content, "utf8");
+    }
+    outcome = await runArtifact({
+      runtimeName: "autoit",
+      runtime: autoit,
+      artifact,
+      args: ["/ErrorStdOut", artifact],
+      cwd: rootDir,
+      elevated,
+      syntaxChecker: {
+        executable: autoit.checker.executable,
+        args: [...(autoit.checker.argsPrefix ?? []), "-q", "-d", artifact],
+      },
+      ...(params.timeoutMs !== undefined
+        ? { timeoutMs: params.timeoutMs }
+        : {}),
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  } catch (error) {
+    outcome = refused(errorText(error));
+  } finally {
+    const cleanupFailures: string[] = [];
+    for (const companion of companions) {
+      try {
+        await unlink(companion.path);
+      } catch {
+        cleanupFailures.push(companion.name);
+      }
+    }
+    if (cleanupFailures.length > 0) {
+      outcome = refused(
+        `generated AutoIt companion cleanup failed: ${cleanupFailures.join(", ")}`,
+      );
+    }
+  }
+  return outcome;
 }
 
 export function autoItRequiresAdmin(source: string): boolean {

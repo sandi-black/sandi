@@ -36,14 +36,14 @@ const desktopParam = Type.Optional(
 
 const nativeWindowIdentity = Type.Object({
   hwnd: Type.String({
-    pattern: "^[0-9]+$",
+    pattern: "^[1-9][0-9]*$",
     description: "Decimal HWND retained from a current window observation.",
   }),
   pid: Type.Integer({ minimum: 1, description: "Retained process id." }),
 });
 
 const nativeControlIdentity = Type.Object({
-  hwnd: Type.String({ pattern: "^[0-9]+$" }),
+  hwnd: Type.String({ pattern: "^[1-9][0-9]*$" }),
   pid: Type.Integer({ minimum: 1 }),
   automationId: Type.String({ maxLength: 1_024 }),
   controlType: Type.Integer({ minimum: 1 }),

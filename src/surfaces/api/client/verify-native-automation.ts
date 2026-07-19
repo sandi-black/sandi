@@ -64,6 +64,13 @@ function verifySchemas(): void {
     }).success,
     "native waits reject an unbounded timeout",
   );
+  assert(
+    !LocalNativeParamsSchema.safeParse({
+      action: "inspect",
+      window: { hwnd: "0", pid: 101 },
+    }).success,
+    "native identities reject the null HWND",
+  );
 }
 
 function verifyGeneratedSources(): void {
@@ -126,17 +133,35 @@ async function verifyStructuredResults(root: string): Promise<void> {
   const checker = join(root, "checker.mjs");
   const runtime = join(root, "runtime.mjs");
   const started = join(root, "started.txt");
-  await writeFile(checker, "", "utf8");
+  const payloadCapture = join(root, "payload-capture.txt");
+  await writeFile(
+    checker,
+    [
+      'import { readFileSync } from "node:fs";',
+      "const artifact = process.argv.at(-1);",
+      'if (!artifact) throw new Error("artifact missing");',
+      'if (readFileSync(artifact, "utf8").includes("Checker failure")) process.exit(2);',
+      "",
+    ].join("\n"),
+    "utf8",
+  );
   await writeFile(
     runtime,
     [
-      'import { readFileSync, writeFileSync } from "node:fs";',
+      'import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";',
+      'import { dirname, join } from "node:path";',
       "const artifact = process.argv.at(-1);",
       'if (!artifact) throw new Error("artifact missing");',
       'const source = readFileSync(artifact, "utf8");',
       'if (source.includes("Cancel target")) {',
+      '  writeFileSync(process.env.SANDI_NATIVE_PAYLOAD_CAPTURE, readFileSync(join(dirname(artifact), "payload.txt"), "utf8"));',
       '  writeFileSync(process.env.SANDI_NATIVE_STARTED, "started");',
       "  setInterval(() => {}, 1000);",
+      '} else if (source.includes("Cleanup failure")) {',
+      '  const payload = join(dirname(artifact), "payload.txt");',
+      "  rmSync(payload);",
+      "  mkdirSync(payload);",
+      '  console.log(\'SANDI_NATIVE_RESULT:{"status":"ok","action":"insert_text","data":{"mutated":true,"preActionTarget":"revalidated","verification":"observe_next","submitted":false}}\');',
       '} else if (source.includes("Ambiguous target")) {',
       '  console.log(\'SANDI_NATIVE_RESULT:{"status":"error","action":"invoke","error":{"code":"ambiguity","facadeCode":5,"extended":2}}\');',
       "  process.exit(10);",
@@ -147,6 +172,7 @@ async function verifyStructuredResults(root: string): Promise<void> {
       '} else if (source.includes("SandiUIA_Describe")) {',
       '  console.log(\'SANDI_NATIVE_RESULT:{"status":"ok","action":"describe","data":{"summary":"Edit control"}}\');',
       '} else if (source.includes("SandiEditor_InsertText")) {',
+      '  writeFileSync(process.env.SANDI_NATIVE_PAYLOAD_CAPTURE, readFileSync(join(dirname(artifact), "payload.txt"), "utf8"));',
       '  console.log(\'SANDI_NATIVE_RESULT:{"status":"ok","action":"insert_text","data":{"mutated":true,"preActionTarget":"revalidated","verification":"observe_next","submitted":false}}\');',
       "} else {",
       '  const actions = [...source.matchAll(/_SandiNativeOk\\("([a-z_]+)"/g)];',
@@ -167,7 +193,10 @@ async function verifyStructuredResults(root: string): Promise<void> {
       executable: process.execPath,
       version: "fixture",
       argsPrefix: [runtime],
-      env: { SANDI_NATIVE_STARTED: started },
+      env: {
+        SANDI_NATIVE_STARTED: started,
+        SANDI_NATIVE_PAYLOAD_CAPTURE: payloadCapture,
+      },
       checker: { executable: process.execPath, argsPrefix: [checker] },
     },
   };
@@ -231,11 +260,19 @@ async function verifyStructuredResults(root: string): Promise<void> {
     context,
   );
   assert.equal(inserted.isError, undefined);
-  const payloadPath = findPayloadPath(root);
   assert.equal(
-    await readFile(payloadPath, "utf8"),
+    await readFile(payloadCapture, "utf8"),
     payload,
     "the generated runtime receives the exact multiline payload",
+  );
+  assert.deepEqual(
+    findPayloadPaths(root),
+    [],
+    "the companion payload is deleted after success",
+  );
+  assert(
+    findSourcePaths(root).length > 0,
+    "payload cleanup preserves the generated source artifact",
   );
 
   const ambiguous = await runLocalNative(
@@ -282,8 +319,9 @@ async function verifyStructuredResults(root: string): Promise<void> {
   const controller = new AbortController();
   const cancelledCall = runLocalNative(
     {
-      action: "invoke",
+      action: "insert_text",
       target: { ...retainedEditor, name: "Cancel target" },
+      text: "cancelled payload",
     },
     root,
     context,
@@ -294,15 +332,59 @@ async function verifyStructuredResults(root: string): Promise<void> {
   const cancelled = await cancelledCall;
   assert.equal(cancelled.isError, true);
   assert.equal(nativeErrorCode(cancelled), "cancelled");
+  assert.deepEqual(
+    findPayloadPaths(root),
+    [],
+    "the companion payload is deleted after cancellation",
+  );
+
+  const checkerFailure = await runLocalNative(
+    {
+      action: "insert_text",
+      target: { ...retainedEditor, name: "Checker failure" },
+      text: "checker payload",
+    },
+    root,
+    context,
+  );
+  assert.equal(nativeErrorCode(checkerFailure), "execution_failure");
+  assert.deepEqual(
+    findPayloadPaths(root),
+    [],
+    "the companion payload is deleted after checker failure",
+  );
+
+  const cleanupFailure = await runLocalNative(
+    {
+      action: "insert_text",
+      target: { ...retainedEditor, name: "Cleanup failure" },
+      text: "cleanup payload",
+    },
+    root,
+    context,
+  );
+  assert.equal(
+    nativeErrorCode(cleanupFailure),
+    "cleanup_failure",
+    "a companion deletion failure becomes a structured error",
+  );
 }
 
-function findPayloadPath(root: string): string {
+function findPayloadPaths(root: string): string[] {
   const runs = join(root, "runs");
+  const paths: string[] = [];
   for (const entry of readdirSync(runs)) {
     const payload = join(runs, entry, "payload.txt");
-    if (existsSync(payload)) return payload;
+    if (existsSync(payload)) paths.push(payload);
   }
-  throw new Error("generated AutoIt payload is missing");
+  return paths;
+}
+
+function findSourcePaths(root: string): string[] {
+  const runs = join(root, "runs");
+  return readdirSync(runs)
+    .map((entry) => join(runs, entry, "main.au3"))
+    .filter((path) => existsSync(path));
 }
 
 function nativeErrorCode(outcome: ToolCallOutcome): unknown {

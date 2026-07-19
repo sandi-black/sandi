@@ -107,7 +107,9 @@ export const LocalAutoItRunParamsSchema = z.object({
 });
 
 const NativeWindowIdentitySchema = z.object({
-  hwnd: z.string().regex(/^\d+$/, "must be a decimal window handle"),
+  hwnd: z
+    .string()
+    .regex(/^[1-9]\d*$/, "must be a positive decimal window handle"),
   pid: z.number().int().positive(),
 });
 

@@ -168,6 +168,18 @@ function verifyDeviceProtocol(): void {
   );
   assert(
     !BrokerCallSchema.safeParse({
+      tool: "local_native",
+      params: {
+        action: "wait_window",
+        window: { hwnd: "0", pid: 101 },
+        state: "closed",
+        timeoutMs: 1_000,
+      },
+    }).success,
+    "the broker rejects the null HWND as a retained window identity",
+  );
+  assert(
+    !BrokerCallSchema.safeParse({
       tool: "local_autoit_run",
       params: { code: "x".repeat(MAX_LOCAL_SCRIPT_SOURCE_CHARS + 1) },
     }).success,

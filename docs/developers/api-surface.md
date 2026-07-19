@@ -262,6 +262,12 @@ generates the AutoIt artifact and maps facade failures into structured native
 errors. `local_autoit_run` remains available for application research and flows
 outside the typed union.
 
+Generated value, editor, and wait payloads use a companion file beside the
+persisted source artifact. The desktop removes each companion after checking
+and execution, including cancellation, timeout, and checker failure. A cleanup
+failure is a structured tool error; the source artifact remains available for
+diagnosis.
+
 The packaged AutoIt include provides bounded HWND/PID-scoped UIA operations,
 atomic editor insertion, guarded visual clicks, and global-input helpers. `SandiUIA_Inspect`
 returns deterministic control-view JSON with optional property filters,

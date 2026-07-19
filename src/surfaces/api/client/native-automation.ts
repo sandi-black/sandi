@@ -21,6 +21,7 @@ const NativeErrorCodeSchema = z.enum([
   "cancelled",
   "timeout",
   "verification_failure",
+  "cleanup_failure",
   "execution_failure",
 ]);
 
@@ -94,6 +95,7 @@ const ERROR_MESSAGES: Readonly<
   cancelled: "native automation was cancelled",
   timeout: "native automation timed out",
   verification_failure: "the requested native state was not verified",
+  cleanup_failure: "the generated native payload could not be removed",
   execution_failure: "the generated native automation artifact failed",
 };
 
@@ -266,6 +268,12 @@ function nativeResultOutcome(
 ): ToolCallOutcome {
   if (!raw.ok && raw.error === "cancelled") {
     return nativeErrorOutcome(params.action, "cancelled", raw);
+  }
+  if (
+    !raw.ok &&
+    raw.error?.startsWith("generated AutoIt companion cleanup failed")
+  ) {
+    return nativeErrorOutcome(params.action, "cleanup_failure", raw);
   }
   if (raw.structuredContent?.["timedOut"] === true) {
     return nativeErrorOutcome(params.action, "timeout", raw);

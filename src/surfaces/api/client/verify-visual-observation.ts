@@ -38,6 +38,13 @@ export function verifyVisualObservationBoundary(): void {
     !VisualObservationSchema.safeParse({ ...at96Dpi, version: 1 }).success,
     "the observation boundary rejects the superseded version 1 shape",
   );
+  assert(
+    !VisualObservationSchema.safeParse({
+      ...at96Dpi,
+      target: { ...at96Dpi.target, hwnd: "0" },
+    }).success,
+    "the observation boundary rejects the null HWND",
+  );
 
   const mixedDpi = {
     version: 2,

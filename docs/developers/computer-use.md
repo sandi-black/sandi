@@ -39,9 +39,11 @@ coordinates.
 The desktop generates the narrow AutoIt artifact, checks it, and runs it under
 the normal supervisor. Facade failures are reported as structured `no_match`,
 `ambiguity`, `stale_target`, `unsupported_pattern`, `cancelled`, `timeout`, or
-`verification_failure` errors. `set_value` reads the control back before it
-reports verified success. Other mutations report `observe_next`; take another
-inspection, value read, or screenshot to verify their effect.
+`verification_failure` errors. Companion files carrying values or editor text
+are removed after checking and execution; cleanup failure is reported instead
+of success. `set_value` reads the control back before it reports verified
+success. Other mutations report `observe_next`; take another inspection, value
+read, or screenshot to verify their effect.
 
 Use `local_autoit_run` for application research and unusual multi-step flows
 that the typed action union cannot express. It remains the expert escape hatch

@@ -228,15 +228,19 @@ Existing installs pick up new releases on their own. The moving parts:
   installs, so the upload steps treat the feed files as required.
 - `app/src/main/updater.ts` runs the client side, in three flavors. The
   installed (NSIS) app uses electron-updater: it checks shortly after launch
-  and every few hours, downloads in the background, and stages the update to
-  install on quit; the tray also offers "Restart to update". The portable exe
-  cannot replace itself, so it only compares the latest release tag (GitHub's
-  `releases/latest` API) against its own version and links to the download
-  page. A dev run gets no updater at all.
+  and every few hours, then downloads in the background. Once staged, it waits
+  until Sandi has no active or queued turns or desktop tool calls. It checks
+  every 30 seconds, then runs the installer silently and relaunches Sandi. The
+  install does not wait for Windows user activity to become idle. The tray still
+  offers an immediate "Restart to update" action. The portable exe cannot
+  replace itself, so it only compares the latest release tag (GitHub's
+  `releases/latest` API) against its own version and links to the download page.
+  A dev run gets no updater at all.
 - The phase transitions and tray copy are pure logic in
   `app/src/main/update-state.ts`, covered by `verify-update-state`. The tray's
   "Update automatically" checkbox (the `autoUpdate` setting, default on)
-  gates the scheduled checks; a manual "Check for updates" always works.
+  gates scheduled checks and idle-time installation. Manual check and install
+  actions always work.
 
 The artifacts being unsigned does not block any of this: electron-updater
 only enforces signature checks on Windows when the installed app itself is
@@ -370,8 +374,10 @@ desktop. After a change that touches windows, input, or packaging, check:
 12. Packaged build: the NSIS installer installs and launches; the portable
     exe runs from a bare folder; start-with-Windows takes effect on the
     packaged app.
-13. Updates: on an installed build older than the latest release, the tray
-    reaches "Restart to update to X" within a minute of launch and the
-    restart lands on the new version; on the portable exe the same situation
-    shows "Update X available" and opens the release page; an up-to-date
-    install settles on "Sandi is up to date".
+13. Updates: on an installed build older than the latest release, keep a turn
+    or desktop tool call active and confirm the staged update waits. Let that
+    work finish, and confirm Sandi silently installs the update without waiting
+    for Windows to become idle, then relaunches on the new version. The tray
+    action still installs immediately. On the portable exe, the same release
+    shows "Update X available" and opens the release page. An up-to-date install
+    settles on "Sandi is up to date".

@@ -175,7 +175,39 @@ async function verifyMutationScenario(
       ),
       false,
     );
-    assert.equal(renderCount, 10);
+    const defaults = await application.configure({
+      guildId: GUILD_ID,
+      list: selector,
+      title: null,
+      instructions: null,
+      emptyText: null,
+      completionMode: null,
+      displayMode: null,
+    });
+    assert.equal(defaults.title, undefined);
+    assert.equal(defaults.instructions, undefined);
+    assert.equal(defaults.emptyText, undefined);
+    assert.equal(defaults.completionMode, undefined);
+    assert.equal(defaults.displayMode, undefined);
+
+    const configured = await application.configure({
+      guildId: GUILD_ID,
+      list: selector,
+      title: "Release reminders",
+      instructions: "Use each Done button after handling its reminder.",
+      emptyText: "All reminders handled.",
+      completionMode: "buttons",
+      displayMode: "grouped-reminders",
+    });
+    assert.equal(configured.title, "Release reminders");
+    assert.equal(
+      configured.instructions,
+      "Use each Done button after handling its reminder.",
+    );
+    assert.equal(configured.emptyText, "All reminders handled.");
+    assert.equal(configured.completionMode, "buttons");
+    assert.equal(configured.displayMode, "grouped-reminders");
+    assert.equal(renderCount, 12);
 
     await store.write({
       guilds: {

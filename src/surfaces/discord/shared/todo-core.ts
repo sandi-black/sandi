@@ -101,6 +101,43 @@ export class TodoApplication {
     return locateList(guild, selector, false)?.list;
   }
 
+  async configure(input: {
+    guildId: string;
+    list: TodoListSelector;
+    title?: string | null | undefined;
+    instructions?: string | null | undefined;
+    emptyText?: string | null | undefined;
+    completionMode?: "select" | "buttons" | null | undefined;
+    displayMode?: "default" | "grouped-reminders" | null | undefined;
+    render?: boolean | undefined;
+  }): Promise<ChannelTodoState> {
+    let result: ChannelTodoState | undefined;
+    await this.#store.updateManaged(async (state) => {
+      const current = state.guilds[input.guildId] ?? emptyGuildState();
+      const ref = locateList(current, input.list, false);
+      if (!ref) {
+        throw new TodoListNotFoundError("That todo list is no longer current.");
+      }
+      const configured = configureList(ref.list, input);
+      const rendered =
+        input.render === false
+          ? configured
+          : await this.#renderList(configured);
+      result = rendered;
+      return {
+        guilds: {
+          ...state.guilds,
+          [input.guildId]: updateGuildList(current, {
+            ...ref,
+            list: rendered,
+          }),
+        },
+      };
+    }, EMPTY_TODO_STATE);
+    if (!result) throw new Error("todo configuration produced no result");
+    return result;
+  }
+
   async add(input: {
     guildId: string;
     list: TodoListSelector;
@@ -442,6 +479,45 @@ export class TodoApplication {
     if (items.length === list.items.length) return undefined;
     return this.#renderList({ ...list, items });
   }
+}
+
+function configureList(
+  list: ChannelTodoState,
+  input: {
+    title?: string | null | undefined;
+    instructions?: string | null | undefined;
+    emptyText?: string | null | undefined;
+    completionMode?: "select" | "buttons" | null | undefined;
+    displayMode?: "default" | "grouped-reminders" | null | undefined;
+  },
+): ChannelTodoState {
+  const configured = { ...list };
+  setOptional(configured, "title", input.title);
+  setOptional(configured, "instructions", input.instructions);
+  setOptional(configured, "emptyText", input.emptyText);
+  setOptional(configured, "completionMode", input.completionMode);
+  setOptional(configured, "displayMode", input.displayMode);
+  return configured;
+}
+
+function setOptional<
+  Key extends
+    | "title"
+    | "instructions"
+    | "emptyText"
+    | "completionMode"
+    | "displayMode",
+>(
+  list: ChannelTodoState,
+  key: Key,
+  value: ChannelTodoState[Key] | null | undefined,
+): void {
+  if (value === undefined) return;
+  if (value === null) {
+    delete list[key];
+    return;
+  }
+  list[key] = value;
 }
 
 function locateList(

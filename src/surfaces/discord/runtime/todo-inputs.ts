@@ -68,6 +68,25 @@ export const ListTodoItemsInputSchema = z.object({
   channel: TodoChannelInputSchema.optional(),
 });
 
+export const ConfigureTodoListInputSchema = z
+  .object({
+    channel: TodoChannelInputSchema.optional(),
+    title: OptionalNullableTextInputSchema,
+    instructions: OptionalNullableTextInputSchema,
+    emptyText: OptionalNullableTextInputSchema,
+    completionMode: z.enum(["select", "buttons"]).nullable().optional(),
+    displayMode: z.enum(["default", "grouped-reminders"]).nullable().optional(),
+  })
+  .refine(
+    (input) =>
+      input.title !== undefined ||
+      input.instructions !== undefined ||
+      input.emptyText !== undefined ||
+      input.completionMode !== undefined ||
+      input.displayMode !== undefined,
+    "provide at least one todo list setting",
+  );
+
 export const AddTodoItemInputSchema = z
   .object({
     text: TodoTextInputSchema,
@@ -123,6 +142,9 @@ export const RemoveTodoItemInputSchema = z
   .refine(hasExactlyOneSelector, "provide exactly one of itemId or matchText");
 
 export type ListTodoItemsInput = z.input<typeof ListTodoItemsInputSchema>;
+export type ConfigureTodoListInput = z.input<
+  typeof ConfigureTodoListInputSchema
+>;
 export type AddTodoItemInput = z.input<typeof AddTodoItemInputSchema>;
 export type UpdateTodoItemInput = z.input<typeof UpdateTodoItemInputSchema>;
 export type CompleteTodoItemInput = z.input<typeof CompleteTodoItemInputSchema>;

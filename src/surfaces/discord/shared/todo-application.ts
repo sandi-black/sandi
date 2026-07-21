@@ -14,6 +14,8 @@ import {
   AddTodoItemInputSchema,
   type CompleteTodoItemInput,
   CompleteTodoItemInputSchema,
+  type ConfigureTodoListInput,
+  ConfigureTodoListInputSchema,
   type ListTodoItemsInput,
   ListTodoItemsInputSchema,
   type RemoveTodoItemInput,
@@ -59,6 +61,7 @@ export type TodoItemSummary = {
 export type {
   AddTodoItemInput,
   CompleteTodoItemInput,
+  ConfigureTodoListInput,
   ListTodoItemsInput,
   RemoveTodoItemInput,
   UpdateTodoItemInput,
@@ -67,6 +70,11 @@ export type {
 export type TodoListResult = {
   channelId: string;
   messageId?: string;
+  title?: string;
+  instructions?: string;
+  emptyText?: string;
+  completionMode?: "select" | "buttons";
+  displayMode?: "default" | "grouped-reminders";
   items: TodoItemSummary[];
 };
 
@@ -77,6 +85,29 @@ export async function listItems(
   const { guildId, channelId } = currentTodoTarget(parsed.channel);
   const list = await application().list(guildId, { channelId });
   return todoListResult(list ?? emptyChannelList(channelId));
+}
+
+export async function configureList(
+  input: ConfigureTodoListInput,
+): Promise<TodoListResult> {
+  const parsed = ConfigureTodoListInputSchema.parse(input);
+  const { guildId, channelId } = currentTodoTarget(parsed.channel);
+  const list = await application().configure({
+    guildId,
+    list: { channelId },
+    ...(parsed.title !== undefined ? { title: parsed.title } : {}),
+    ...(parsed.instructions !== undefined
+      ? { instructions: parsed.instructions }
+      : {}),
+    ...(parsed.emptyText !== undefined ? { emptyText: parsed.emptyText } : {}),
+    ...(parsed.completionMode !== undefined
+      ? { completionMode: parsed.completionMode }
+      : {}),
+    ...(parsed.displayMode !== undefined
+      ? { displayMode: parsed.displayMode }
+      : {}),
+  });
+  return todoListResult(list);
 }
 
 export async function addItem(
@@ -294,6 +325,11 @@ function limitOptionText(value: string, maxLength: number): string {
 function todoListResult(list: ChannelTodoState): TodoListResult {
   const result = {
     channelId: list.channelId,
+    ...(list.title ? { title: list.title } : {}),
+    ...(list.instructions ? { instructions: list.instructions } : {}),
+    ...(list.emptyText ? { emptyText: list.emptyText } : {}),
+    ...(list.completionMode ? { completionMode: list.completionMode } : {}),
+    ...(list.displayMode ? { displayMode: list.displayMode } : {}),
     items: list.items.map(todoItemSummary),
   };
   return list.messageId ? { ...result, messageId: list.messageId } : result;

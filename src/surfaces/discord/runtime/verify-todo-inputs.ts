@@ -4,6 +4,7 @@ import "@/surfaces/discord/shared/verify-todo-core";
 import {
   addItem,
   completeItem,
+  configureList,
   listItems,
   removeItem,
   updateItem,
@@ -11,6 +12,7 @@ import {
 import {
   AddTodoItemInputSchema,
   CompleteTodoItemInputSchema,
+  ConfigureTodoListInputSchema,
   ListTodoItemsInputSchema,
   RemoveTodoItemInputSchema,
   UpdateTodoItemInputSchema,
@@ -24,6 +26,27 @@ assert.deepEqual(ListTodoItemsInputSchema.parse({ channel: `<#${CHANNEL}>` }), {
   channel: CHANNEL,
 });
 assert.throws(() => ListTodoItemsInputSchema.parse({ channel: "general" }));
+
+assert.deepEqual(
+  ConfigureTodoListInputSchema.parse({
+    channel: `<#${CHANNEL}>`,
+    title: " Household tasks ",
+    instructions: null,
+    completionMode: "buttons",
+    displayMode: "grouped-reminders",
+  }),
+  {
+    channel: CHANNEL,
+    title: "Household tasks",
+    instructions: null,
+    completionMode: "buttons",
+    displayMode: "grouped-reminders",
+  },
+);
+assert.throws(() => ConfigureTodoListInputSchema.parse({}));
+assert.throws(() =>
+  ConfigureTodoListInputSchema.parse({ completionMode: "checkboxes" }),
+);
 
 assert.deepEqual(
   AddTodoItemInputSchema.parse({
@@ -126,6 +149,7 @@ assert.throws(() =>
 
 await assert.rejects(listItems({ channel: "general" }), /channel must be/u);
 await assert.rejects(addItem({ text: " " }), /todo text must/u);
+await assert.rejects(configureList({}), /provide at least one/u);
 await assert.rejects(updateItem({}), /provide exactly one/u);
 await assert.rejects(completeItem({}), /provide exactly one/u);
 await assert.rejects(

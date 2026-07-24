@@ -30,6 +30,10 @@ import {
   registerDiscordReminderDelivery,
 } from "@/surfaces/discord/bot/reminder-delivery";
 import type { EventTarget } from "@/surfaces/discord/events/schemas";
+import {
+  isUnknownDiscordMessageError,
+  pruneReminderMessageRefs,
+} from "@/surfaces/discord/reminders/message-refs";
 import { completedReminder } from "@/surfaces/discord/reminders/recurrence";
 import type {
   Reminder,
@@ -444,6 +448,7 @@ export class ReminderManager {
     reminder: Reminder,
     handle: (message: Message) => Promise<void>,
   ): Promise<void> {
+    const staleRefs: ReminderMessageRef[] = [];
     await Promise.all(
       reminder.messageRefs.map(async (ref) => {
         try {
@@ -453,6 +458,10 @@ export class ReminderManager {
           const message = await target.messages.fetch(ref.messageId);
           await handle(message);
         } catch (error) {
+          if (isUnknownDiscordMessageError(error)) {
+            staleRefs.push(ref);
+            return;
+          }
           log.warn("failed to update reminder message", {
             id,
             messageId: ref.messageId,
@@ -461,6 +470,7 @@ export class ReminderManager {
         }
       }),
     );
+    await pruneReminderMessageRefs(this.#remindersRoot, id, staleRefs);
   }
 
   async #shouldCleanHandledMessages(reminder: Reminder): Promise<boolean> {

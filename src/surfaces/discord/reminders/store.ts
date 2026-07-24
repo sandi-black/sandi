@@ -5,6 +5,7 @@ import { errorMessage } from "@/lib/errors";
 import { isMissingPathError } from "@/lib/fs-errors";
 import { createLogger } from "@/lib/logging";
 import {
+  atomicWriteInPlace,
   atomicWriteManaged,
   withManagedWrite,
 } from "@/lib/state/managed-write";
@@ -63,6 +64,22 @@ export async function writeReminder(
   const parsed = ReminderSchema.parse(reminder);
   const filePath = resolveReminderPath(root, id);
   await atomicWriteManaged(filePath, `${JSON.stringify(parsed, null, 2)}\n`);
+}
+
+export async function updateReminderManaged(
+  root: string,
+  id: string,
+  mutate: (current: Reminder) => Reminder,
+): Promise<Reminder> {
+  const filePath = resolveReminderPath(root, id);
+  return withManagedWrite(filePath, async () => {
+    const current = await readReminder(root, id);
+    const next = mutate(current);
+    if (next === current) return current;
+    const parsed = ReminderSchema.parse(next);
+    await atomicWriteInPlace(filePath, `${JSON.stringify(parsed, null, 2)}\n`);
+    return parsed;
+  });
 }
 
 export async function deleteReminder(root: string, id: string): Promise<void> {

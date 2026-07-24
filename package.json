@@ -96,7 +96,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.82.0",
-    "@earendil-works/pi-coding-agent": "0.81.1",
+    "@earendil-works/pi-coding-agent": "0.82.0",
     "@huggingface/transformers": "^4.2.0",
     "croner": "^10.0.1",
     "discord.js": "^14.27.0",

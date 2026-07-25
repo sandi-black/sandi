@@ -77,7 +77,10 @@ export class ConversationStore {
     fallback: ConversationManifest;
   }): Promise<ConversationManifest> {
     const fallback = ConversationManifestSchema.parse(input.fallback);
-    return this.#storeFor(input.storageId).read(fallback);
+    return this.#storeFor(input.storageId).updateManaged(
+      (current) => current,
+      fallback,
+    );
   }
 
   async get(storageId: string): Promise<ConversationManifest | undefined> {

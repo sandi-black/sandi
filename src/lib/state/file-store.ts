@@ -19,11 +19,19 @@ export class JsonFileStore<T> {
   }
 
   async read(defaultValue: T): Promise<T> {
+    return (await this.#readWithPresence(defaultValue)).value;
+  }
+
+  async #readWithPresence(
+    defaultValue: T,
+  ): Promise<{ value: T; exists: boolean }> {
     try {
       const raw = await readFile(this.#path, "utf8");
-      return this.#schema.parse(JSON.parse(raw));
+      return { value: this.#schema.parse(JSON.parse(raw)), exists: true };
     } catch (error) {
-      if (isMissingFileError(error)) return defaultValue;
+      if (isMissingFileError(error)) {
+        return { value: defaultValue, exists: false };
+      }
       throw error;
     }
   }
@@ -58,11 +66,13 @@ export class JsonFileStore<T> {
     defaultValue: T,
   ): Promise<T> {
     return withManagedWrite(this.#path, async () => {
-      const current = await this.read(defaultValue);
+      const { value: current, exists } =
+        await this.#readWithPresence(defaultValue);
       const next = await mutator(current);
       // Returning the current object is the mutator's no-change result. Avoid
-      // rewriting shared state for duplicate notifications and empty drains.
-      if (next === current) return current;
+      // rewriting existing shared state for duplicate notifications and empty
+      // drains. A missing store still needs its default persisted.
+      if (next === current && exists) return current;
       const parsed = this.#schema.parse(next);
       await this.#writeParsed(parsed);
       return parsed;

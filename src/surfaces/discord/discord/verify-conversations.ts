@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { ConversationStore } from "@/lib/conversations/store";
 import type { ConversationParticipant } from "@/lib/conversations/types";
 import {
   buildDiscordThreadManifest,
@@ -81,5 +85,31 @@ const branchManifest = buildDiscordThreadManifest({
 
 assert.equal(branchManifest.memoryScopes.length, 2);
 assert.equal(branchManifest.memoryScopes[1]?.label, "Parent Channel Room");
+
+const dataDir = await mkdtemp(join(tmpdir(), "sandi-conversation-store-"));
+try {
+  const store = new ConversationStore(dataDir);
+  const created = await store.getOrCreate({
+    storageId: "thread-1",
+    fallback: messageThreadManifest,
+  });
+  assert.deepEqual(await store.get("thread-1"), created);
+  assert.deepEqual(await store.list(), [created]);
+
+  const existing = await store.getOrCreate({
+    storageId: "thread-1",
+    fallback: { ...messageThreadManifest, title: "Replacement fallback" },
+  });
+  assert.equal(existing.title, messageThreadManifest.title);
+
+  const applied = await store.applyManaged({
+    storageId: "thread-2",
+    fallback: branchManifest,
+    mutate: (current) => current,
+  });
+  assert.deepEqual(await store.get("thread-2"), applied);
+} finally {
+  await rm(dataDir, { recursive: true, force: true });
+}
 
 console.log("Discord conversation verification passed");

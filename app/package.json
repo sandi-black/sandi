@@ -46,7 +46,7 @@
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run verify:mcp-runtime-scripts && npm run verify:bundled-command-registry && npm run verify:pet-state-machine && npm run verify:response-buffer && npm run verify:chat-store && npm run verify:anchor-position && npm run verify:renderer-url && npm run verify:window-navigation && npm run verify:ipc-schemas && npm run verify:attachment-staging && npm run verify:link-manager && npm run verify:mcp-host && npm run verify:mcp-bridge-smoke && npm run verify:transcript-store && npm run verify:turn-manager-queue && npm run verify:wander-scheduler && npm run verify:idle-fidget-scheduler && npm run verify:turn-pipeline && npm run verify:auto-titler && npm run verify:update-state"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "cross-spawn": "^7.0.6",
     "motion": "^12.42.2",
     "re2-wasm": "^1.0.2",

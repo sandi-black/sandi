@@ -212,8 +212,10 @@ async function acquireLock(lockPath: string): Promise<string> {
 
 async function tryCreateLock(lockPath: string): Promise<string | undefined> {
   const token = randomUUID();
+  let created = false;
   try {
     const handle = await open(lockPath, "wx");
+    created = true;
     try {
       await handle.writeFile(serializeLock({ token, heartbeat: Date.now() }));
     } finally {
@@ -224,9 +226,16 @@ async function tryCreateLock(lockPath: string): Promise<string | undefined> {
   } catch (error) {
     // EEXIST is the POSIX "already locked" signal. Windows can surface a held
     // or just-created lockfile as EPERM (a sharing violation) rather than
-    // EEXIST, so treat both as "not acquired" and fall through to the
+    // EEXIST. A concurrent stale-lock stealer can also rename this newly
+    // created generation between close and chmod, producing ENOENT before its
+    // generation check restores the file. None of these means acquisition
+    // failed fatally: treat them as contention and retry through the normal
     // stale-check and backoff path.
-    if (isExistingFileError(error) || isErrnoCode(error, "EPERM")) {
+    if (
+      isExistingFileError(error) ||
+      isErrnoCode(error, "EPERM") ||
+      (created && isMissingFileError(error))
+    ) {
       return undefined;
     }
     throw error;

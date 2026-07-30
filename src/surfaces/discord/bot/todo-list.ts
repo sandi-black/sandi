@@ -24,6 +24,7 @@ import {
 import { errorMessage } from "@/lib/errors";
 import { createLogger } from "@/lib/logging";
 import { JsonFileStore } from "@/lib/state/file-store";
+import { parseCompletionIntervalRepeat } from "@/surfaces/discord/bot/completion-interval-repeat";
 import { nextRecurrenceRun } from "@/surfaces/discord/reminders/recurrence";
 import type {
   ReminderRecurrence,
@@ -1172,7 +1173,7 @@ function customRepeatModal(messageId: string, itemId: string): ModalBuilder {
           .setCustomId(TODO_CUSTOM_REPEAT_INPUT_ID)
           .setLabel("Repeat, Pacific time")
           .setPlaceholder(
-            "Keywords: daily, weekdays, weekly Mon, monthly 1st, 2nd/4th Wed + time",
+            "Try every 7 days 6pm, weekly Mon 9am, or monthly 1st 10pm",
           )
           .setStyle(TextInputStyle.Short)
           .setMaxLength(100)
@@ -1431,7 +1432,11 @@ function repeatFromSchedule(
   summary: string,
 ): { recurrence: ReminderRecurrence; summary: string } {
   return {
-    recurrence: { schedule, timezone: PACIFIC_TIME_ZONE },
+    recurrence: {
+      kind: "calendar",
+      schedule,
+      timezone: PACIFIC_TIME_ZONE,
+    },
     summary,
   };
 }
@@ -1773,8 +1778,17 @@ function parseReminderRepeatInput(
     return {
       kind: "invalid",
       message:
-        "I need a time for the repeat. Try `daily 9am`, `weekly Mon 6pm`, or set a reminder date/time too.",
+        "I need a time for the repeat. Try `every 7 days 6pm`, `weekly Mon 6pm`, or set a reminder date/time too.",
     };
+  }
+
+  const completionInterval = parseCompletionIntervalRepeat(
+    trimmed,
+    time,
+    PACIFIC_TIME_ZONE,
+  );
+  if (completionInterval) {
+    return { kind: "valid", ...completionInterval };
   }
 
   const daily = parseDailyRepeat(trimmed, time);
@@ -1792,7 +1806,7 @@ function parseReminderRepeatInput(
   return {
     kind: "invalid",
     message:
-      "I couldn't understand that repeat. Try `daily 9am`, `weekdays 9am`, `weekly Mon 6pm`, `monthly 1st 10pm`, or `2nd and 4th Wed 6pm`.",
+      "I couldn't understand that repeat. Try `every 7 days 6pm`, `daily 9am`, `weekly Mon 6pm`, or `monthly 1st 10pm`.",
   };
 }
 
@@ -1881,6 +1895,7 @@ function validRepeat(
   summary: string,
 ): ReminderRepeatParseResult {
   const recurrence: ReminderRecurrence = {
+    kind: "calendar",
     schedule,
     timezone: PACIFIC_TIME_ZONE,
   };
@@ -1891,9 +1906,7 @@ function validRepeat(
 function nextReminderAt(recurrence: ReminderRecurrence): Date {
   const next = nextRecurrenceRun(recurrence);
   if (!next) {
-    throw new Error(
-      `Repeat schedule has no future runs: ${recurrence.schedule}`,
-    );
+    throw new Error("Repeat schedule has no future runs.");
   }
   return next;
 }

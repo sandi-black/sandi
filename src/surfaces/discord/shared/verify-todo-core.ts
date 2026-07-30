@@ -112,7 +112,11 @@ async function verifyMutationScenario(
       text: "Review deployment health",
       authorName: "Ada Lovelace",
       reminderAt: "2020-01-01T09:00:00.000Z",
-      recurrence: { schedule: "0 9 * * *", timezone: "UTC" },
+      recurrence: {
+        kind: "calendar",
+        schedule: "0 9 * * *",
+        timezone: "UTC",
+      },
       recurrenceSummary: "daily",
     });
     const firstFireAt = recurring.item.reminderAt;

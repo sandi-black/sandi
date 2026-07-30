@@ -27,10 +27,23 @@ const ReminderMessageRefSchema = z.object({
   messageId: z.string().min(1),
 });
 
-const ReminderRecurrenceSchema = z.object({
+const CalendarReminderRecurrenceSchema = z.object({
+  kind: z.literal("calendar"),
   schedule: z.string().min(1),
   timezone: z.string().min(1),
 });
+
+const CompletionIntervalReminderRecurrenceSchema = z.object({
+  kind: z.literal("completion-interval"),
+  everyDays: z.number().int().positive(),
+  localTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/u),
+  timezone: z.string().min(1),
+});
+
+const ReminderRecurrenceSchema = z.discriminatedUnion("kind", [
+  CalendarReminderRecurrenceSchema,
+  CompletionIntervalReminderRecurrenceSchema,
+]);
 
 export const ReminderSchema = z.object({
   target: ReminderTargetSchema,
@@ -58,3 +71,6 @@ export type ReminderTarget = z.infer<typeof ReminderTargetSchema>;
 export type ReminderUser = z.infer<typeof ReminderUserSchema>;
 export type ReminderMessageRef = z.infer<typeof ReminderMessageRefSchema>;
 export type ReminderRecurrence = z.infer<typeof ReminderRecurrenceSchema>;
+export type ReminderCompletionIntervalRecurrence = z.infer<
+  typeof CompletionIntervalReminderRecurrenceSchema
+>;

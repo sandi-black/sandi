@@ -1,5 +1,6 @@
 import { Cron } from "croner";
 
+import { nextCompletionIntervalRun } from "./completion-interval";
 import type { Reminder, ReminderRecurrence, ReminderUser } from "./schemas";
 
 // Marks a reminder done: if it recurs, rolls it forward to the next run and
@@ -10,8 +11,8 @@ import type { Reminder, ReminderRecurrence, ReminderUser } from "./schemas";
 export function completedReminder(
   reminder: Reminder,
   doneBy: ReminderUser | undefined,
+  completedAt: Date = new Date(),
 ): Reminder {
-  const completedAt = new Date();
   const nextRun = nextReminderRecurrenceRun(reminder, completedAt);
   if (nextRun) {
     return {
@@ -44,6 +45,9 @@ export function nextRecurrenceRun(
   recurrence: ReminderRecurrence,
   after: Date = new Date(),
 ): Date | undefined {
+  if (recurrence.kind === "completion-interval") {
+    return nextCompletionIntervalRun(recurrence, after);
+  }
   const next = new Cron(recurrence.schedule, {
     paused: true,
     timezone: recurrence.timezone,
@@ -58,7 +62,7 @@ export function validateReminderRecurrence(
   const next = nextRecurrenceRun(recurrence);
   if (!next) {
     throw new Error(
-      `Recurring reminder schedule has no future runs: ${recurrence.schedule} ${recurrence.timezone}`,
+      `Recurring reminder has no future runs in ${recurrence.timezone}.`,
     );
   }
 }

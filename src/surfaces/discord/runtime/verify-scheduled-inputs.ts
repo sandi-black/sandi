@@ -89,7 +89,11 @@ assert.deepEqual(
     text: " water the uncanny geranium ",
     at: "2026-07-04T05:30:00-07:00",
     followupIntervalMinutes: 90,
-    recurrence: { schedule: "0 9 * * *", timezone: "America/Los_Angeles" },
+    recurrence: {
+      kind: "calendar",
+      schedule: "0 9 * * *",
+      timezone: "America/Los_Angeles",
+    },
     audienceUserIds: [USER],
     createdBy: { discordUserId: USER, username: " jess " },
     threadId: CHANNEL,
@@ -98,7 +102,11 @@ assert.deepEqual(
     text: "water the uncanny geranium",
     at: ISO,
     followupIntervalMinutes: 90,
-    recurrence: { schedule: "0 9 * * *", timezone: "America/Los_Angeles" },
+    recurrence: {
+      kind: "calendar",
+      schedule: "0 9 * * *",
+      timezone: "America/Los_Angeles",
+    },
     audienceUserIds: [USER],
     createdBy: { discordUserId: USER, username: "jess" },
     threadId: CHANNEL,
@@ -113,7 +121,46 @@ assert.throws(() =>
 assert.throws(() =>
   CreateReminderInputSchema.parse({
     text: "x",
-    recurrence: { schedule: "nope", timezone: "UTC" },
+    recurrence: { kind: "calendar", schedule: "nope", timezone: "UTC" },
+  }),
+);
+assert.deepEqual(
+  CreateReminderInputSchema.parse({
+    text: "Feed Kanti",
+    recurrence: {
+      kind: "completion-interval",
+      everyDays: 7,
+      localTime: "18:00",
+      timezone: "America/Los_Angeles",
+    },
+  }).recurrence,
+  {
+    kind: "completion-interval",
+    everyDays: 7,
+    localTime: "18:00",
+    timezone: "America/Los_Angeles",
+  },
+);
+assert.throws(() =>
+  CreateReminderInputSchema.parse({
+    text: "x",
+    recurrence: {
+      kind: "completion-interval",
+      everyDays: 0,
+      localTime: "18:00",
+      timezone: "UTC",
+    },
+  }),
+);
+assert.throws(() =>
+  CreateReminderInputSchema.parse({
+    text: "x",
+    recurrence: {
+      kind: "completion-interval",
+      everyDays: 7,
+      localTime: "6pm",
+      timezone: "UTC",
+    },
   }),
 );
 assert.deepEqual(ListHumanRemindersInputSchema.parse({ scope: "all" }), {

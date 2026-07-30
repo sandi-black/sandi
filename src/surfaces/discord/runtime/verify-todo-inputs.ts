@@ -56,7 +56,11 @@ assert.deepEqual(
     sourceUrl: " https://example.com/list ",
     reason: " breakfast ",
     reminderAt: "2026-07-04T05:30:00-07:00",
-    recurrence: { schedule: "0 9 * * *", timezone: "America/Los_Angeles" },
+    recurrence: {
+      kind: "calendar",
+      schedule: "0 9 * * *",
+      timezone: "America/Los_Angeles",
+    },
     recurrenceSummary: " every morning ",
     audienceUserIds: [USER],
     createdBy: { discordUserId: USER, displayName: " Grace " },
@@ -68,7 +72,11 @@ assert.deepEqual(
     sourceUrl: "https://example.com/list",
     reason: "breakfast",
     reminderAt: ISO,
-    recurrence: { schedule: "0 9 * * *", timezone: "America/Los_Angeles" },
+    recurrence: {
+      kind: "calendar",
+      schedule: "0 9 * * *",
+      timezone: "America/Los_Angeles",
+    },
     recurrenceSummary: "every morning",
     audienceUserIds: [USER],
     createdBy: { discordUserId: USER, displayName: "Grace" },
@@ -78,7 +86,7 @@ assert.throws(() => AddTodoItemInputSchema.parse({ text: "   " }));
 assert.throws(() =>
   AddTodoItemInputSchema.parse({
     text: "buy milk",
-    recurrence: { schedule: "not cron", timezone: "UTC" },
+    recurrence: { kind: "calendar", schedule: "not cron", timezone: "UTC" },
   }),
 );
 assert.throws(() =>

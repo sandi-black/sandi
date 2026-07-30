@@ -14,7 +14,7 @@ import { basename, dirname, join } from "node:path";
 import { isMissingPathError } from "@/lib/fs-errors";
 import { isRecord } from "@/lib/type-guards";
 
-export const CURRENT_DATA_DIR_VERSION = 2;
+export const CURRENT_DATA_DIR_VERSION = 3;
 
 export type MigrationResult = {
   fromVersion: number;
@@ -59,6 +59,7 @@ export async function migrateDataDir(
         "memory",
         "skills",
         "conversations",
+        "reminders",
       ]);
       options.logger?.info("backed up data roots before migration", {
         dataDir,
@@ -78,6 +79,7 @@ export async function migrateDataDir(
         "memory",
         "skills",
         "conversations",
+        "reminders",
       ]);
       options.logger?.info("backed up data roots before migration", {
         dataDir,
@@ -89,6 +91,23 @@ export async function migrateDataDir(
     await migrate1to2(dataDir);
     version = 2;
     applied.push("migrate1to2");
+    await writeDataDirVersion(dataDir, version);
+  }
+  if (version === 2) {
+    if (await needsMigration2to3(dataDir)) {
+      backupDir ??= await backupDirForMigration(dataDir, version, [
+        "reminders",
+      ]);
+      options.logger?.info("backed up data roots before migration", {
+        dataDir,
+        backupDir,
+        fromVersion: version,
+        toVersion: 3,
+      });
+    }
+    await migrate2to3(dataDir);
+    version = 3;
+    applied.push("migrate2to3");
     await writeDataDirVersion(dataDir, version);
   }
 
@@ -200,6 +219,55 @@ export async function migrate1to2(dataDir: string): Promise<void> {
     ),
   });
   await migrateConversationManifests1to2(dataDir);
+}
+
+export async function migrate2to3(dataDir: string): Promise<void> {
+  const remindersRoot = join(dataDir, "reminders");
+  if (!(await pathExists(remindersRoot))) return;
+  const entries = await readdir(remindersRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const path = join(remindersRoot, entry.name);
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    const migrated = migrateReminderRecurrence2to3(parsed);
+    if (migrated === parsed) continue;
+    await writeFile(path, `${JSON.stringify(migrated, null, 2)}\n`, "utf8");
+  }
+}
+
+async function needsMigration2to3(dataDir: string): Promise<boolean> {
+  const remindersRoot = join(dataDir, "reminders");
+  if (!(await pathExists(remindersRoot))) return false;
+  const entries = await readdir(remindersRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const parsed: unknown = JSON.parse(
+      await readFile(join(remindersRoot, entry.name), "utf8"),
+    );
+    if (migrateReminderRecurrence2to3(parsed) !== parsed) return true;
+  }
+  return false;
+}
+
+function migrateReminderRecurrence2to3(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const recurrence = value["recurrence"];
+  if (
+    !isRecord(recurrence) ||
+    typeof recurrence["kind"] === "string" ||
+    typeof recurrence["schedule"] !== "string" ||
+    typeof recurrence["timezone"] !== "string"
+  ) {
+    return value;
+  }
+  return {
+    ...value,
+    recurrence: {
+      kind: "calendar",
+      schedule: recurrence["schedule"],
+      timezone: recurrence["timezone"],
+    },
+  };
 }
 
 async function migrateLegacyBuiltinSkills1to2(dataDir: string): Promise<void> {

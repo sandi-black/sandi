@@ -20,15 +20,17 @@ try {
     await seedLegacyV1Skills(dataDir);
     await seedLegacyV1ConversationMemory(dataDir);
     await seedLegacyConversationManifest(dataDir);
+    await seedLegacyCalendarReminder(dataDir);
 
     const first = await migrateDataDir(dataDir);
     assert(
       first.fromVersion === 0,
       "first migration should start at version 0",
     );
-    assert(first.toVersion === 2, "first migration should end at version 2");
+    assert(first.toVersion === 3, "first migration should end at version 3");
     assert(first.applied.includes("migrate0to1"), "migrate0to1 should run");
     assert(first.applied.includes("migrate1to2"), "migrate1to2 should run");
+    assert(first.applied.includes("migrate2to3"), "migrate2to3 should run");
     assert(first.backupDir, "legacy data should be backed up");
 
     const backedUpMemory = await readFile(
@@ -39,13 +41,35 @@ try {
       backedUpMemory === "legacy user memory\n",
       "legacy memory backup should preserve the pre-migration file",
     );
+    const backedUpReminder = JSON.parse(
+      await readFile(
+        join(first.backupDir, "reminders", "feed-kanti.json"),
+        "utf8",
+      ),
+    );
+    assert(
+      backedUpReminder.recurrence?.kind === undefined,
+      "backup should preserve the legacy calendar recurrence",
+    );
     assert(
       !(await pathExists(join(first.backupDir, "projects"))),
       "backup should not copy unrelated data dir contents",
     );
 
     const version = await readFile(join(dataDir, ".version"), "utf8");
-    assert(version.trim() === "2", ".version should be 2");
+    assert(version.trim() === "3", ".version should be 3");
+
+    const migratedReminder = JSON.parse(
+      await readFile(join(dataDir, "reminders", "feed-kanti.json"), "utf8"),
+    );
+    assert(
+      migratedReminder.recurrence?.kind === "calendar",
+      "legacy cron reminders should become explicit calendar recurrences",
+    );
+    assert(
+      migratedReminder.recurrence?.schedule === "0 18 * * WED",
+      "calendar migration should preserve the cron schedule",
+    );
 
     await assertFileContent(
       join(dataDir, "memory", "discord", "123", "MEMORY.md"),
@@ -229,6 +253,33 @@ async function seedLegacyV0UserMemory(dataDir: string): Promise<void> {
   await writeFile(
     join(dataDir, "projects", "large-worktree", "README.md"),
     "not part of migration backup\n",
+    "utf8",
+  );
+}
+
+async function seedLegacyCalendarReminder(dataDir: string): Promise<void> {
+  await mkdir(join(dataDir, "reminders"), { recursive: true });
+  await writeFile(
+    join(dataDir, "reminders", "feed-kanti.json"),
+    `${JSON.stringify(
+      {
+        target: { kind: "channel", channelId: "channel-grace" },
+        text: "Feed Kanti",
+        createdAt: "2026-07-01T01:00:00.000Z",
+        audienceUserIds: [],
+        status: "active",
+        nextFireAt: "2026-07-02T01:00:00.000Z",
+        recurrence: {
+          schedule: "0 18 * * WED",
+          timezone: "America/Los_Angeles",
+        },
+        followupIntervalMinutes: 60,
+        fireCount: 0,
+        messageRefs: [],
+      },
+      null,
+      2,
+    )}\n`,
     "utf8",
   );
 }

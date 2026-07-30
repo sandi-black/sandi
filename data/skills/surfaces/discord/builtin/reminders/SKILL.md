@@ -26,6 +26,7 @@ Available helpers:
 - `reminders.createReminder(...)`: create an interactive reminder. It defaults to the current thread/channel and accepts `threadId` or `channelId` for explicit targets.
 - `reminders.listHumanReminders(...)`: inspect interactive reminders.
 - `reminders.readHumanReminder(id)`: read one reminder.
+- `reminders.updateReminderRecurrence(id, { recurrence })`: change how an existing reminder recurs without replacing its current occurrence or delivery settings.
 - `reminders.snoozeReminder(id, { minutes })` or `snoozeReminder(id, { until })`: reschedule an active reminder.
 - `reminders.markReminderDone(id, doneBy?)`: mark a reminder complete.
 - `reminders.deleteHumanReminder(id, deletedBy?)`: mark a reminder deleted.
@@ -37,11 +38,15 @@ Creation guidance:
    - `text`: the exact human-facing reminder text.
    - `at`: ISO 8601 timestamp for the first prompt; omit only for an immediate reminder.
    - `followupIntervalMinutes`: how often to post follow-ups if nobody clicks Done. Use `60` when unspecified, or a tighter interval for urgent reminders.
-   - `recurrence`: optional `{ schedule, timezone }` for recurring human reminders. `schedule` is cron syntax and `timezone` is an IANA timezone such as `America/Los_Angeles`.
+   - `recurrence`: optional recurrence data using an IANA timezone such as `America/Los_Angeles`:
+     - Calendar expressions such as "every Wednesday" or "first Monday of the month" use `{ kind: "calendar", schedule, timezone }`, where `schedule` is cron syntax.
+     - Numeric day intervals such as "every 7 days" use `{ kind: "completion-interval", everyDays: 7, localTime: "18:00", timezone }`. `localTime` is the originally requested wall-clock time in 24-hour `HH:mm` form.
    - `audienceUserIds`: Discord user IDs to mention, when clear from context.
    - `createdBy`: omit this unless you need to override it; the runtime stamps the current Discord requester, including mapped identity, by default.
 3. After creating it, say briefly where and when it will fire and what the follow-up interval is.
 
-When a reminder fires, Sandi posts a Discord prompt with Done, Snooze, and Delete controls. Done stops follow-ups for a one-time reminder. For a recurring reminder, Done completes the current occurrence, clears the visible prompt, and schedules the next occurrence. Snooze delays the current occurrence/follow-up. Delete asks for confirmation and deletes the whole reminder, including future recurrence. These button interactions affect only the new reminder object, not old scheduled events.
+When a reminder fires, Sandi posts a Discord prompt with Done, Snooze, and Delete controls. Done stops follow-ups for a one-time reminder. For a calendar recurrence, Done schedules the next fixed calendar occurrence. For a completion interval, Done starts the next interval from the completion date in the configured timezone while retaining `localTime`. Snooze delays the current occurrence/follow-up. Delete asks for confirmation and deletes the whole reminder, including future recurrence. These button interactions affect only the new reminder object, not old scheduled events.
+
+Do not infer that an existing weekly calendar reminder should become completion-based. When the responsible human confirms that intent, preserve its current occurrence and settings with `updateReminderRecurrence(id, { recurrence: { kind: "completion-interval", everyDays, localTime, timezone } })`.
 
 For configured clean task channels, clicking Done on an interactive reminder should mark the reminder done durably and remove the visible prompt so the task channel does not accumulate completed reminder messages. Todo/task channel prefixes are handled automatically; set `SANDI_REMINDER_CLEAN_HANDLED_CHANNELS` for exact channel-name matches.

@@ -42,8 +42,9 @@ const ReminderScheduleInputSchema = z
   .trim()
   .min(1, "schedule must not be empty");
 
-export const ReminderRecurrenceInputSchema = z
+const CalendarReminderRecurrenceInputSchema = z
   .object({
+    kind: z.literal("calendar"),
     schedule: ReminderScheduleInputSchema,
     timezone: ReminderTimezoneInputSchema,
   })
@@ -62,6 +63,21 @@ export const ReminderRecurrenceInputSchema = z
     }
     return value;
   });
+
+const CompletionIntervalReminderRecurrenceInputSchema = z.object({
+  kind: z.literal("completion-interval"),
+  everyDays: z.number().finite().int().positive(),
+  localTime: z
+    .string()
+    .trim()
+    .regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/u, "localTime must use HH:mm"),
+  timezone: ReminderTimezoneInputSchema,
+});
+
+export const ReminderRecurrenceInputSchema = z.discriminatedUnion("kind", [
+  CalendarReminderRecurrenceInputSchema,
+  CompletionIntervalReminderRecurrenceInputSchema,
+]);
 
 export const ReminderUserInputSchema = z.object({
   discordUserId: DiscordMessageIdSchema,
@@ -107,6 +123,10 @@ export const ListHumanRemindersInputSchema = z
 
 export const OptionalReminderUserInputSchema =
   ReminderUserInputSchema.optional();
+
+export const UpdateReminderRecurrenceInputSchema = z.object({
+  recurrence: ReminderRecurrenceInputSchema,
+});
 
 export const SnoozeReminderInputSchema = z
   .object({

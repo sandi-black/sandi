@@ -421,7 +421,7 @@ export class TodoApplication {
     if (!item.reminderId) return undefined;
     const reminder = await this.#readReminderSafely(item.reminderId);
     if (reminder?.status !== "active") return undefined;
-    const completed = completedReminder(reminder, doneBy);
+    const completed = completedReminder(reminder, doneBy, this.#now());
     await writeReminder(this.#remindersRoot, item.reminderId, completed);
     if (completed.status !== "active") return undefined;
     return todoItem({

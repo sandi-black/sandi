@@ -27,6 +27,7 @@ import {
   OptionalReminderUserInputSchema,
   ReminderRuntimeIdInputSchema,
   SnoozeReminderInputSchema,
+  UpdateReminderRecurrenceInputSchema,
 } from "@/surfaces/discord/runtime/reminder-inputs";
 import { explicitChannelId } from "@/surfaces/discord/runtime/targets";
 import { targetMatches } from "@/surfaces/discord/shared/targets";
@@ -106,6 +107,24 @@ export async function markReminderDone(
   const parsedDoneBy = OptionalReminderUserInputSchema.parse(doneBy);
   const reminder = await readReminder(remindersRoot(), normalizedId);
   const updated = completedReminder(reminder, parsedDoneBy);
+  await writeReminder(remindersRoot(), normalizedId, updated);
+  return updated;
+}
+
+export async function updateReminderRecurrence(
+  id: string,
+  input: z.input<typeof UpdateReminderRecurrenceInputSchema>,
+): Promise<Reminder> {
+  const normalizedId = normalizeReminderId(
+    ReminderRuntimeIdInputSchema.parse(id),
+  );
+  const parsed = UpdateReminderRecurrenceInputSchema.parse(input);
+  validateReminderRecurrence(parsed.recurrence);
+  const reminder = await readReminder(remindersRoot(), normalizedId);
+  const updated: Reminder = {
+    ...reminder,
+    recurrence: parsed.recurrence,
+  };
   await writeReminder(remindersRoot(), normalizedId, updated);
   return updated;
 }

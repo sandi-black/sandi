@@ -10,6 +10,7 @@ import {
   type Interaction,
   type Message,
   type MessageCreateOptions,
+  MessageFlags,
   type MessageReaction,
   type PartialMessageReaction,
   Partials,
@@ -724,7 +725,7 @@ export class SandiBot {
       await interaction.reply({
         content: HELP_MESSAGE,
         allowedMentions: { parse: [] },
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -772,7 +773,7 @@ export class SandiBot {
     await interaction.reply({
       content,
       allowedMentions: { parse: [] },
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -794,7 +795,7 @@ export class SandiBot {
         content:
           "I can only pair devices for a recognized household member, and I do not have you on file yet. Ask an admin to add you (with your Discord account id) to Sandi's identities first.",
         allowedMentions: { parse: [] },
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -810,7 +811,7 @@ export class SandiBot {
         "Running this command again replaces any previous code.",
       ].join("\n"),
       allowedMentions: { parse: [] },
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -821,7 +822,7 @@ export class SandiBot {
       await interaction.reply({
         content: "I can only ignore channels and threads inside a server.",
         allowedMentions: { parse: [] },
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -845,7 +846,7 @@ export class SandiBot {
     await interaction.reply({
       content: `Okay, I'll ignore this ${place} from now on and only chime in when someone @-mentions me here.${stopNote} Run \`/sandi listen\` to undo this.`,
       allowedMentions: { parse: [] },
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -856,7 +857,7 @@ export class SandiBot {
       await interaction.reply({
         content: "I can only manage ignored channels and threads in a server.",
         allowedMentions: { parse: [] },
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -878,7 +879,7 @@ export class SandiBot {
     await interaction.reply({
       content,
       allowedMentions: { parse: [] },
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -1026,7 +1027,7 @@ export class SandiBot {
   async #replyToTodoInteraction(
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const result = await this.#todoList.createPinnedList(interaction);
     if (!result) {
@@ -1050,7 +1051,7 @@ export class SandiBot {
   async #replyToStatusInteraction(
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     await interaction.editReply({
       content: await this.#buildStatusContent(
         queueKeyFromInteraction(interaction),
@@ -1063,7 +1064,7 @@ export class SandiBot {
   async #replyToEventsListInteraction(
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const scope = interaction.options.getString("scope") ?? "current";
     const currentTarget = eventTargetFromInteraction(interaction);
     const allEvents = await listEvents(this.#config.paths.eventsRoot);
@@ -1087,7 +1088,7 @@ export class SandiBot {
   async #replyToRemindersListInteraction(
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const scope = interaction.options.getString("scope") ?? "current";
     const currentTarget = eventTargetFromInteraction(interaction);
     const reminders = await this.#reminders.listForTarget({
@@ -2004,7 +2005,7 @@ async function respondToFailedInteraction(
     await interaction.reply({
       content: "Something went wrong handling that command. Please try again.",
       allowedMentions: { parse: [] },
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   } catch {
     // The interaction may have expired or already been answered.

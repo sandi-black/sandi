@@ -10,6 +10,7 @@ import {
   type Message,
   type MessageActionRowComponentBuilder,
   type MessageCreateOptions,
+  MessageFlags,
   StringSelectMenuBuilder,
   type StringSelectMenuInteraction,
   type User,
@@ -131,7 +132,7 @@ export class ReminderManager {
           await interaction.reply({
             content: "Snooze this reminder for:",
             components: [snoozeSelectRow(parsed.id)],
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
           return true;
         }
@@ -140,7 +141,7 @@ export class ReminderManager {
             content:
               "Delete this reminder? This only affects the new reminder object; it will not touch old scheduled events.",
             components: [deleteConfirmRow(parsed.id)],
-            ephemeral: true,
+            flags: MessageFlags.Ephemeral,
           });
           return true;
         }
@@ -302,14 +303,14 @@ export class ReminderManager {
     if (reminder.status === "done") {
       await interaction.reply({
         content: "That reminder is already done.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
     if (reminder.status === "deleted") {
       await interaction.reply({
         content: "That reminder has already been deleted.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -327,7 +328,7 @@ export class ReminderManager {
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const updated = completedReminder(
       reminder,
       userFromInteraction(interaction),
@@ -687,10 +688,10 @@ async function respondToInteractionFailure(
   const content =
     "I couldn't update that reminder. It may have changed or been removed.";
   if (interaction.replied || interaction.deferred) {
-    await interaction.followUp({ content, ephemeral: true });
+    await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
     return;
   }
-  await interaction.reply({ content, ephemeral: true });
+  await interaction.reply({ content, flags: MessageFlags.Ephemeral });
 }
 
 function appendMessageRef(

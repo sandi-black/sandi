@@ -12,6 +12,7 @@ import {
   type MessageActionRowComponentBuilder,
   type MessageCreateOptions,
   type MessageEditOptions,
+  MessageFlags,
   ModalBuilder,
   type ModalSubmitInteraction,
   type SendableChannels,
@@ -413,7 +414,7 @@ export class TodoListManager {
     if (ref.list.items.length === 0) {
       await interaction.reply({
         content: "Nothing to complete yet.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });
       return;
@@ -422,7 +423,7 @@ export class TodoListManager {
     await interaction.reply({
       content: "Which item is done?",
       components: [completeSelectRow(messageId, ref.list.items)],
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
       allowedMentions: { parse: [] },
     });
   }
@@ -442,7 +443,7 @@ export class TodoListManager {
 
     await interaction.reply({
       content: "Refreshed the list.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
       allowedMentions: { parse: [] },
     });
   }
@@ -456,7 +457,7 @@ export class TodoListManager {
     if (!text) {
       await interaction.reply({
         content: "That item was too tiny for the list gremlin to hold.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });
       return;
@@ -498,7 +499,7 @@ export class TodoListManager {
     await interaction.reply({
       content: todoSetupContent(result.item),
       components: todoSetupComponents(messageId, result.item),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
       allowedMentions: { parse: [] },
     });
   }
@@ -569,7 +570,7 @@ export class TodoListManager {
           parsed.kind === "invalid"
             ? parsed.message
             : "Enter a reminder date/time, like `2026-05-26 9am`.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });
       return;
@@ -594,7 +595,7 @@ export class TodoListManager {
     await interaction.reply({
       content: todoSetupContent(updated),
       components: todoSetupComponents(messageId, updated),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
       allowedMentions: { parse: [] },
     });
   }
@@ -687,7 +688,7 @@ export class TodoListManager {
           parsed.kind === "invalid"
             ? parsed.message
             : "Enter a repeat, like `weekly Mon 6pm`.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });
       return;
@@ -714,7 +715,7 @@ export class TodoListManager {
     await interaction.reply({
       content: todoSetupContent(updated),
       components: todoSetupComponents(messageId, updated),
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
       allowedMentions: { parse: [] },
     });
   }
@@ -729,7 +730,7 @@ export class TodoListManager {
       await interaction.reply({
         content:
           "That item was already completed or this list is no longer current.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });
       return;
@@ -748,7 +749,7 @@ export class TodoListManager {
       await interaction.reply({
         content:
           "That item was already completed or this list is no longer current.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });
       return;
@@ -1265,26 +1266,26 @@ function legacyItemsForChannel(
 
 function staleListResponse(): {
   content: string;
-  ephemeral: true;
+  flags: MessageFlags.Ephemeral;
   allowedMentions: { parse: [] };
 } {
   return {
     content:
       "That todo list message is no longer the current one. Run `/sandi todo` to make a fresh pinned list here.",
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   };
 }
 
 function fullListResponse(): {
   content: string;
-  ephemeral: true;
+  flags: MessageFlags.Ephemeral;
   allowedMentions: { parse: [] };
 } {
   return {
     content:
       "This todo list is full at 10 items. Complete something before adding more.",
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   };
 }
@@ -1338,10 +1339,10 @@ async function respondToInteractionFailure(
   const content =
     "I couldn't update that todo list. It may have changed or been removed.";
   if (interaction.replied || interaction.deferred) {
-    await interaction.followUp({ content, ephemeral: true });
+    await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
     return;
   }
-  await interaction.reply({ content, ephemeral: true });
+  await interaction.reply({ content, flags: MessageFlags.Ephemeral });
 }
 
 function displayNameFromInteraction(interaction: Interaction): string {

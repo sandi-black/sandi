@@ -362,9 +362,10 @@ export class ReminderManager {
     id: string,
     rawMinutes: string,
   ): Promise<void> {
+    await interaction.deferUpdate();
     const minutes = parsePositiveInteger(rawMinutes);
     if (!minutes) {
-      await interaction.update({
+      await interaction.editReply({
         content: "That snooze duration was not valid.",
         components: [],
       });
@@ -372,7 +373,7 @@ export class ReminderManager {
     }
     const reminder = await readReminder(this.#remindersRoot, id);
     if (reminder.status !== "active") {
-      await interaction.update({
+      await interaction.editReply({
         content: `That reminder is already ${reminder.status}.`,
         components: [],
       });
@@ -388,12 +389,12 @@ export class ReminderManager {
     await writeReminder(this.#remindersRoot, id, updated);
     if (await this.#shouldCleanHandledMessages(reminder)) {
       await this.#deleteTrackedMessages(id, reminder);
-      await interaction.update({ content: "Snoozed.", components: [] });
+      await interaction.editReply({ content: "Snoozed.", components: [] });
       await deleteEphemeralReply(interaction);
       return;
     }
     await this.#disableTrackedMessages(id, updated);
-    await interaction.update({
+    await interaction.editReply({
       content: `Snoozed until ${inlineCode(snoozedUntil)}.`,
       components: [],
     });

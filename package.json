@@ -104,7 +104,7 @@
     "discord.js": "^14.27.0",
     "dotenv": "^17.4.2",
     "re2-wasm": "^1.0.2",
-    "tsx": "^4.23.1",
+    "tsx": "^4.23.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {

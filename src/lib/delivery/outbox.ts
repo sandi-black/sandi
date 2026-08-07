@@ -90,6 +90,16 @@ export class PermanentDeliveryError extends Error {
   }
 }
 
+export class RetryAfterDeliveryError extends Error {
+  readonly retryAfterMs: number;
+
+  constructor(message: string, retryAfterMs: number, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "RetryAfterDeliveryError";
+    this.retryAfterMs = positiveInteger(retryAfterMs, "retryAfterMs");
+  }
+}
+
 export class DurableOutbox {
   readonly #store: JsonFileStore<z.infer<typeof OutboxStateSchema>>;
   readonly #handlers = new Map<string, DeliveryHandler>();
@@ -420,11 +430,15 @@ export class DurableOutbox {
               count: (current.ambiguity?.count ?? 0) + 1,
             }
           : current.ambiguity;
+      const retryAfterMs =
+        error instanceof RetryAfterDeliveryError ? error.retryAfterMs : 0;
       return DeliveryRecordSchema.parse({
         ...current,
         status: "pending",
         updatedAt: iso(now),
-        nextAttemptAt: iso(now + this.#retryDelay(current.attempts)),
+        nextAttemptAt: iso(
+          now + Math.max(this.#retryDelay(current.attempts), retryAfterMs),
+        ),
         claim: undefined,
         lastError,
         ...(ambiguity ? { ambiguity } : {}),
@@ -435,6 +449,9 @@ export class DurableOutbox {
       kind: record.kind,
       classification,
       error: errorMessage(error),
+      ...(error instanceof RetryAfterDeliveryError
+        ? { retryAfterMs: error.retryAfterMs }
+        : {}),
     });
   }
 

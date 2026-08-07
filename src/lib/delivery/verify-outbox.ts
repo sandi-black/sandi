@@ -5,11 +5,13 @@ import {
   AmbiguousDeliveryError,
   DurableOutbox,
   PermanentDeliveryError,
+  RetryAfterDeliveryError,
 } from "@/lib/delivery/outbox";
 import { withTempDir } from "@/lib/verification/harness";
 
 await withTempDir("sandi-outbox-", async (root) => {
   await verifyTransientAndAmbiguousRetry(join(root, "retry.json"));
+  await verifyRetryAfter(join(root, "retry-after.json"));
   await verifyPermanentFailure(join(root, "permanent.json"));
   await verifyPartialProgress(join(root, "partial.json"));
   await verifyCrashRecovery(join(root, "crash.json"));
@@ -72,6 +74,37 @@ async function verifyTransientAndAmbiguousRetry(path: string): Promise<void> {
     /reused with different work/u,
   );
   console.log("ok outbox persists retry and ambiguous acknowledgement state");
+}
+
+async function verifyRetryAfter(path: string): Promise<void> {
+  let now = Date.parse("2026-07-10T00:15:00.000Z");
+  let attempts = 0;
+  const outbox = testOutbox(path, () => now);
+  outbox.register("message", async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      throw new RetryAfterDeliveryError("provider quota resets later", 12_000);
+    }
+    return { status: "complete" };
+  });
+  await outbox.enqueue({
+    idempotencyKey: "message:retry-after",
+    kind: "message",
+    payload: null,
+  });
+  let record = await outbox.deliverNow("message:retry-after");
+  assert.equal(record?.status, "pending");
+  assert.equal(record?.lastError?.class, "transient");
+  assert.equal(record?.nextAttemptAt, new Date(now + 12_000).toISOString());
+
+  now += 11_999;
+  record = await outbox.deliverNow("message:retry-after");
+  assert.equal(record?.attempts, 1);
+  now += 1;
+  record = await outbox.deliverNow("message:retry-after");
+  assert.equal(record?.status, "completed");
+  assert.equal(record?.attempts, 2);
+  console.log("ok outbox respects an explicit retry-after delay");
 }
 
 async function verifyPermanentFailure(path: string): Promise<void> {

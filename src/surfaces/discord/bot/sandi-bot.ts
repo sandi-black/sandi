@@ -31,6 +31,7 @@ import {
   DurableOutbox,
   deliveryOutboxPath,
   PermanentDeliveryError,
+  RetryAfterDeliveryError,
 } from "@/lib/delivery/outbox";
 import { formatDuration } from "@/lib/duration";
 import { errorMessage } from "@/lib/errors";
@@ -1451,8 +1452,15 @@ export class SandiBot {
         eventId: trigger.id,
         error: errorMessage(error),
       });
-      if (error instanceof ProviderTurnError && error.deliverySideEffects) {
-        throw new AmbiguousDeliveryError(error.message, { cause: error });
+      if (error instanceof ProviderTurnError) {
+        if (error.deliverySideEffects) {
+          throw new AmbiguousDeliveryError(error.message, { cause: error });
+        }
+        if (error.retryAfterMs !== undefined) {
+          throw new RetryAfterDeliveryError(error.message, error.retryAfterMs, {
+            cause: error,
+          });
+        }
       }
       throw error;
     }

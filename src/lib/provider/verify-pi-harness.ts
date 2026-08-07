@@ -4,8 +4,25 @@ import "@/lib/provider/verify-provider-capacity";
 import { join } from "node:path";
 
 import type { PiConfig } from "@/lib/config/env";
-import { PiCliClient, piSessionFilePath } from "@/lib/provider/pi-cli-client";
+import {
+  PiCliClient,
+  piSessionFilePath,
+  providerRetryAfterMs,
+} from "@/lib/provider/pi-cli-client";
 import { assert, isRecord, withTempDir } from "@/lib/verification/harness";
+
+assert(
+  providerRetryAfterMs("Resets in ~44.9h") === 161_700_000,
+  "provider reset hints preserve decimal-hour delays with a one-minute buffer",
+);
+assert(
+  providerRetryAfterMs("Resets in 20 minutes") === 1_260_000,
+  "provider reset hints parse word-form minute delays",
+);
+assert(
+  providerRetryAfterMs("ordinary transient error") === undefined,
+  "provider errors without a reset hint keep normal retry policy",
+);
 
 await withTempDir("sandi-pi-harness-", async (tempRoot) => {
   const fakePiModulePath = join(tempRoot, "fake-pi.mjs");

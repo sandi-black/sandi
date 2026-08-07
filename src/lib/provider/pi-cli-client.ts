@@ -45,6 +45,10 @@ const PI_STDOUT_MAX_BYTES = 16 * 1024 * 1024;
 const PI_STDERR_MAX_BYTES = 2 * 1024 * 1024;
 const COOPERATIVE_ABORT_GRACE_MS = 2_000;
 const TERMINATE_GRACE_MS = 3_000;
+const PROVIDER_RETRY_BUFFER_MS = 60_000;
+const PROVIDER_RETRY_MAX_MS = 7 * 24 * 60 * 60_000;
+const PROVIDER_RESET_PATTERN =
+  /\bresets?\s+in\s+~?\s*(\d+(?:\.\d+)?)\s*(milliseconds?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)\b/iu;
 
 // Coordinates for a per-turn loopback tool broker. When present, the turn's pi
 // child receives them in its environment and routes its proxy tool calls there.
@@ -108,6 +112,7 @@ export class ProviderTurnError extends Error {
   readonly stderr: string;
   readonly deliverySideEffects: boolean;
   readonly accountId?: string;
+  readonly retryAfterMs?: number;
 
   constructor(input: {
     message: string;
@@ -116,6 +121,7 @@ export class ProviderTurnError extends Error {
     stderr: string;
     deliverySideEffects?: boolean;
     accountId?: string;
+    retryAfterMs?: number;
   }) {
     super(input.message);
     this.name = "ProviderTurnError";
@@ -124,6 +130,9 @@ export class ProviderTurnError extends Error {
     this.stderr = input.stderr;
     this.deliverySideEffects = input.deliverySideEffects ?? false;
     if (input.accountId) this.accountId = input.accountId;
+    if (input.retryAfterMs !== undefined) {
+      this.retryAfterMs = input.retryAfterMs;
+    }
   }
 }
 
@@ -360,12 +369,16 @@ export class PiCliClient implements ModelProviderClient {
           exitCode: result.exitCode,
           deliverySideEffects,
         });
+        const retryAfterMs = providerRetryAfterMs(
+          `${result.stderr}\n${result.stdout}`,
+        );
         const errorInput = {
           message: providerErrorMessage(result),
           reason: classifyProviderFailure(result),
           exitCode: result.exitCode,
           stderr: result.stderr,
           deliverySideEffects,
+          ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
         };
         throw new ProviderTurnError(
           account?.id ? { ...errorInput, accountId: account.id } : errorInput,
@@ -626,6 +639,32 @@ function providerErrorMessage(result: CommandResult): string {
     firstMeaningfulLine(result.stdout) ??
     `pi exited with code ${result.exitCode}`
   );
+}
+
+export function providerRetryAfterMs(text: string): number | undefined {
+  const match = PROVIDER_RESET_PATTERN.exec(text);
+  const amountText = match?.[1];
+  const unit = match?.[2]?.toLowerCase();
+  if (!amountText || !unit) return undefined;
+  const amount = Number(amountText);
+  if (!Number.isFinite(amount) || amount <= 0) return undefined;
+  const unitMs = providerRetryUnitMs(unit);
+  if (!unitMs) return undefined;
+  return Math.min(
+    PROVIDER_RETRY_MAX_MS,
+    Math.ceil(amount * unitMs + PROVIDER_RETRY_BUFFER_MS),
+  );
+}
+
+function providerRetryUnitMs(unit: string): number | undefined {
+  if (unit === "ms" || unit.startsWith("millisecond")) return 1;
+  if (unit === "s" || unit.startsWith("sec")) return 1_000;
+  if (unit === "m" || unit.startsWith("min")) return 60_000;
+  if (unit === "h" || unit.startsWith("hour") || unit.startsWith("hr")) {
+    return 60 * 60_000;
+  }
+  if (unit === "d" || unit.startsWith("day")) return 24 * 60 * 60_000;
+  return undefined;
 }
 
 function classifyProviderFailure(result: CommandResult): ProviderFailureReason {

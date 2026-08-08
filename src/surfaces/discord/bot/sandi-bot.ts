@@ -104,6 +104,10 @@ import {
   type TopLevelEngagementRoute,
   topLevelEngagementInstructions,
 } from "@/surfaces/discord/bot/top-level-engagement";
+import {
+  enqueueStandaloneUsageWarning,
+  UsageThresholdWarning,
+} from "@/surfaces/discord/bot/usage-threshold-warning";
 import type { DiscordAppConfig } from "@/surfaces/discord/config";
 import {
   buildDiscordChannelManifest,
@@ -254,6 +258,7 @@ export class SandiBot {
   readonly #reminders: ReminderManager;
   readonly #reactions: ReactionDigestStore;
   readonly #todoList: TodoListManager;
+  readonly #usageThresholdWarning: UsageThresholdWarning;
   readonly #queue = new ThreadQueue();
   #ignoredChannels: Promise<Set<string>> | undefined;
   readonly #failureNotices = new Map<string, number>();
@@ -305,6 +310,13 @@ export class SandiBot {
       client: this.#client,
       dataDir: this.#config.paths.dataDir,
       remindersRoot: this.#config.paths.remindersRoot,
+    });
+    this.#usageThresholdWarning = new UsageThresholdWarning({
+      dataDir: this.#config.paths.dataDir,
+      accounts: this.#config.pi.accountRouting?.accounts ?? [],
+      ...(this.#config.pi.agentDir
+        ? { defaultAgentDir: this.#config.pi.agentDir }
+        : {}),
     });
     this.#reminders = new ReminderManager({
       client: this.#client,
@@ -1332,6 +1344,19 @@ export class SandiBot {
         return;
       }
 
+      const preparedUsageWarning = await this.#usageThresholdWarning.prepare({
+        discordUserId: input.author.platformUserId,
+        accountId: response.accountId,
+        response,
+      });
+      response = preparedUsageWarning.response;
+      await enqueueStandaloneUsageWarning({
+        outbox: this.#outbox,
+        channelId: input.channel.id,
+        messageId: input.messageId,
+        content: preparedUsageWarning.standaloneContent,
+      });
+
       if (input.topLevelDelivery) {
         await this.#sendTopLevelProviderResponse({
           channel: input.channel,
@@ -1585,6 +1610,18 @@ export class SandiBot {
         messageId: message.id,
         responseLength: response.text.length,
         deliverySideEffects: response.deliverySideEffects,
+      });
+      const preparedUsageWarning = await this.#usageThresholdWarning.prepare({
+        discordUserId: author.platformUserId,
+        accountId: response.accountId,
+        response,
+      });
+      response = preparedUsageWarning.response;
+      await enqueueStandaloneUsageWarning({
+        outbox: this.#outbox,
+        channelId: message.channelId,
+        messageId: message.id,
+        content: preparedUsageWarning.standaloneContent,
       });
       await this.#sendProviderResponse({
         channel,

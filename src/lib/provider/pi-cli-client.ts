@@ -95,6 +95,7 @@ export type ProviderTurnResponse = {
   text: string;
   deliverySideEffects: boolean;
   signals: TurnSignal[];
+  accountId?: string;
   raw: unknown;
 };
 
@@ -395,7 +396,7 @@ export class PiCliClient implements ModelProviderClient {
         deliverySideEffects,
       });
 
-      return {
+      const response = {
         text: result.stdout.trim(),
         deliverySideEffects,
         signals,
@@ -405,6 +406,7 @@ export class PiCliClient implements ModelProviderClient {
           accountId: account?.id,
         },
       };
+      return account?.id ? { ...response, accountId: account.id } : response;
     } finally {
       await cleanupTurnFiles([
         deliverySideEffectFile,

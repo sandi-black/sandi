@@ -46,6 +46,25 @@ const UsageResponseSchema = z.object({
 type AuthProvider = z.infer<typeof AuthProviderSchema>;
 type RateLimitWindow = z.infer<typeof RateLimitWindowSchema>;
 
+export type OpenAIUsageWindow = {
+  kind: "five-hour" | "weekly" | "other";
+  windowSeconds: number;
+  usedPercent: number;
+  remainingPercent: number;
+  resetAfterSeconds?: number;
+  resetAt?: number;
+};
+
+export type OpenAIUsageSnapshot =
+  | {
+      available: true;
+      planType?: string;
+      allowed?: boolean;
+      limitReached?: boolean;
+      windows: OpenAIUsageWindow[];
+    }
+  | { available: false; reason: string };
+
 export type OpenAIUsageLimits = {
   available: boolean;
   lines: string[];
@@ -72,6 +91,18 @@ async function readOpenAIUsageLimitsForAccount(
   account: OpenAIUsageAccount,
 ): Promise<OpenAIUsageLimits> {
   const label = accountLabel(account);
+  const usage = await readOpenAIUsageForAccount(account);
+  if (!usage.available) return unavailable(label, usage.reason);
+
+  const lines = [
+    `- ${label}: ${formatPlan(usage.planType)}${formatAllowed(usage.allowed, usage.limitReached)}; ${formatWindows(usage.windows)}`,
+  ];
+  return { available: true, lines };
+}
+
+export async function readOpenAIUsageForAccount(
+  account: OpenAIUsageAccount,
+): Promise<OpenAIUsageSnapshot> {
   try {
     const auth = await readOpenAICodexAuth(account.agentDir);
     const response = await fetch(OPENAI_USAGE_URL, {
@@ -80,30 +111,48 @@ async function readOpenAIUsageLimitsForAccount(
         authorization: `Bearer ${auth.credentials.access}`,
         "chatgpt-account-id": auth.accountId,
         originator: "pi",
-        "user-agent": "Sandi status",
+        "user-agent": "Sandi usage warning",
       },
     });
     if (!response.ok) {
-      return unavailable(
-        label,
-        `OpenAI usage endpoint returned ${response.status}`,
-      );
+      return {
+        available: false,
+        reason: `OpenAI usage endpoint returned ${response.status}`,
+      };
     }
 
     const parsed = UsageResponseSchema.safeParse(await response.json());
-    if (!parsed.success)
-      return unavailable(label, "OpenAI usage response shape changed");
+    if (!parsed.success) {
+      return {
+        available: false,
+        reason: "OpenAI usage response shape changed",
+      };
+    }
 
     const rateLimit = parsed.data.rate_limit;
-    if (!rateLimit)
-      return unavailable(label, "OpenAI usage limits are not present");
+    if (!rateLimit) {
+      return {
+        available: false,
+        reason: "OpenAI usage limits are not present",
+      };
+    }
 
-    const lines = [
-      `- ${label}: ${formatPlan(parsed.data.plan_type)}${formatAllowed(rateLimit.allowed, rateLimit.limit_reached)}; ${formatWindows(rateLimit.primary_window, rateLimit.secondary_window)}`,
-    ];
-    return { available: true, lines };
+    const windows = [rateLimit.primary_window, rateLimit.secondary_window]
+      .filter((window): window is RateLimitWindow => window !== undefined)
+      .map(toUsageWindow);
+    return {
+      available: true,
+      ...(parsed.data.plan_type ? { planType: parsed.data.plan_type } : {}),
+      ...(rateLimit.allowed !== undefined
+        ? { allowed: rateLimit.allowed }
+        : {}),
+      ...(rateLimit.limit_reached !== undefined
+        ? { limitReached: rateLimit.limit_reached }
+        : {}),
+      windows,
+    };
   } catch (error) {
-    return unavailable(label, errorMessage(error));
+    return { available: false, reason: errorMessage(error) };
   }
 }
 
@@ -221,41 +270,60 @@ function formatAllowed(
   return "";
 }
 
-function formatWindows(
-  primary: RateLimitWindow | undefined,
-  secondary: RateLimitWindow | undefined,
-): string {
-  const windows = [primary, secondary]
-    .filter((window): window is RateLimitWindow => window !== undefined)
-    .map(
-      (window) => `${formatWindowName(window)} ${formatWindowUsage(window)}`,
-    );
-  return windows.length > 0 ? windows.join(", ") : "no window usage";
+function formatWindows(windows: readonly OpenAIUsageWindow[]): string {
+  const formatted = windows.map(
+    (window) => `${formatWindowName(window)} ${formatWindowUsage(window)}`,
+  );
+  return formatted.length > 0 ? formatted.join(", ") : "no window usage";
 }
 
-function formatWindowName(window: RateLimitWindow): string {
-  if (window.limit_window_seconds === 18_000) return "5h";
-  if (window.limit_window_seconds === 604_800) return "week";
-  return formatDuration(window.limit_window_seconds * 1_000, {
+function formatWindowName(window: OpenAIUsageWindow): string {
+  if (window.kind === "five-hour") return "5h";
+  if (window.kind === "weekly") return "week";
+  return formatDuration(window.windowSeconds * 1_000, {
     granularity: "minutes",
   });
 }
 
-function formatWindowUsage(window: RateLimitWindow): string {
-  const used = clampPercent(window.used_percent);
-  const remaining = clampPercent(100 - used);
+function formatWindowUsage(window: OpenAIUsageWindow): string {
+  const used = clampPercent(window.usedPercent);
+  const remaining = clampPercent(window.remainingPercent);
   const reset = resetDescription(window);
   return `${remaining}% remaining (${used}% used${reset})`;
 }
 
-function resetDescription(window: RateLimitWindow): string {
-  if (window.reset_after_seconds !== undefined) {
-    return `, resets in ${formatDuration(window.reset_after_seconds * 1_000, { granularity: "minutes" })}`;
+function resetDescription(window: OpenAIUsageWindow): string {
+  if (window.resetAfterSeconds !== undefined) {
+    return `, resets in ${formatDuration(window.resetAfterSeconds * 1_000, { granularity: "minutes" })}`;
   }
-  if (window.reset_at !== undefined) {
-    return `, resets at ${new Date(window.reset_at * 1000).toISOString()}`;
+  if (window.resetAt !== undefined) {
+    return `, resets at ${new Date(window.resetAt * 1000).toISOString()}`;
   }
   return "";
+}
+
+function toUsageWindow(window: RateLimitWindow): OpenAIUsageWindow {
+  const kind = windowKind(window.limit_window_seconds);
+  return {
+    kind,
+    windowSeconds: window.limit_window_seconds,
+    usedPercent: window.used_percent,
+    remainingPercent: clampRawPercent(100 - window.used_percent),
+    ...(window.reset_after_seconds !== undefined
+      ? { resetAfterSeconds: window.reset_after_seconds }
+      : {}),
+    ...(window.reset_at !== undefined ? { resetAt: window.reset_at } : {}),
+  };
+}
+
+function windowKind(windowSeconds: number): OpenAIUsageWindow["kind"] {
+  if (windowSeconds === 18_000) return "five-hour";
+  if (windowSeconds === 604_800) return "weekly";
+  return "other";
+}
+
+function clampRawPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
 }
 
 function clampPercent(value: number): number {

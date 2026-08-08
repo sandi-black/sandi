@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 
-import type {
-  OpenAIUsageSnapshot,
-  OpenAIUsageWindow,
+import {
+  type OpenAIUsageSnapshot,
+  type OpenAIUsageWindow,
+  parseOpenAIUsageResponse,
 } from "@/lib/provider/openai-usage";
 import type { ProviderTurnResponse } from "@/lib/provider/pi-cli-client";
 import { withTempDir } from "@/lib/verification/harness";
@@ -11,6 +12,25 @@ import {
   type PreparedUsageWarning,
   UsageThresholdWarning,
 } from "@/surfaces/discord/bot/usage-threshold-warning";
+
+const parsedUsage = parseOpenAIUsageResponse({
+  plan_type: "pro",
+  rate_limit: {
+    allowed: true,
+    primary_window: {
+      used_percent: 12,
+      limit_window_seconds: 604_800,
+      reset_after_seconds: 86_400,
+    },
+    secondary_window: null,
+  },
+});
+assert.equal(parsedUsage.available, true);
+assert.equal(
+  parsedUsage.available ? parsedUsage.windows.length : undefined,
+  1,
+  "a null secondary usage window is treated as absent",
+);
 
 await withTempDir("sandi-usage-threshold-", async (dataDir) => {
   let current = usage(95, 95);

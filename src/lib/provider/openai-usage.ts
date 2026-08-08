@@ -34,8 +34,8 @@ const RateLimitWindowSchema = z.object({
 const RateLimitSchema = z.object({
   allowed: z.boolean().optional(),
   limit_reached: z.boolean().optional(),
-  primary_window: RateLimitWindowSchema.optional(),
-  secondary_window: RateLimitWindowSchema.optional(),
+  primary_window: RateLimitWindowSchema.nullable().optional(),
+  secondary_window: RateLimitWindowSchema.nullable().optional(),
 });
 
 const UsageResponseSchema = z.object({
@@ -121,39 +121,41 @@ export async function readOpenAIUsageForAccount(
       };
     }
 
-    const parsed = UsageResponseSchema.safeParse(await response.json());
-    if (!parsed.success) {
-      return {
-        available: false,
-        reason: "OpenAI usage response shape changed",
-      };
-    }
-
-    const rateLimit = parsed.data.rate_limit;
-    if (!rateLimit) {
-      return {
-        available: false,
-        reason: "OpenAI usage limits are not present",
-      };
-    }
-
-    const windows = [rateLimit.primary_window, rateLimit.secondary_window]
-      .filter((window): window is RateLimitWindow => window !== undefined)
-      .map(toUsageWindow);
-    return {
-      available: true,
-      ...(parsed.data.plan_type ? { planType: parsed.data.plan_type } : {}),
-      ...(rateLimit.allowed !== undefined
-        ? { allowed: rateLimit.allowed }
-        : {}),
-      ...(rateLimit.limit_reached !== undefined
-        ? { limitReached: rateLimit.limit_reached }
-        : {}),
-      windows,
-    };
+    return parseOpenAIUsageResponse(await response.json());
   } catch (error) {
     return { available: false, reason: errorMessage(error) };
   }
+}
+
+export function parseOpenAIUsageResponse(value: unknown): OpenAIUsageSnapshot {
+  const parsed = UsageResponseSchema.safeParse(value);
+  if (!parsed.success) {
+    return {
+      available: false,
+      reason: "OpenAI usage response shape changed",
+    };
+  }
+
+  const rateLimit = parsed.data.rate_limit;
+  if (!rateLimit) {
+    return {
+      available: false,
+      reason: "OpenAI usage limits are not present",
+    };
+  }
+
+  const windows = [rateLimit.primary_window, rateLimit.secondary_window]
+    .filter((window): window is RateLimitWindow => window != null)
+    .map(toUsageWindow);
+  return {
+    available: true,
+    ...(parsed.data.plan_type ? { planType: parsed.data.plan_type } : {}),
+    ...(rateLimit.allowed !== undefined ? { allowed: rateLimit.allowed } : {}),
+    ...(rateLimit.limit_reached !== undefined
+      ? { limitReached: rateLimit.limit_reached }
+      : {}),
+    windows,
+  };
 }
 
 async function readOpenAICodexAuth(agentDir?: string): Promise<{

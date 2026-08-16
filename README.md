@@ -45,6 +45,7 @@ In Discord:
 - run `/sandi help` to see the available commands;
 - run `/sandi todo` to create a pinned interactive todo list;
 - run `/sandi status` to inspect runtime health;
+- run `/sandi reauth` to refresh a ChatGPT/Codex login with a device code;
 - run `/sandi events list` and `/sandi reminders list` to inspect scheduled
   work.
 

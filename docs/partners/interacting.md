@@ -33,6 +33,8 @@ Common commands:
 - `/sandi todo`: create and pin an interactive todo list.
 - `/sandi status`: inspect Sandi's runtime health and current conversation
   status.
+- `/sandi reauth`: refresh your ChatGPT/Codex login with a device code Sandi
+  shows privately to you.
 - `/sandi stop`: ask the current turn in this conversation to stop.
 - `/sandi ignore`: stop the current turn and have Sandi ignore this channel or
   thread unless she is @-mentioned.

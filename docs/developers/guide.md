@@ -143,8 +143,9 @@ comments, review-comment replies, and pull request reviews.
 ## Pi CLI
 
 Sandi shells out to the local `pi` command and assumes each configured Pi account
-directory is already authenticated. Sandi does not handle OpenAI passwords,
-OAuth browser flows, or API keys directly.
+directory is already authenticated. For ChatGPT/Codex, `/sandi reauth` can mint
+or replace that `auth.json` through the device-code flow. Sandi still does not
+handle OpenAI passwords or API keys directly.
 
 The default command shape is:
 
@@ -274,7 +275,10 @@ mkdir -p ./data/pi-accounts/secondary
 PI_CODING_AGENT_DIR=./data/pi-accounts/secondary pi
 ```
 
-Then run `/login` in Pi and select the ChatGPT/Codex subscription provider.
+Then run `/login` in Pi and select the ChatGPT/Codex subscription provider, or
+run `/sandi reauth` in Discord. The slash command uses ChatGPT's device-code
+flow: Sandi shows a URL and one-time code privately, waits for you to confirm
+in the browser, and writes the tokens to that account's `auth.json`.
 
 Provider logs include an audit record for each Pi model turn:
 `provider account route selected`, followed by either

@@ -45,6 +45,10 @@ await withTempDir("sandi-pi-routing-", async (tempRoot) => {
     secondaryBeforeLogin.length === 0,
     "Secondary turns must not fall back to primary when secondary auth.json is absent",
   );
+  assert(
+    router.accountForIdentity("secondary-human")?.id === "secondary",
+    "accountForIdentity still returns a mapped account when auth.json is absent",
+  );
 
   const primaryWhileSecondaryMissing = await router.candidates({
     identityId: "primary-human",

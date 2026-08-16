@@ -39,13 +39,19 @@ export class PiAccountRouter {
   async candidates(
     request: PiAccountRoutingRequest | undefined,
   ): Promise<PiAccountCandidate[]> {
-    const accountId = this.#routeAccountId(request);
-    if (!accountId) return [];
-
-    const account = this.#account(accountId);
+    const account = this.accountForIdentity(request?.identityId);
     if (!account) return [];
     if (!(await isAccountAvailable(account))) return [];
     return [{ account }];
+  }
+
+  accountForIdentity(
+    identityId: string | undefined,
+  ): PiAccountConfig | undefined {
+    if (!identityId) return undefined;
+    const accountId = this.#routeAccountId({ identityId });
+    if (!accountId) return undefined;
+    return this.#account(accountId);
   }
 
   #routeAccountId(

@@ -42,6 +42,13 @@ export function serializedCommands(): unknown[] {
             "Get a one-time code to connect a desktop client to Sandi",
           ),
       )
+      .addSubcommand((command) =>
+        command
+          .setName("reauth")
+          .setDescription(
+            "Refresh your ChatGPT/Codex login with a device code",
+          ),
+      )
       .addSubcommandGroup((group) =>
         group
           .setName("events")

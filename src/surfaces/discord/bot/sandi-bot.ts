@@ -49,6 +49,11 @@ import type {
   DesktopHandsLease,
 } from "@/lib/provider/desktop-hands";
 import { leaseDesktopHands } from "@/lib/provider/desktop-hands";
+import { persistOpenAICodexAuth } from "@/lib/provider/openai-codex-auth";
+import {
+  type CodexDeviceLoginPending,
+  startOpenAICodexDeviceLogin,
+} from "@/lib/provider/openai-codex-device-login";
 import type { PiAccountRoutingRequest } from "@/lib/provider/pi-account-routing";
 import {
   type ModelProviderClient,
@@ -57,6 +62,12 @@ import {
 } from "@/lib/provider/pi-cli-client";
 import { ThreadQueue } from "@/lib/turns/turn-queue";
 import { isRecord } from "@/lib/type-guards";
+import {
+  codexReauthDeclineMessage,
+  formatCodexReauthCompletion,
+  formatCodexReauthPrompt,
+  resolveCodexReauthTarget,
+} from "@/surfaces/discord/bot/codex-reauth";
 import {
   enqueueDiscordMessage,
   registerDiscordMessageDelivery,
@@ -148,6 +159,7 @@ const HELP_MESSAGE = [
   "`/sandi todo`: create and pin an interactive todo list in this channel.",
   "`/sandi status`: show runtime status, uptime/memory health, queue state, git revision, token usage, provider limits, and current conversation context size.",
   "`/sandi auth`: get a one-time code to connect a desktop client to Sandi (privately, just to you).",
+  "`/sandi reauth`: refresh your ChatGPT/Codex login with a device code (privately, just to you).",
   "`/sandi events list`: list scheduled events for this conversation.",
   "`/sandi events list scope: All events`: list every scheduled event Sandi can see.",
   "`/sandi reminders list`: list interactive human reminders for this conversation.",
@@ -263,6 +275,7 @@ export class SandiBot {
   #ignoredChannels: Promise<Set<string>> | undefined;
   readonly #failureNotices = new Map<string, number>();
   readonly #identities: HumanIdentityStore;
+  readonly #codexReauthByIdentity = new Map<string, AbortController>();
   #forum: ForumChannel | undefined;
   #startPromise: Promise<void> | undefined;
   #lifecycle: AbortController | undefined;
@@ -464,6 +477,7 @@ export class SandiBot {
   stop(): void {
     log.info("stopping Discord bot");
     this.#lifecycle?.abort();
+    this.#abortCodexReauth();
     this.#events.stop();
     this.#reminders.stop();
     this.#outbox.stop();
@@ -766,6 +780,10 @@ export class SandiBot {
       await this.#replyToAuthInteraction(interaction);
       return;
     }
+    if (!group && subcommand === "reauth") {
+      await this.#replyToReauthInteraction(interaction);
+      return;
+    }
     if (group === "events" && subcommand === "list") {
       await this.#replyToEventsListInteraction(interaction);
       return;
@@ -826,6 +844,122 @@ export class SandiBot {
       allowedMentions: { parse: [] },
       flags: MessageFlags.Ephemeral,
     });
+  }
+
+  async #replyToReauthInteraction(
+    interaction: ChatInputCommandInteraction,
+  ): Promise<void> {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const identities = await this.#identities.load();
+    const target = resolveCodexReauthTarget({
+      identities,
+      discordUserId: interaction.user.id,
+      ...(this.#config.pi.accountRouting
+        ? { routing: this.#config.pi.accountRouting }
+        : {}),
+      ...(this.#config.pi.agentDir
+        ? { defaultAgentDir: this.#config.pi.agentDir }
+        : {}),
+    });
+    if (!target.ok) {
+      await interaction.editReply({
+        content: codexReauthDeclineMessage(target.reason),
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    let pending: CodexDeviceLoginPending;
+    try {
+      pending = await startOpenAICodexDeviceLogin();
+    } catch (error) {
+      log.warn("failed to start ChatGPT device login", {
+        identityId: target.identityId,
+        error: errorMessage(error),
+      });
+      await interaction.editReply({
+        content: `Could not start ChatGPT device login: ${errorMessage(error)}`,
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    const controller = this.#replaceCodexReauth(target.identityId);
+    log.info("started ChatGPT device login", {
+      identityId: target.identityId,
+      piAccountId: target.accountId,
+    });
+    await interaction.editReply({
+      content: formatCodexReauthPrompt({
+        accountLabel: target.accountLabel,
+        userCode: pending.userCode,
+        verificationUri: pending.verificationUri,
+        expiresInSeconds: pending.expiresInSeconds,
+      }),
+      allowedMentions: { parse: [] },
+    });
+
+    try {
+      const completion = await pending.complete(controller.signal);
+      if (completion.kind === "authorized") {
+        try {
+          await persistOpenAICodexAuth({
+            agentDir: target.agentDir,
+            credential: completion.credential,
+          });
+        } catch (error) {
+          log.error("failed to save ChatGPT device login", {
+            identityId: target.identityId,
+            piAccountId: target.accountId,
+            error: errorMessage(error),
+          });
+          await interaction.editReply({
+            content: `ChatGPT approved the login, but I could not save it: ${errorMessage(error)}`,
+            allowedMentions: { parse: [] },
+          });
+          return;
+        }
+        log.info("saved ChatGPT device login", {
+          identityId: target.identityId,
+          piAccountId: target.accountId,
+        });
+      } else {
+        log.warn("ChatGPT device login did not complete", {
+          identityId: target.identityId,
+          piAccountId: target.accountId,
+          kind: completion.kind,
+          ...(completion.kind === "failed"
+            ? { error: completion.message }
+            : {}),
+        });
+      }
+      await interaction.editReply({
+        content: formatCodexReauthCompletion(completion, target.accountLabel),
+        allowedMentions: { parse: [] },
+      });
+    } finally {
+      this.#releaseCodexReauth(target.identityId, controller);
+    }
+  }
+
+  #replaceCodexReauth(identityId: string): AbortController {
+    this.#codexReauthByIdentity.get(identityId)?.abort();
+    const controller = new AbortController();
+    this.#codexReauthByIdentity.set(identityId, controller);
+    return controller;
+  }
+
+  #releaseCodexReauth(identityId: string, controller: AbortController): void {
+    if (this.#codexReauthByIdentity.get(identityId) === controller) {
+      this.#codexReauthByIdentity.delete(identityId);
+    }
+  }
+
+  #abortCodexReauth(): void {
+    for (const controller of this.#codexReauthByIdentity.values()) {
+      controller.abort();
+    }
+    this.#codexReauthByIdentity.clear();
   }
 
   async #replyToIgnoreInteraction(

@@ -1,28 +1,10 @@
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
 import { z } from "zod/v4";
 import { formatDuration } from "@/lib/duration";
 import { errorMessage } from "@/lib/errors";
+import { loadOpenAICodexAuth } from "@/lib/provider/openai-codex-auth";
 import type { PiAccountConfig } from "@/lib/provider/pi-account-routing";
-import { writePrivateTextFile } from "@/lib/state/private-files";
 
-const OPENAI_CODEX_PROVIDER_ID = "openai-codex";
-const OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token";
 const OPENAI_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
-const JWT_CLAIM_PATH = "https://api.openai.com/auth";
-const TOKEN_REFRESH_LEEWAY_MS = 60_000;
-
-const AuthProviderSchema = z.object({
-  access: z.string().min(1),
-  refresh: z.string().min(1),
-  expires: z.number(),
-  accountId: z.string().optional(),
-});
-
-const AuthFileSchema = z.record(z.string(), z.unknown());
 
 const RateLimitWindowSchema = z.object({
   used_percent: z.number(),
@@ -43,7 +25,6 @@ const UsageResponseSchema = z.object({
   rate_limit: RateLimitSchema.nullable().optional(),
 });
 
-type AuthProvider = z.infer<typeof AuthProviderSchema>;
 type RateLimitWindow = z.infer<typeof RateLimitWindowSchema>;
 
 export type OpenAIUsageWindow = {
@@ -104,11 +85,13 @@ export async function readOpenAIUsageForAccount(
   account: OpenAIUsageAccount,
 ): Promise<OpenAIUsageSnapshot> {
   try {
-    const auth = await readOpenAICodexAuth(account.agentDir);
+    const auth = await loadOpenAICodexAuth({
+      ...(account.agentDir ? { agentDir: account.agentDir } : {}),
+    });
     const response = await fetch(OPENAI_USAGE_URL, {
       headers: {
         accept: "application/json",
-        authorization: `Bearer ${auth.credentials.access}`,
+        authorization: `Bearer ${auth.access}`,
         "chatgpt-account-id": auth.accountId,
         originator: "pi",
         "user-agent": "Sandi usage warning",
@@ -156,91 +139,6 @@ export function parseOpenAIUsageResponse(value: unknown): OpenAIUsageSnapshot {
       : {}),
     windows,
   };
-}
-
-async function readOpenAICodexAuth(agentDir?: string): Promise<{
-  credentials: AuthProvider;
-  accountId: string;
-}> {
-  const authPath = authFilePath(agentDir);
-  const raw = AuthFileSchema.parse(
-    JSON.parse(await readFile(authPath, "utf8")),
-  );
-  const parsed = AuthProviderSchema.safeParse(raw[OPENAI_CODEX_PROVIDER_ID]);
-  if (!parsed.success) throw new Error("OpenAI Codex auth is not configured");
-
-  let credentials = parsed.data;
-  if (credentials.expires <= Date.now() + TOKEN_REFRESH_LEEWAY_MS) {
-    credentials = await refreshOpenAICodexAuth(credentials.refresh);
-    await writePrivateTextFile(
-      authPath,
-      `${JSON.stringify({ ...raw, [OPENAI_CODEX_PROVIDER_ID]: credentials }, null, 2)}\n`,
-    );
-  }
-
-  const accountId =
-    credentials.accountId ?? accountIdFromToken(credentials.access);
-  return { credentials, accountId };
-}
-
-async function refreshOpenAICodexAuth(
-  refreshToken: string,
-): Promise<AuthProvider> {
-  const response = await fetch(OPENAI_TOKEN_URL, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: OPENAI_CODEX_CLIENT_ID,
-    }),
-  });
-  if (!response.ok) throw new Error("OpenAI Codex token refresh failed");
-
-  const body = z
-    .object({
-      access_token: z.string().min(1),
-      refresh_token: z.string().min(1),
-      expires_in: z.number(),
-    })
-    .parse(await response.json());
-
-  return {
-    access: body.access_token,
-    refresh: body.refresh_token,
-    expires: Date.now() + body.expires_in * 1000,
-    accountId: accountIdFromToken(body.access_token),
-  };
-}
-
-function authFilePath(agentDir?: string): string {
-  const root =
-    agentDir ??
-    process.env["PI_CODING_AGENT_DIR"]?.trim() ??
-    join(homedir(), ".pi", "agent");
-  return join(root, "auth.json");
-}
-
-function accountIdFromToken(token: string): string {
-  const parts = token.split(".");
-  const payload = parts[1];
-  if (parts.length !== 3 || !payload)
-    throw new Error("OpenAI Codex token is invalid");
-  const decoded = JSON.parse(
-    Buffer.from(base64UrlToBase64(payload), "base64").toString("utf8"),
-  );
-  const parsed = z
-    .object({
-      [JWT_CLAIM_PATH]: z.object({
-        chatgpt_account_id: z.string().min(1),
-      }),
-    })
-    .parse(decoded);
-  return parsed[JWT_CLAIM_PATH].chatgpt_account_id;
-}
-
-function base64UrlToBase64(value: string): string {
-  return value.replaceAll("-", "+").replaceAll("_", "/");
 }
 
 function unavailable(label: string, reason: string): OpenAIUsageLimits {

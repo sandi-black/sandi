@@ -87,9 +87,10 @@ same data volume before starting Sandi in production:
 docker compose run --rm sandi pi
 ```
 
-Run Pi's `/login` flow in that shell and select the provider Sandi should use.
-Additional routed accounts can be authenticated by setting `PI_CODING_AGENT_DIR`
-to the account directory declared in `data/config/pi-accounts.json`.
+Run Pi's `/login` flow in that shell and select the provider Sandi should use,
+or run `/sandi login` in Discord for ChatGPT device-code login. Additional
+routed accounts can be authenticated by setting `PI_CODING_AGENT_DIR` to the
+account directory declared in `data/config/pi-accounts.json`.
 
 ## GitHub Container Registry
 

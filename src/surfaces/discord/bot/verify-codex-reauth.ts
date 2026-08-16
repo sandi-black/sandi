@@ -156,10 +156,10 @@ function verifyPromptAndCompletionCopy(): void {
 
   assertEqual(
     formatCodexReauthCompletion({ kind: "timeout" }, "Jess").includes(
-      "/sandi reauth",
+      "/sandi login",
     ),
     true,
-    "timeout copy points back at /sandi reauth",
+    "timeout copy points back at /sandi login",
   );
   assertEqual(
     formatCodexReauthCompletion(

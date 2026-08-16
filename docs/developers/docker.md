@@ -88,7 +88,7 @@ docker compose run --rm sandi pi
 ```
 
 Run Pi's `/login` flow in that shell and select the provider Sandi should use,
-or run `/sandi reauth` in Discord for ChatGPT device-code login. Additional
+or run `/sandi login` in Discord for ChatGPT device-code login. Additional
 routed accounts can be authenticated by setting `PI_CODING_AGENT_DIR` to the
 account directory declared in `data/config/pi-accounts.json`.
 

@@ -44,10 +44,8 @@ export function serializedCommands(): unknown[] {
       )
       .addSubcommand((command) =>
         command
-          .setName("reauth")
-          .setDescription(
-            "Refresh your ChatGPT/Codex login with a device code",
-          ),
+          .setName("login")
+          .setDescription("Log in to ChatGPT/Codex with a device code"),
       )
       .addSubcommandGroup((group) =>
         group

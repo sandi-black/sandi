@@ -69,9 +69,9 @@ export function codexReauthDeclineMessage(
 ): string {
   switch (reason) {
     case "unrecognized":
-      return "I can only refresh ChatGPT/Codex login for a recognized household member, and I do not have you on file yet. Ask an admin to add you (with your Discord account id) to Sandi's identities first.";
+      return "I can only start a ChatGPT/Codex login for a recognized household member, and I do not have you on file yet. Ask an admin to add you (with your Discord account id) to Sandi's identities first.";
     case "unmapped":
-      return "I know who you are, but there is no ChatGPT/Codex account routed to you yet. Ask an admin to map your identity in Sandi's Pi account routing before I can refresh this login.";
+      return "I know who you are, but there is no ChatGPT/Codex account routed to you yet. Ask an admin to map your identity in Sandi's Pi account routing before I can run this login.";
     default: {
       const _exhaustive: never = reason;
       return _exhaustive;
@@ -87,7 +87,7 @@ export function formatCodexReauthPrompt(input: {
 }): string {
   const minutes = Math.max(1, Math.round(input.expiresInSeconds / 60));
   return [
-    `To refresh the ChatGPT/Codex login for **${input.accountLabel}**:`,
+    `To log in to ChatGPT/Codex for **${input.accountLabel}**:`,
     "",
     `1. Open ${input.verificationUri}`,
     "2. Enter this one-time code:",
@@ -105,9 +105,9 @@ export function formatCodexReauthCompletion(
     case "authorized":
       return `Saved a fresh ChatGPT/Codex login for **${accountLabel}**. \`/sandi status\` should show your OpenAI limits again.`;
     case "cancelled":
-      return "This ChatGPT login was replaced by a newer `/sandi reauth`.";
+      return "This ChatGPT login was replaced by a newer `/sandi login`.";
     case "timeout":
-      return "That ChatGPT device code expired before I saw a login. Run `/sandi reauth` to get a new code.";
+      return "That ChatGPT device code expired before I saw a login. Run `/sandi login` to get a new code.";
     case "failed":
       return `ChatGPT login failed: ${completion.message}`;
     default: {

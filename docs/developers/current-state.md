@@ -119,7 +119,9 @@ Sandi has Discord application commands registered by `npm run commands:sync`:
 - `/sandi status`: reports runtime status, uptime/memory health, queue state,
   git revision, token usage, provider limits, and the current conversation's
   compiled context size when available.
-- `/sandi reauth`: starts ChatGPT/Codex device-code login for the caller's
+- `/sandi auth`: issues a one-time pairing code so a household member can connect
+  a desktop client.
+- `/sandi login`: starts ChatGPT/Codex device-code login for the caller's
   mapped Pi account and saves the resulting tokens to that account's `auth.json`.
 - `/sandi events list`: lists scheduled events for the current conversation or
   all events, depending on the optional scope.
@@ -173,7 +175,7 @@ When `data/config/pi-accounts.json` exists, persistent Discord turns are routed
 by mapped human identity. Human turns fail closed when their mapped identity or
 account auth is unavailable; Sandi does not route a human's prompt through
 another human's ChatGPT/Codex subscription for missing auth, quota limits, or
-rate limits. The account owner can refresh ChatGPT/Codex OAuth with `/sandi reauth`,
+rate limits. The account owner can refresh ChatGPT/Codex OAuth with `/sandi login`,
 which runs the device-code flow and writes tokens to that account's `auth.json`.
 The durable transcript session remains shared by every participant
 in that Discord conversation, but account routing is recomputed from the mapped

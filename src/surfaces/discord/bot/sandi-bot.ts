@@ -159,7 +159,7 @@ const HELP_MESSAGE = [
   "`/sandi todo`: create and pin an interactive todo list in this channel.",
   "`/sandi status`: show runtime status, uptime/memory health, queue state, git revision, token usage, provider limits, and current conversation context size.",
   "`/sandi auth`: get a one-time code to connect a desktop client to Sandi (privately, just to you).",
-  "`/sandi reauth`: refresh your ChatGPT/Codex login with a device code (privately, just to you).",
+  "`/sandi login`: log in to ChatGPT/Codex with a device code (privately, just to you).",
   "`/sandi events list`: list scheduled events for this conversation.",
   "`/sandi events list scope: All events`: list every scheduled event Sandi can see.",
   "`/sandi reminders list`: list interactive human reminders for this conversation.",
@@ -780,8 +780,8 @@ export class SandiBot {
       await this.#replyToAuthInteraction(interaction);
       return;
     }
-    if (!group && subcommand === "reauth") {
-      await this.#replyToReauthInteraction(interaction);
+    if (!group && subcommand === "login") {
+      await this.#replyToLoginInteraction(interaction);
       return;
     }
     if (group === "events" && subcommand === "list") {
@@ -846,7 +846,7 @@ export class SandiBot {
     });
   }
 
-  async #replyToReauthInteraction(
+  async #replyToLoginInteraction(
     interaction: ChatInputCommandInteraction,
   ): Promise<void> {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });

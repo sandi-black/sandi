@@ -189,7 +189,7 @@ Private overlays belong under `/srv/sandi/data/config`, for example:
 ## Pi Authentication
 
 Sandi shells out to Pi. ChatGPT/Codex OAuth can be refreshed from Discord with
-`/sandi reauth` (device-code flow). Browser `/login` in Pi still works for the
+`/sandi login` (device-code flow). Browser `/login` in Pi still works for the
 same `auth.json` files.
 
 Authenticate the primary account as the same user that runs `sandi.service`.
@@ -203,7 +203,7 @@ PI_CODING_AGENT_SESSION_DIR=/srv/sandi/data/pi-sessions \
 ```
 
 Run Pi's `/login` flow and select the provider Sandi should use, or run
-`/sandi reauth` in Discord to complete ChatGPT device-code login against the
+`/sandi login` in Discord to complete ChatGPT device-code login against the
 mapped account directory.
 
 For routed secondary accounts, create an account directory under

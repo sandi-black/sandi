@@ -15,6 +15,7 @@ import type { PiAccountConfig } from "@/lib/provider/pi-account-routing";
 import type { ProviderTurnResponse } from "@/lib/provider/pi-cli-client";
 import { JsonFileStore } from "@/lib/state/file-store";
 import { enqueueDiscordMessage } from "@/surfaces/discord/bot/delivery-outbox";
+import { DiscordMessageIdSchema } from "@/surfaces/discord/runtime/targets";
 
 const log = createLogger("usage-threshold-warning");
 const WARNING_STATE_PATH = "provider-usage/threshold-warnings.json";
@@ -252,6 +253,7 @@ export async function enqueueStandaloneUsageWarning(input: {
   content: string | undefined;
 }): Promise<void> {
   if (!input.content) return;
+  const replyToMessageId = DiscordMessageIdSchema.safeParse(input.messageId);
   try {
     await enqueueDiscordMessage({
       outbox: input.outbox,
@@ -259,7 +261,9 @@ export async function enqueueStandaloneUsageWarning(input: {
       payload: {
         channelId: input.channelId,
         chunks: [input.content],
-        replyToMessageId: input.messageId,
+        ...(replyToMessageId.success
+          ? { replyToMessageId: replyToMessageId.data }
+          : {}),
       },
     });
   } catch (error) {

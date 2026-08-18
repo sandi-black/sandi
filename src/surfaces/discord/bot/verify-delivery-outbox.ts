@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 
-import type { MessageCreateOptions } from "discord.js";
+import { DiscordAPIError, type MessageCreateOptions } from "discord.js";
 
 import { DurableOutbox } from "@/lib/delivery/outbox";
 import { withTempDir } from "@/lib/verification/harness";
@@ -56,6 +56,85 @@ await withTempDir("sandi-discord-outbox-", async (root) => {
   assert.equal(calls[0]?.enforceNonce, true);
   assert(calls[0]?.reply, "the first chunk preserves its reply target");
   assert.equal(calls[2]?.reply, undefined);
+});
+
+// A malformed reply reference makes Discord answer 400. That record used to
+// retry hourly forever because every send failure was treated as ambiguous, so
+// pin the rejection to a terminal failure instead.
+await withTempDir("sandi-discord-outbox-rejected-", async (root) => {
+  const outbox = new DurableOutbox(join(root, "outbox.json"), {
+    now: () => Date.parse("2026-08-18T15:00:00.000Z"),
+    retryBaseMs: 10,
+    retryMaxMs: 100,
+    claimLeaseMs: 100,
+    pollMaxMs: 100,
+  });
+  let sends = 0;
+  registerDiscordMessageDelivery(outbox, async () => {
+    sends += 1;
+    throw new DiscordAPIError(
+      {
+        code: 50035,
+        errors: {},
+        message: "Invalid Form Body",
+      },
+      50035,
+      400,
+      "POST",
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      {},
+    );
+  });
+
+  await enqueueDiscordMessage({
+    outbox,
+    idempotencyKey: "discord:usage-warning:event:grace-hopper-daily:2026-08-18",
+    payload: {
+      channelId: "channel-1",
+      chunks: ["you are close to the usage cap"],
+      replyToMessageId: "event:grace-hopper-daily:2026-08-18",
+    },
+  });
+
+  const record = await outbox.get(
+    "discord:usage-warning:event:grace-hopper-daily:2026-08-18",
+  );
+  assert.equal(record?.status, "failed", "a 400 stops retrying");
+  assert.equal(record?.lastError?.class, "permanent");
+  assert.equal(record?.ambiguity, undefined);
+  assert.equal(sends, 1, "the rejected chunk is never resent");
+});
+
+// A rate limit is the one 4xx Discord expects the caller to retry, and a
+// dropped connection still leaves delivery genuinely uncertain.
+await withTempDir("sandi-discord-outbox-retryable-", async (root) => {
+  const outbox = new DurableOutbox(join(root, "outbox.json"), {
+    now: () => Date.parse("2026-08-18T15:00:00.000Z"),
+    retryBaseMs: 10,
+    retryMaxMs: 100,
+    claimLeaseMs: 100,
+    pollMaxMs: 100,
+  });
+  registerDiscordMessageDelivery(outbox, async () => {
+    throw new DiscordAPIError(
+      { code: 0, errors: {}, message: "You are being rate limited." },
+      0,
+      429,
+      "POST",
+      "https://discord.com/api/v10/channels/channel-1/messages",
+      {},
+    );
+  });
+
+  await enqueueDiscordMessage({
+    outbox,
+    idempotencyKey: "discord:response:hopper-message",
+    payload: { channelId: "channel-1", chunks: ["hello"] },
+  });
+
+  const record = await outbox.get("discord:response:hopper-message");
+  assert.equal(record?.status, "pending", "a rate limit keeps retrying");
+  assert.equal(record?.lastError?.class, "ambiguous");
 });
 
 console.log("Discord delivery outbox verification passed");

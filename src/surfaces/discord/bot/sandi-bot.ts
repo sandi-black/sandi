@@ -19,6 +19,7 @@ import {
   type User,
 } from "discord.js";
 
+import { z } from "zod/v4";
 import type { ContextCompiler } from "@/lib/context/context-compiler";
 import { buildMemoryContext, type MemoryContext } from "@/lib/context/memory";
 import type { ConversationStore } from "@/lib/conversations/store";
@@ -60,6 +61,7 @@ import {
   ProviderTurnError,
   type ProviderTurnResponse,
 } from "@/lib/provider/pi-cli-client";
+import { TurnJournal, turnJournalPath } from "@/lib/turns/turn-journal";
 import { ThreadQueue } from "@/lib/turns/turn-queue";
 import { isRecord } from "@/lib/type-guards";
 import {
@@ -149,6 +151,12 @@ import {
 } from "@/surfaces/discord/shared/targets";
 
 const log = createLogger("bot");
+// The journal stores this so a restart can find the message a turn came from.
+// Everything else the turn needs is re-derived from the message itself.
+const ReplayedTurnRefSchema = z.object({
+  channelId: z.string().min(1),
+  messageId: z.string().min(1),
+});
 const FAILURE_NOTICE_COOLDOWN_MS = 60_000;
 const HELP_MESSAGE = [
   "**Sandi commands**",
@@ -204,6 +212,7 @@ export type SandiBotDependencies = {
   // Discord process, where no desktop links exist to reach.
   desktopHands?: DesktopHands;
   outbox?: DurableOutbox;
+  turnJournal?: TurnJournal;
 };
 
 type DiscordToolContext = {
@@ -272,6 +281,8 @@ export class SandiBot {
   readonly #todoList: TodoListManager;
   readonly #usageThresholdWarning: UsageThresholdWarning;
   readonly #queue = new ThreadQueue();
+  readonly #journal: TurnJournal;
+  #stopping = false;
   #ignoredChannels: Promise<Set<string>> | undefined;
   readonly #failureNotices = new Map<string, number>();
   readonly #identities: HumanIdentityStore;
@@ -304,6 +315,9 @@ export class SandiBot {
     this.#outbox =
       deps.outbox ??
       new DurableOutbox(deliveryOutboxPath(this.#config.paths.dataDir));
+    this.#journal =
+      deps.turnJournal ??
+      new TurnJournal(turnJournalPath(this.#config.paths.dataDir));
     registerDiscordMessageDelivery(this.#outbox, async (channelId, options) => {
       const channel = await this.#client.channels.fetch(channelId);
       if (!channel?.isSendable()) {
@@ -345,6 +359,7 @@ export class SandiBot {
 
   start(): Promise<void> {
     if (this.#startPromise) return this.#startPromise;
+    this.#stopping = false;
     const lifecycle = new AbortController();
     this.#lifecycle = lifecycle;
     const startPromise = this.#startOnce(lifecycle.signal);
@@ -468,6 +483,8 @@ export class SandiBot {
     await postStartupStatus(this.#client, this.#config.discord);
     signal.throwIfAborted();
     this.#outbox.start();
+    await this.#replayOwedTurns(signal);
+    signal.throwIfAborted();
     await this.#events.start();
     signal.throwIfAborted();
     await this.#reminders.start();
@@ -476,6 +493,7 @@ export class SandiBot {
 
   stop(): void {
     log.info("stopping Discord bot");
+    this.#stopping = true;
     this.#lifecycle?.abort();
     this.#abortCodexReauth();
     this.#events.stop();
@@ -485,7 +503,10 @@ export class SandiBot {
     this.#client.destroy();
   }
 
-  async #handleMessage(message: Message): Promise<void> {
+  async #handleMessage(
+    message: Message,
+    options: { resumed?: boolean } = {},
+  ): Promise<void> {
     log.info("discord message received", {
       messageId: message.id,
       channelId: message.channelId,
@@ -563,7 +584,11 @@ export class SandiBot {
     // to one of her own messages always earns a response; anything else goes
     // through a cheap gate that decides whether the message was meant for her.
     const isReplyToSandi = await this.#isReplyToSandi(message);
-    const mustRespond = mentioned || isReplyToSandi;
+    // A resumed turn already cleared the gate before it was journaled. Asking
+    // again would spend another provider call to re-litigate a decision Sandi
+    // has made, and a gate that landed on IGNORE the second time would drop the
+    // message the replay exists to save.
+    const mustRespond = mentioned || isReplyToSandi || options.resumed === true;
     if (!mustRespond) {
       if (!(await this.#shouldRespondToPassiveMessage(message))) {
         log.info("passive reply gate chose to stay silent", {
@@ -615,13 +640,14 @@ export class SandiBot {
       channelId: message.channelId,
       mustRespond,
     });
-    this.#queue.enqueue(
-      `oneoff:${message.guildId ?? "dm"}:${message.channelId}`,
-      message.id,
-      async (signal) => {
+    await this.#enqueueDurableTurn({
+      queueKey: `oneoff:${message.guildId ?? "dm"}:${message.channelId}`,
+      channelId: message.channelId,
+      messageId: message.id,
+      run: async (signal) => {
         await this.#runOneOffMention(message, signal);
       },
-    );
+    });
   }
 
   async #isReplyToSandi(message: Message): Promise<boolean> {
@@ -1257,6 +1283,101 @@ export class SandiBot {
     });
   }
 
+  /**
+   * Queues a turn a Discord message asked for, recording it as owed first so a
+   * restart between here and the reply replays the message instead of dropping
+   * it. The journal entry is cleared once the turn settles, successfully or
+   * not: a turn that ran and failed already told the channel so, and only an
+   * interrupted one is worth running again.
+   */
+  async #enqueueDurableTurn(input: {
+    queueKey: string;
+    channelId: string;
+    messageId: string;
+    run: (signal: AbortSignal) => Promise<void>;
+  }): Promise<void> {
+    const key = `discord:turn:${input.messageId}`;
+    await this.#journal.accept(key, {
+      channelId: input.channelId,
+      messageId: input.messageId,
+    });
+    this.#queue.enqueue(input.queueKey, input.messageId, async (signal) => {
+      try {
+        await input.run(signal);
+      } finally {
+        // #runTurn reports its own failures rather than throwing, so reaching
+        // here normally means the turn is done and the message has been
+        // answered one way or another. Shutdown is the exception: killing the
+        // provider mid-turn surfaces as an ordinary turn failure, and settling
+        // on that would drop the very message this journal exists to save.
+        if (!this.#stopping) await this.#journal.settle(key);
+      }
+    });
+  }
+
+  /**
+   * Runs the turns that were owed when the process last stopped. Each one starts
+   * over from the original message, so any partial work is discarded and the
+   * provider sees it exactly as it did the first time.
+   */
+  async #replayOwedTurns(signal: AbortSignal): Promise<void> {
+    const owed = await this.#journal.claimReplayable();
+    if (owed.length === 0) return;
+    log.info("replaying turns interrupted by the last shutdown", {
+      count: owed.length,
+    });
+    for (const entry of owed) {
+      if (signal.aborted) return;
+      const ref = ReplayedTurnRefSchema.safeParse(entry.payload);
+      if (!ref.success) {
+        log.error("discarding an unreadable owed turn", { key: entry.key });
+        await this.#journal.settle(entry.key);
+        continue;
+      }
+      try {
+        // The response is already durable, so the turn ran to completion and the
+        // delivery outbox owns the rest. Running it again would answer twice.
+        if (await this.#outbox.get(`discord:response:${ref.data.messageId}`)) {
+          log.info("owed turn already produced a response", {
+            messageId: ref.data.messageId,
+          });
+          await this.#journal.settle(entry.key);
+          continue;
+        }
+        const message = await this.#fetchReplayedMessage(ref.data);
+        if (!message) {
+          log.warn("owed turn's message is gone", {
+            channelId: ref.data.channelId,
+            messageId: ref.data.messageId,
+          });
+          await this.#journal.settle(entry.key);
+          continue;
+        }
+        await this.#handleMessage(message, { resumed: true });
+      } catch (error) {
+        // Leave the entry in place. It keeps the attempt it was just charged, so
+        // a message that fails this way a few times stops being replayed.
+        log.error("failed to replay an owed turn", {
+          key: entry.key,
+          error: errorMessage(error),
+        });
+      }
+    }
+  }
+
+  async #fetchReplayedMessage(ref: {
+    channelId: string;
+    messageId: string;
+  }): Promise<Message | undefined> {
+    try {
+      const channel = await this.#client.channels.fetch(ref.channelId);
+      if (!channel?.isTextBased()) return undefined;
+      return await channel.messages.fetch(ref.messageId);
+    } catch {
+      return undefined;
+    }
+  }
+
   async #enqueueThreadTurn(input: {
     thread: AnyThreadChannel;
     author: ConversationParticipant;
@@ -1281,10 +1402,11 @@ export class SandiBot {
       manifest,
       participant: input.author,
     });
-    this.#queue.enqueue(
-      current.canonicalId,
-      input.messageId,
-      async (signal) => {
+    await this.#enqueueDurableTurn({
+      queueKey: current.canonicalId,
+      channelId: input.thread.id,
+      messageId: input.messageId,
+      run: async (signal) => {
         const turnInput = {
           channel: input.thread,
           conversation: current,
@@ -1312,7 +1434,7 @@ export class SandiBot {
         }
         await this.#runTurn(nextTurnInput);
       },
-    );
+    });
   }
 
   async #enqueueChannelTurn(input: {
@@ -1337,10 +1459,11 @@ export class SandiBot {
       manifest,
       participant: input.author,
     });
-    this.#queue.enqueue(
-      current.canonicalId,
-      input.messageId,
-      async (signal) => {
+    await this.#enqueueDurableTurn({
+      queueKey: current.canonicalId,
+      channelId: input.channel.id,
+      messageId: input.messageId,
+      run: async (signal) => {
         const baseTurnInput = {
           channel: input.channel,
           conversation: current,
@@ -1363,7 +1486,7 @@ export class SandiBot {
             : turnInput,
         );
       },
-    );
+    });
   }
 
   // Leases hands on the author's desktop when their machine is linked, so a

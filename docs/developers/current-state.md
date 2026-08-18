@@ -206,13 +206,27 @@ exponential backoff; permanent failures remain terminal and inspectable.
 
 Delivery is at least once. A connection failure after a request is classified
 as an ambiguous acknowledgement and recorded with the policy
-`retry-same-idempotency-key`. Discord retries a chunk with the same enforced
+`retry-same-idempotency-key`. A 4xx other than 429 means the platform
+rejected the request rather than lost the acknowledgement, so Discord classifies
+it as permanent and stops retrying. Discord retries a chunk with the same enforced
 nonce so Discord can deduplicate it during the platform nonce window. GitHub
 comments carry a stable hidden marker; a retry searches the thread for that
 marker before posting again. Each successfully acknowledged chunk checkpoints
 its cursor before the next chunk starts. Completed records retain their key and
 payload hash for restart-safe deduplication while releasing the potentially
 large payload body.
+
+The queue that runs Discord turns is in-memory, so the turn journal at
+`data/state/turn-journal.json` records a turn as owed before it is queued and
+clears it once the turn settles. A restart replays what is still owed by fetching
+the original message and running it again from the start, discarding any partial
+work. Replay skips the passive reply gate, since the decision to engage was made
+before the turn was journaled. A turn whose response already reached the delivery
+outbox is not replayed, because the outbox owns delivering it and a second run
+would answer twice. Turns accepted more than 15 minutes ago are dropped, so
+returning from a long outage does not flood a channel with answers nobody is
+waiting on. A turn that fails to finish 3 times is abandoned rather than retried
+on every start.
 
 Every Pi model turn logs a local account-routing audit record before execution
 and a completion or failure record afterward. The audit fields include the

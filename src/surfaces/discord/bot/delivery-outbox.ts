@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 
-import type { MessageCreateOptions } from "discord.js";
+import { DiscordAPIError, type MessageCreateOptions } from "discord.js";
 
 import { z } from "zod/v4";
 import {
   AmbiguousDeliveryError,
   type DeliveryRecord,
   type DurableOutbox,
+  PermanentDeliveryError,
 } from "@/lib/delivery/outbox";
 import { errorMessage } from "@/lib/errors";
 
@@ -61,6 +62,14 @@ export function registerDiscordMessageDelivery(
     try {
       message = await send(payload.channelId, options);
     } catch (error) {
+      // A 4xx from Discord is proof it rejected the request, so the ambiguity
+      // below does not apply and the identical chunk can never succeed.
+      // Retrying anyway wedges the record forever and buries the real cause in
+      // warn logs, which is how a malformed reply reference kept redelivering
+      // for ten days. Rate limits are the one 4xx worth retrying.
+      if (isDiscordRejection(error)) {
+        throw new PermanentDeliveryError(errorMessage(error), { cause: error });
+      }
       // Discord may have accepted the POST before the connection failed. Retry
       // the same chunk with the same enforced nonce so Discord can deduplicate
       // it during its nonce window; after that window the outbox remains
@@ -94,6 +103,16 @@ export async function enqueueDiscordMessage(input: {
   ) {
     await input.outbox.deliverNow(input.idempotencyKey);
   }
+}
+
+function isDiscordRejection(error: unknown): boolean {
+  return (
+    error instanceof DiscordAPIError &&
+    typeof error.status === "number" &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.status !== 429
+  );
 }
 
 function discordNonce(record: DeliveryRecord, index: number): string {

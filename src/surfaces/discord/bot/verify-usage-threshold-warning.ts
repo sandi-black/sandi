@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 
+import type { MessageCreateOptions } from "discord.js";
+
+import { DurableOutbox } from "@/lib/delivery/outbox";
 import {
   type OpenAIUsageSnapshot,
   type OpenAIUsageWindow,
@@ -8,7 +11,9 @@ import {
 } from "@/lib/provider/openai-usage";
 import type { ProviderTurnResponse } from "@/lib/provider/pi-cli-client";
 import { withTempDir } from "@/lib/verification/harness";
+import { registerDiscordMessageDelivery } from "@/surfaces/discord/bot/delivery-outbox";
 import {
+  enqueueStandaloneUsageWarning,
   type PreparedUsageWarning,
   UsageThresholdWarning,
 } from "@/surfaces/discord/bot/usage-threshold-warning";
@@ -143,6 +148,35 @@ await withTempDir("sandi-usage-threshold-", async (dataDir) => {
     failedPrepared.response,
     failedResponse,
     "usage failures do not alter the chat response",
+  );
+
+  const warningOutbox = new DurableOutbox(join(dataDir, "warning-outbox.json"));
+  const sentWarnings: MessageCreateOptions[] = [];
+  registerDiscordMessageDelivery(warningOutbox, async (_channelId, options) => {
+    sentWarnings.push(options);
+    return { id: `warning-${sentWarnings.length}` };
+  });
+  await enqueueStandaloneUsageWarning({
+    outbox: warningOutbox,
+    channelId: "123",
+    messageId: "456",
+    content: "ordinary warning",
+  });
+  await enqueueStandaloneUsageWarning({
+    outbox: warningOutbox,
+    channelId: "123",
+    messageId: "event:nightly-review:2026-08-17T09:00:00.000Z",
+    content: "scheduled warning",
+  });
+  assert.equal(
+    sentWarnings[0]?.reply?.messageReference,
+    "456",
+    "ordinary turns keep their reply target",
+  );
+  assert.equal(
+    sentWarnings[1]?.reply,
+    undefined,
+    "synthetic scheduled-event ids are sent without an invalid reply target",
   );
 });
 

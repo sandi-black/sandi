@@ -14,6 +14,7 @@ const DEFAULT_API_PORT = 8787;
 export type ApiConfig = {
   host: string;
   port: number;
+  publicUrl: string;
   tokensPath: string;
   pairingsPath: string;
   attachmentQuotaBytes: number;
@@ -26,9 +27,12 @@ export type ApiAppConfig = CoreConfig & {
 };
 
 export function loadApiConfig(dataDir: string): ApiConfig {
+  const host = readEnv(["SANDI_API_HOST"]) ?? DEFAULT_API_HOST;
+  const port = readPortEnv(["SANDI_API_PORT"], DEFAULT_API_PORT);
   return {
-    host: readEnv(["SANDI_API_HOST"]) ?? DEFAULT_API_HOST,
-    port: readPortEnv(["SANDI_API_PORT"], DEFAULT_API_PORT),
+    host,
+    port,
+    publicUrl: readPublicUrlEnv(host, port),
     tokensPath:
       readEnv(["SANDI_API_TOKENS_PATH"]) ??
       join(dataDir, "config", "api-tokens.json"),
@@ -123,6 +127,32 @@ function readPortEnv(names: readonly string[], defaultValue: number): number {
     throw new Error(`${names[0]} must be a port between 0 and 65535`);
   }
   return parsed;
+}
+
+// The origin clients reach this server at. OAuth metadata advertises it as the
+// issuer and the MCP resource's base, and the well-known documents are served
+// at the root, so it has no path. Behind a TLS proxy, set the public origin.
+function readPublicUrlEnv(host: string, port: number): string {
+  const value = readEnv(["SANDI_API_PUBLIC_URL"]);
+  if (!value) return `http://${host}:${port}`;
+  let url: URL | undefined;
+  try {
+    url = new URL(value);
+  } catch {
+    url = undefined;
+  }
+  if (
+    !url ||
+    (url.protocol !== "https:" && url.protocol !== "http:") ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error(
+      "SANDI_API_PUBLIC_URL must be an http or https origin with no path",
+    );
+  }
+  return url.origin;
 }
 
 function readPositiveIntegerEnv(name: string, defaultValue: number): number {

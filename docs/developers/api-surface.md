@@ -78,7 +78,8 @@ identity-bearing surface acting as the mediator that proves who they are:
    enroll until an operator adds it). It then issues a one-time pairing code and
    replies privately (ephemerally) with it.
 2. The member pastes that code into their desktop client, which redeems it at
-   `POST /v1/auth/pair`.
+   `POST /v1/auth/pair`, or into the sign-in page an MCP agent opens (see
+   [MCP sign-in](#mcp-sign-in-oauth)).
 3. The server validates the code, re-checks against a freshly reloaded
    `humans.json` that the bound identity still maps to a platform account (so a
    member removed after the code was issued is rejected without a server
@@ -158,6 +159,96 @@ malformed body, or an invalid id segment), `413` (body over the size cap), and
 `502`/`503` for provider failures (`503` for rate or quota limits). Capacity
 rejections also return `503 { "error": "capacity_rejected", "reason": string }`
 so callers can retry overload separately from an internal provider failure.
+
+### MCP endpoint
+
+`POST /v1/mcp` serves one tool, `ask_sandi`, over MCP Streamable HTTP. An agent
+that a household member already uses, such as Codex or ChatGPT, sends the
+member's message. Sandi runs an ordinary API turn as that member, and the tool
+returns her reply.
+
+The endpoint is stateless. It serves protocol revision `2026-07-28`, and it
+serves a 2025-era client that still sends `initialize` with a fresh instance per
+request (the SDK's `legacy: "stateless"` default). There is no `Mcp-Session-Id`,
+and `GET` and `DELETE` answer `405`.
+
+The route runs these checks before the SDK sees a request:
+
+- A present `Origin` header answers `403`. Agent clients send none, and refusing
+  every browser origin meets the transport's DNS-rebinding requirement.
+- A missing or invalid bearer answers `401` with a `WWW-Authenticate` challenge
+  that starts [MCP sign-in](#mcp-sign-in-oauth). The endpoint accepts the same
+  per-device tokens as the turn route.
+- A token whose identity is unmapped answers `403`.
+- The body goes through the shared bounded JSON reader.
+
+`ask_sandi` takes `{ message, conversation? }` and returns
+`{ conversation, reply }` as structured content, plus the same object serialized
+in a text block. An omitted `conversation` mints `mcp-<uuid>`, and passing that
+handle back continues the conversation. This is the explicit handle the
+`2026-07-28` spec prescribes for cross-call state. The handle is the
+`conversationId` segment, so the canonical id is
+`api:<identityId>:<deviceId>:<handle>`. The turn shares the queue, memory scope,
+account routing, and hands-local lease of every API turn. It compiles with
+`MCP_DELIVERY_INSTRUCTIONS`, which tells Sandi that an agent wrote the message on
+the member's behalf and relays her reply.
+
+Provider failures, capacity rejections, and invalid handles return a tool error
+(`isError: true`) with a short message. Unexpected failures are logged and
+reported as a generic internal error. Closing a `2026-07-28` response stream
+aborts the turn. The SDK's 2025-era stateless path does not abort the tool when
+the client cancels, so that turn runs to completion.
+
+### MCP sign-in (OAuth)
+
+An agent such as Codex or ChatGPT signs in with OAuth 2.1 instead of a pasted
+token, and the login is a `/sandi auth` pairing code. The API surface is its own
+authorization server (`src/surfaces/api/auth/oauth.ts`):
+
+1. An unauthenticated `POST /v1/mcp` answers `401` with
+   `WWW-Authenticate: Bearer resource_metadata="<public URL>/.well-known/oauth-protected-resource/v1/mcp"`.
+2. The client reads that protected resource metadata (RFC 9728), then
+   `/.well-known/oauth-authorization-server` (RFC 8414).
+3. The client registers at `POST /oauth/register` (RFC 7591).
+4. The client opens `GET /oauth/authorize` in a browser. The page names the agent
+   and the host that receives the member's access. The member runs `/sandi auth`
+   in Discord and pastes the code.
+5. `POST /oauth/authorize` redeems the code with `redeemPairing`, which mints an
+   ordinary per-device token labeled with the agent's registered name. The server
+   redirects to the client's `redirect_uri` with a one-time authorization code,
+   `state`, and `iss` (RFC 9207).
+6. The client exchanges the code at `POST /oauth/token` with its PKCE verifier
+   and receives the per-device token as `access_token`.
+
+`SANDI_API_PUBLIC_URL` sets the issuer, and the resource is
+`<public URL>/v1/mcp`. It must be the origin clients use, with no path. The
+default is `http://<SANDI_API_HOST>:<SANDI_API_PORT>`, so a server behind a TLS
+proxy must set it.
+
+Registration stores nothing. The `client_id` is the validated registration
+metadata (`redirect_uris` and `client_name`), base64url-encoded, so it survives
+restarts and cannot fill the disk. Redirect URIs must use `https`, or `http` on a
+loopback host. Open registration lets anyone register any redirect URI, so the
+authorize page's destination host is the safeguard, as the MCP security guidance
+requires.
+
+The authorization server applies these rules:
+
+- A redirect URI must match a registered one exactly, except that a loopback
+  redirect matches on any port (RFC 8252). An unusable request renders an error
+  page and never redirects.
+- Only `response_type=code` with `code_challenge_method=S256` is accepted. A
+  present `resource` must equal the MCP resource.
+- An authorization code is 256 random bits, lives 60 seconds in memory, and is
+  spent by the first exchange attempt. The exchange checks `client_id`, the PKCE
+  verifier, and a present `redirect_uri` or `resource`.
+- Pairing-code submissions share the rate limiter of `POST /v1/auth/pair`.
+- The access token does not expire, and there is no refresh token, which matches
+  desktop tokens. It also works on the other API routes. Revoke an agent by
+  removing its entry from `api-tokens.json`.
+- A restart between the redirect and the exchange loses the code. The member
+  signs in again, and the unused device entry stays in `api-tokens.json` until
+  someone removes it.
 
 ### Device link (Phase 2)
 
@@ -647,11 +738,13 @@ src/lib/identity/
   verify-auth-resolver.ts       strict resolver, store freshness, duplicate ids
 src/surfaces/api/
   index.ts                      entrypoint and lifecycle
-  config.ts                     loadApiAppConfig (host, port, tokens, pairings)
+  config.ts                     loadApiAppConfig (host, port, public URL, tokens, pairings)
   auth/
     tokens.ts                   token store, hashing, verify, reload, mint
     enroll.ts                   api:enroll CLI
     pairing.ts                  redeemPairing: the redemption domain logic
+    oauth.ts                    MCP sign-in authorization server: metadata, registration, authorize, token
+    oauth-page.ts               sign-in page and error page HTML
     participant.ts              identity-to-participant mapping (turn + pairing)
     rate-limiter.ts             FixedWindowLimiter (per-client + global caps)
     verify-rate-limiter.ts      limiter cap and reset verify
@@ -659,7 +752,7 @@ src/surfaces/api/
     conversations.ts            canonical ids and manifest builder
     delivery-instructions.ts    API delivery contract
   bot/
-    api-bot.ts                  HTTP server, routing, auth, pairing, turns, device routes, attachment routes
+    api-bot.ts                  HTTP server, routing, auth, pairing, turns, device routes, attachment routes, MCP endpoint, OAuth routes
     verify-api-bot.ts           verify harness with an injected provider
   attachments/
     store.ts                    content-addressed blob store: streamed hashing upload, dedup, identity-scoped get
@@ -677,7 +770,9 @@ src/surfaces/api/
     verify-tool-broker.ts       broker + registry round-trip, authorization, cancellation, selection, and delivery relays
   http/
     respond.ts                  shared sendJson and bearer-token parsing
-    read-json-body.ts           shared bounded JSON body reader
+    read-json-body.ts           shared bounded JSON and form body readers
+  mcp/
+    ask-sandi.ts                per-request MCP server exposing the ask_sandi tool
   pi-extension/
     local-exec-tools.ts         api-only proxy tools (local_*) routed to the broker, incl. state tools + image mapping
     verify-local-exec-tools.ts  proxy routing and ok/refused/unavailable/image mapping
@@ -729,8 +824,14 @@ client-side `SANDI_API_URL` and `SANDI_DESKTOP_CONFIG`). Coverage runs as part o
 `npm run check`: `verify:api-bot` proves health, auth rejection, the
 unmapped-identity 403, identity routing, session reuse, token revocation, the
 full pairing redemption loop, idempotent response replay, that a freshly minted
-token authenticates a turn at once, and the device routes (auth, SSE open,
-unknown-result 404); `verify:pairing` covers expiry, superseding, concurrency,
+token authenticates a turn at once, the device routes (auth, SSE open,
+unknown-result 404), and the MCP endpoint (origin, bearer, and identity gates,
+`ask_sandi` from a `2026-07-28` client and a 2025-era client, handle continuity,
+tool errors, and cancellation), and MCP sign-in (the SDK's OAuth client from
+401 through registration, the pairing-code page, a portless loopback redirect,
+issuer and state, and a signed-in `ask_sandi` call, plus refused remote http and
+unregistered redirects and a spent code after a wrong PKCE verifier);
+`verify:pairing` covers expiry, superseding, concurrency,
 write rollback, and recovery at each transaction transition;
 `verify:auth-resolver` covers strict resolution, identity-store freshness, and
 duplicate-id rejection; `verify:api-rate-limiter` and `verify:discord-auth` cover

@@ -39,7 +39,7 @@ export function serializedCommands(): unknown[] {
         command
           .setName("auth")
           .setDescription(
-            "Get a one-time code to connect a desktop client to Sandi",
+            "Get a one-time code to connect a desktop client or agent to Sandi",
           ),
       )
       .addSubcommand((command) =>

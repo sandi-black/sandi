@@ -6,6 +6,13 @@ import {
 } from "node:http";
 import { join } from "node:path";
 
+import { originValidation, toNodeHandler } from "@modelcontextprotocol/node";
+import {
+  type AuthInfo,
+  createMcpHandler,
+  type McpServer,
+} from "@modelcontextprotocol/server";
+
 import type { ContextCompiler } from "@/lib/context/context-compiler";
 import { buildMemoryContext } from "@/lib/context/memory";
 import type { ConversationStore } from "@/lib/conversations/store";
@@ -37,7 +44,10 @@ import {
   InvalidApiSegmentError,
   validateApiConversationRef,
 } from "@/surfaces/api/api/conversations";
-import { API_DELIVERY_INSTRUCTIONS } from "@/surfaces/api/api/delivery-instructions";
+import {
+  API_DELIVERY_INSTRUCTIONS,
+  MCP_DELIVERY_INSTRUCTIONS,
+} from "@/surfaces/api/api/delivery-instructions";
 import {
   DESKTOP_TITLE_INSTRUCTIONS,
   DESKTOP_TITLE_MAX_LENGTH,
@@ -56,6 +66,7 @@ import {
   materializeAttachmentRefs,
 } from "@/surfaces/api/attachments/turn-materialize";
 import { handleAttachmentUpload } from "@/surfaces/api/attachments/upload-route";
+import { OAuthRoutes } from "@/surfaces/api/auth/oauth";
 import { redeemPairing } from "@/surfaces/api/auth/pairing";
 import { apiParticipantFromHuman } from "@/surfaces/api/auth/participant";
 import { FixedWindowLimiter } from "@/surfaces/api/auth/rate-limiter";
@@ -66,6 +77,7 @@ import { DeviceRoutes } from "@/surfaces/api/devices/device-routes";
 import type { ToolBroker } from "@/surfaces/api/devices/tool-broker";
 import { readJsonBody } from "@/surfaces/api/http/read-json-body";
 import { bearerToken, sendJson } from "@/surfaces/api/http/respond";
+import { createAskSandiServer } from "@/surfaces/api/mcp/ask-sandi";
 import { API_SURFACE_CONTEXT } from "@/surfaces/api/runtime/context";
 
 const log = createLogger("api-bot");
@@ -90,6 +102,11 @@ const DEVICE_LINK_PATH = "/v1/devices/link";
 const DEVICE_RESULT_PATH = "/v1/devices/result";
 const ATTACHMENTS_PATH = "/v1/attachments";
 const ATTACHMENT_PATH = /^\/v1\/attachments\/([^/]+)$/;
+const MCP_PATH = "/v1/mcp";
+// MCP clients here are agents, not browsers. The transport spec requires
+// refusing a present Origin that is not allowed, and allowing none refuses
+// every browser origin while agent clients, which send no Origin, pass.
+const validateMcpOrigin = originValidation([]);
 // An attachment upload streams straight to disk rather than buffering a JSON
 // body, so its cap is far larger than MAX_REQUEST_BODY_BYTES; the store itself
 // enforces the real per-blob cap while streaming and aborts over it.
@@ -133,11 +150,18 @@ export class ApiBot {
   readonly #devices: DeviceRegistry;
   readonly #broker: ToolBroker;
   readonly #deviceRoutes: DeviceRoutes;
+  readonly #oauth: OAuthRoutes;
   readonly #attachments: AttachmentStore;
   readonly #attachmentsRoot: string;
   #attachmentCleanupTimer: NodeJS.Timeout | undefined;
   #attachmentCleanupRunning = false;
   #server: Server | undefined;
+  readonly #mcp = toNodeHandler(
+    createMcpHandler((ctx) => this.#createMcpServer(ctx.authInfo), {
+      onerror: logMcpError,
+    }),
+    { onerror: logMcpError },
+  );
 
   constructor(input: ApiBotInput) {
     this.#config = input.config;
@@ -161,6 +185,21 @@ export class ApiBot {
     this.#tokens = new ApiTokenStore(input.config.api.tokensPath, 0);
     this.#deviceRoutes = new DeviceRoutes(input.devices, this.#tokens);
     this.#identities = new HumanIdentityStore(input.config.paths.configDirs, 0);
+    this.#oauth = new OAuthRoutes({
+      publicUrl: input.config.api.publicUrl,
+      mcpPath: MCP_PATH,
+      // Signing an agent in redeems a pairing code, so it shares the pairing
+      // endpoint's rate limits.
+      allowPairingAttempt: (request) =>
+        this.#pairLimiter.tryConsume(remoteKey(request)),
+      redeemPairing: (body) =>
+        redeemPairing({
+          body,
+          pairingsPath: input.config.api.pairingsPath,
+          tokensPath: input.config.api.tokensPath,
+          identities: this.#identities,
+        }),
+    });
   }
 
   async start(): Promise<void> {
@@ -244,6 +283,8 @@ export class ApiBot {
         return;
       }
 
+      if (await this.#oauth.handle(request, response, method, path)) return;
+
       if (path === DEVICE_LINK_PATH) {
         const entry = await this.#authenticatedRoute(
           request,
@@ -308,6 +349,11 @@ export class ApiBot {
           hash,
           identityId: entry.identityId,
         });
+        return;
+      }
+
+      if (path === MCP_PATH) {
+        await this.#handleMcpRequest(request, response, method);
         return;
       }
 
@@ -558,28 +604,18 @@ export class ApiBot {
         }
 
         try {
-          const storageId = apiConversationStorageId(ref);
-          const manifestInput = {
-            ...ref,
-            participant,
-            ...(parsed.title !== undefined ? { title: parsed.title } : {}),
-          };
-          const created = await this.#conversations.getOrCreate({
-            storageId,
-            fallback: buildApiConversationManifest(manifestInput),
-          });
-          let conversation = await this.#conversations.addParticipant({
-            storageId,
-            manifest: created,
-            participant,
-          });
-          conversation = await this.#conversations.addAttachmentReferences({
-            storageId,
-            manifest: conversation,
-            hashes: (parsed.attachments ?? []).map(
-              (attachment) => attachment.hash,
-            ),
-          });
+          const conversation =
+            await this.#conversations.addAttachmentReferences({
+              storageId: apiConversationStorageId(ref),
+              manifest: await this.#openConversation(
+                ref,
+                participant,
+                parsed.title,
+              ),
+              hashes: (parsed.attachments ?? []).map(
+                (attachment) => attachment.hash,
+              ),
+            });
 
           const text = await this.#runQueuedTurn({
             canonicalId,
@@ -587,6 +623,7 @@ export class ApiBot {
             participant,
             deviceKey: entry.tokenSha256,
             input: parsed.input,
+            deliveryInstructions: API_DELIVERY_INSTRUCTIONS,
             ...(parsed.turnId !== undefined ? { turnId: parsed.turnId } : {}),
             ...(materialized.paths.length > 0
               ? { attachmentPaths: materialized.paths }
@@ -599,6 +636,157 @@ export class ApiBot {
         }
       },
     );
+  }
+
+  async #openConversation(
+    ref: ApiConversationRef,
+    participant: ConversationParticipant,
+    title?: string,
+  ): Promise<ConversationManifest> {
+    const storageId = apiConversationStorageId(ref);
+    const created = await this.#conversations.getOrCreate({
+      storageId,
+      fallback: buildApiConversationManifest({
+        ...ref,
+        participant,
+        ...(title !== undefined ? { title } : {}),
+      }),
+    });
+    return this.#conversations.addParticipant({
+      storageId,
+      manifest: created,
+      participant,
+    });
+  }
+
+  // The stateless MCP endpoint. Every JSON-RPC message is its own POST, served
+  // under protocol revision 2026-07-28 or, for a 2025-era client, by a fresh
+  // per-request instance. Origin, bearer, and identity checks run here so the
+  // SDK only ever sees a verified caller, and the body goes through the same
+  // bounded reader as every other JSON route.
+  async #handleMcpRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+    method: string,
+  ): Promise<void> {
+    if (!validateMcpOrigin(request, response)) return;
+    if (method !== "POST") {
+      sendJson(response, 405, { error: "method_not_allowed" });
+      return;
+    }
+    const token = bearerToken(request.headers.authorization);
+    const entry = token ? await this.#tokens.verify(token) : undefined;
+    if (!token || !entry) {
+      sendJson(
+        response,
+        401,
+        { error: "unauthorized" },
+        { "www-authenticate": this.#oauth.challenge },
+      );
+      return;
+    }
+    if (!(await this.#participantForIdentityId(entry.identityId))) {
+      sendJson(response, 403, { error: "identity_unmapped" });
+      return;
+    }
+    const body = await readJsonBody(request, {
+      maxBytes: MAX_REQUEST_BODY_BYTES,
+      timeoutMs: BODY_READ_TIMEOUT_MS,
+      response,
+    });
+    if (!body.ok) {
+      sendJson(response, body.status, { error: body.error });
+      return;
+    }
+    await this.#mcp(
+      {
+        method,
+        url: request.url ?? MCP_PATH,
+        headers: request.headers,
+        auth: { token, clientId: entry.deviceId, scopes: [] },
+        // The body is already parsed, so the adapter never reads this stream.
+        [Symbol.asyncIterator]: () => request[Symbol.asyncIterator](),
+      },
+      response,
+      body.value,
+    );
+  }
+
+  // AuthInfo carries only the raw token the route already verified, so verify
+  // it again to recover the device entry the tool runs as.
+  async #createMcpServer(authInfo: AuthInfo | undefined): Promise<McpServer> {
+    const entry = authInfo
+      ? await this.#tokens.verify(authInfo.token)
+      : undefined;
+    if (!entry) {
+      throw new Error("MCP request reached the handler without a valid token");
+    }
+    return createAskSandiServer((input) => this.#askSandi(entry, input));
+  }
+
+  // Runs an ask_sandi call as an ordinary API conversation turn for the calling
+  // device, so it shares the queue, manifest, memory scope, hands-local lease,
+  // and account routing of every other API turn. Thrown messages become tool
+  // error text for the agent, so unexpected failures are logged and reported
+  // without internal detail.
+  async #askSandi(
+    entry: ApiTokenEntry,
+    input: { message: string; conversation: string; signal: AbortSignal },
+  ): Promise<string> {
+    const ref: ApiConversationRef = {
+      identityId: entry.identityId,
+      deviceId: entry.deviceId,
+      conversationId: input.conversation,
+    };
+    try {
+      validateApiConversationRef(ref);
+    } catch (error) {
+      if (error instanceof InvalidApiSegmentError) {
+        throw new Error(
+          `Invalid ${error.field}: use letters, digits, '.', '_', or '-' (at most 200 characters).`,
+        );
+      }
+      throw error;
+    }
+    const participant = await this.#participantForIdentityId(entry.identityId);
+    if (!participant) {
+      throw new Error("This identity is not mapped to a Sandi participant.");
+    }
+    const canonicalId = canonicalApiConversationId(ref);
+    try {
+      return await this.#runQueuedTurn({
+        canonicalId,
+        conversation: await this.#openConversation(ref, participant),
+        participant,
+        deviceKey: entry.tokenSha256,
+        input: input.message,
+        deliveryInstructions: MCP_DELIVERY_INSTRUCTIONS,
+        requestSignal: input.signal,
+      });
+    } catch (error) {
+      if (error instanceof ProviderTurnError) {
+        log.warn("MCP provider turn failed", {
+          conversationId: canonicalId,
+          reason: error.reason,
+        });
+        throw new Error(`Sandi's model provider failed (${error.reason}).`);
+      }
+      if (error instanceof ProviderCapacityError) {
+        log.warn("MCP provider capacity rejected", {
+          conversationId: canonicalId,
+          reason: error.reason,
+        });
+        throw new Error(
+          `Sandi is at capacity (${error.reason}); try again shortly.`,
+        );
+      }
+      if (input.signal.aborted) throw error;
+      log.error("MCP ask_sandi failed", {
+        conversationId: canonicalId,
+        error: errorMessage(error),
+      });
+      throw new Error("Sandi hit an internal error.");
+    }
   }
 
   #scheduleAttachmentCleanup(): void {
@@ -773,6 +961,7 @@ export class ApiBot {
     participant: ConversationParticipant;
     deviceKey: string;
     input: string;
+    deliveryInstructions: string;
     turnId?: string;
     attachmentPaths?: string[];
     requestSignal: AbortSignal;
@@ -805,6 +994,7 @@ export class ApiBot {
               participant: input.participant,
               deviceKey: input.deviceKey,
               input: input.input,
+              deliveryInstructions: input.deliveryInstructions,
               ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
               ...(input.attachmentPaths
                 ? { attachmentPaths: input.attachmentPaths }
@@ -830,6 +1020,7 @@ export class ApiBot {
     participant: ConversationParticipant;
     deviceKey: string;
     input: string;
+    deliveryInstructions: string;
     turnId?: string;
     attachmentPaths?: string[];
     signal: AbortSignal;
@@ -839,7 +1030,7 @@ export class ApiBot {
     });
     const instructions = await this.#contextCompiler.compile({
       conversation: input.conversation,
-      deliveryInstructions: API_DELIVERY_INSTRUCTIONS,
+      deliveryInstructions: input.deliveryInstructions,
       skillHintQuery: input.input,
     });
 
@@ -914,6 +1105,10 @@ export class ApiBot {
     if (!human) return undefined;
     return apiParticipantFromHuman(human);
   }
+}
+
+function logMcpError(error: Error): void {
+  log.warn("MCP handler reported an error", { error: errorMessage(error) });
 }
 
 class RequestAbortedError extends Error {

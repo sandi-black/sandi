@@ -861,10 +861,10 @@ export class SandiBot {
     log.info("issued API pairing code", { identityId: result.identityId });
     await interaction.reply({
       content: [
-        "Here is your one-time pairing code for connecting a desktop client to Sandi:",
+        "Here is your one-time pairing code for connecting a desktop client or an agent to Sandi:",
         "",
         `\`\`\`\n${result.display}\n\`\`\``,
-        `It is valid for ${minutes} minutes and can be used once. In your desktop client, choose to pair a new device and paste this code. It links that device to your Sandi identity (and your GitHub account if one is on file).`,
+        `It is valid for ${minutes} minutes and can be used once. In your desktop client, choose to pair a new device and paste this code. For an agent such as Codex or ChatGPT, paste it on the Sandi sign-in page the agent opens. Either way, it links that device to your Sandi identity (and your GitHub account if one is on file).`,
         "Running this command again replaces any previous code.",
       ].join("\n"),
       allowedMentions: { parse: [] },

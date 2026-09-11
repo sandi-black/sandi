@@ -24,6 +24,35 @@ Forum posts, automatic channel rooms, and Sandi-managed threads all carry their
 own continuity. Sandi can keep separate context for different rooms, topics,
 threads, and people.
 
+## Other Agents
+
+An agent that supports MCP, such as Codex, can talk to Sandi through her
+`ask_sandi` tool. The agent passes your message to Sandi and relays her reply.
+Sandi answers as herself, with your memory and preferences.
+
+The agent signs in with a pairing code from Discord, like the desktop app. For
+Codex CLI:
+
+1. Add Sandi to `~/.codex/config.toml`:
+
+   ```toml
+   [mcp_servers.sandi]
+   url = "https://api.sandi.jessica.black/v1/mcp"
+   tool_timeout_sec = 900
+   ```
+
+2. Run `codex mcp login sandi`. Codex opens a Sandi sign-in page in your browser.
+3. Run `/sandi auth` in Discord.
+4. Paste the code on the sign-in page, and choose **Connect**.
+
+Other agents that support MCP sign-in open the same page when you add the URL.
+The page shows where your access goes. Continue only if that matches the agent
+you are connecting.
+
+Codex waits 60 seconds for a tool by default, and a Sandi turn can take several
+minutes, so keep `tool_timeout_sec` high. For an agent that accepts only a bearer
+token, the operator can issue one with `npm run api:enroll`.
+
 ## Commands
 
 Run `/sandi help` in Discord to see the current command list.
@@ -33,7 +62,8 @@ Common commands:
 - `/sandi todo`: create and pin an interactive todo list.
 - `/sandi status`: inspect Sandi's runtime health and current conversation
   status.
-- `/sandi auth`: get a one-time code to connect a desktop client to Sandi.
+- `/sandi auth`: get a one-time code to connect a desktop client or an agent to
+  Sandi.
 - `/sandi login`: log in to ChatGPT/Codex with a device code Sandi
   shows privately to you.
 - `/sandi stop`: ask the current turn in this conversation to stop.

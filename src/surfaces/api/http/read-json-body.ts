@@ -1,9 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { TextDecoder } from "node:util";
 
-export type JsonBodyResult =
-  | { ok: true; value: unknown }
+export type BodyResult<T> =
+  | { ok: true; value: T }
   | { ok: false; status: number; error: string };
+
+export type JsonBodyResult = BodyResult<unknown>;
 
 export type ReadJsonBodyOptions = {
   // Hard cap on the buffered body. Once exceeded the read stops and answers 413
@@ -20,10 +22,34 @@ export type ReadJsonBodyOptions = {
 // (never rejects) with a discriminated result so callers map failures to a
 // status without a try/catch. Shared by every JSON route on the API surface so
 // the size and slow-body guards are identical everywhere.
-export function readJsonBody(
+export async function readJsonBody(
   request: IncomingMessage,
   options: ReadJsonBodyOptions,
 ): Promise<JsonBodyResult> {
+  const text = await readTextBody(request, options);
+  if (!text.ok) return text;
+  if (!text.value) return { ok: false, status: 400, error: "empty_body" };
+  try {
+    return { ok: true, value: JSON.parse(text.value) };
+  } catch {
+    return { ok: false, status: 400, error: "invalid_json" };
+  }
+}
+
+// The OAuth token and authorize endpoints take form-encoded bodies, under the
+// same size and slow-body guards as the JSON routes.
+export async function readFormBody(
+  request: IncomingMessage,
+  options: ReadJsonBodyOptions,
+): Promise<BodyResult<URLSearchParams>> {
+  const text = await readTextBody(request, options);
+  return text.ok ? { ok: true, value: new URLSearchParams(text.value) } : text;
+}
+
+function readTextBody(
+  request: IncomingMessage,
+  options: ReadJsonBodyOptions,
+): Promise<BodyResult<string>> {
   return new Promise((resolveBody) => {
     const chunks: Buffer[] = [];
     let total = 0;
@@ -39,7 +65,7 @@ export function readJsonBody(
       options.signal?.removeEventListener("abort", onSignalAbort);
     };
 
-    const finish = (result: JsonBodyResult, discard = false): void => {
+    const finish = (result: BodyResult<string>, discard = false): void => {
       if (settled) return;
       settled = true;
       cleanup();
@@ -73,23 +99,15 @@ export function readJsonBody(
       chunks.push(chunk);
     };
     const onEnd = (): void => {
-      let raw: string;
       try {
-        raw = new TextDecoder("utf-8", { fatal: true })
-          .decode(Buffer.concat(chunks, total))
-          .trim();
+        finish({
+          ok: true,
+          value: new TextDecoder("utf-8", { fatal: true })
+            .decode(Buffer.concat(chunks, total))
+            .trim(),
+        });
       } catch {
         finish({ ok: false, status: 400, error: "invalid_encoding" });
-        return;
-      }
-      if (!raw) {
-        finish({ ok: false, status: 400, error: "empty_body" });
-        return;
-      }
-      try {
-        finish({ ok: true, value: JSON.parse(raw) });
-      } catch {
-        finish({ ok: false, status: 400, error: "invalid_json" });
       }
     };
     const onError = (): void => {

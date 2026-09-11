@@ -10,3 +10,12 @@ export const API_DELIVERY_INSTRUCTIONS = [
   "- The response body is plain Markdown. Standard Markdown links like `[label](url)` are fine.",
   "- Keep answers concrete and complete in one turn, since there is no platform side channel to add context later.",
 ].join("\n");
+
+export const MCP_DELIVERY_INSTRUCTIONS = [
+  API_DELIVERY_INSTRUCTIONS,
+  "",
+  "# MCP Relay",
+  "",
+  "This turn arrived through the `ask_sandi` MCP tool. An AI agent that the participant runs, such as ChatGPT or Codex, wrote the message on their behalf and relays your final assistant text back to them.",
+  "Answer the participant as yourself. The agent may reword or summarize what they asked, so ask when its framing seems incomplete.",
+].join("\n");

@@ -700,6 +700,7 @@ function testConfig(dataDir: string): ApiAppConfig {
     api: {
       host: "127.0.0.1",
       port: 0,
+      publicUrl: "http://127.0.0.1",
       tokensPath: join(dataDir, "config", "api-tokens.json"),
       pairingsPath: join(dataDir, "config", "api-pairings.json"),
       attachmentQuotaBytes: 1_024,

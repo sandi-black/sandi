@@ -1,8 +1,19 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createConnection } from "node:net";
 import { join } from "node:path";
+
+import {
+  Client,
+  type OAuthClientMetadata,
+  type OAuthClientProvider,
+  type OAuthDiscoveryState,
+  type StoredOAuthClientInformation,
+  type StoredOAuthTokens,
+  StreamableHTTPClientTransport,
+  UnauthorizedError,
+} from "@modelcontextprotocol/client";
 import "@/surfaces/api/verify-attachment-config";
 
 import { ContextCompiler } from "@/lib/context/context-compiler";
@@ -51,7 +62,8 @@ async function verifyApiBot(): Promise<void> {
   await verifyJsonBodyLimits();
   await withTempDir("sandi-api-bot-", async (dataDir) => {
     const provider = new RecordingProvider();
-    const config = testConfig(dataDir);
+    // OAuth metadata names the server's own origin, so the port is fixed first.
+    const config = testConfig(dataDir, await freePort());
     const devices = new DeviceRegistry();
     const broker = new ToolBroker(devices);
     const bot = new ApiBot({
@@ -88,6 +100,8 @@ async function verifyApiBot(): Promise<void> {
       await verifyCapacityRejection(base, provider);
       await verifySecondTurnDoesNotDuplicateParticipant(base);
       await verifyManifestPersisted(dataDir);
+      await verifyMcp(base, provider);
+      await verifyMcpOAuth(base, config, provider);
       await verifyTokenRevocationAndEnrollment(dataDir);
       await verifyDeviceRoutes(base, config, devices);
       await verifyPairing(base, config);
@@ -628,6 +642,471 @@ async function verifyManifestPersisted(dataDir: string): Promise<void> {
   console.log("ok persisted manifest exists with exactly one participant");
 }
 
+// Drives the stateless MCP endpoint with the SDK's own client: the HTTP gates
+// run before any provider work, a 2026-07-28 client and a 2025-era client both
+// reach ask_sandi, a handle continues one Sandi conversation, failures become
+// tool errors, and cancelling the call aborts the provider turn.
+async function verifyMcp(
+  base: string,
+  provider: RecordingProvider,
+): Promise<void> {
+  const url = `${base}/v1/mcp`;
+  const callsBefore = provider.callCount;
+  const post = (headers: Record<string, string>): Promise<Response> =>
+    fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: "{}",
+    });
+  assertEqual((await post({})).status, 401, "MCP without a bearer");
+  assertEqual(
+    (await fetch(url, { headers: { authorization: `Bearer ${RAW_TOKEN}` } }))
+      .status,
+    405,
+    "MCP GET, a 2025-era session stream, is not allowed",
+  );
+  assertEqual(
+    (
+      await post({
+        authorization: `Bearer ${RAW_TOKEN}`,
+        origin: "https://example.com",
+      })
+    ).status,
+    403,
+    "MCP refuses a browser origin",
+  );
+  assertEqual(
+    (await post({ authorization: `Bearer ${UNMAPPED_TOKEN}` })).status,
+    403,
+    "MCP refuses an unmapped identity",
+  );
+
+  const modern = await connectMcp(url, "2026-07-28");
+  try {
+    const { tools } = await modern.listTools();
+    assertEqual(
+      tools.map((tool) => tool.name).join(","),
+      "ask_sandi",
+      "MCP lists only ask_sandi",
+    );
+
+    const invalid = await modern.callTool({
+      name: "ask_sandi",
+      arguments: { message: "hi", conversation: "a/b" },
+    });
+    assertEqual(invalid.isError, true, "an invalid handle is a tool error");
+    assertEqual(
+      provider.callCount,
+      callsBefore,
+      "rejected MCP requests never reach the provider",
+    );
+
+    const first = askSandiOutput(
+      await modern.callTool({
+        name: "ask_sandi",
+        arguments: { message: "hello from an agent" },
+      }),
+    );
+    assertEqual(first.reply, provider.responseText, "ask_sandi reply");
+    assert(
+      first.conversation.startsWith("mcp-"),
+      "ask_sandi mints a conversation handle",
+    );
+    const request = provider.lastRequest;
+    if (!request) throw new Error("fake provider received no MCP request");
+    const canonicalId = `api:${IDENTITY_ID}:${DEVICE_ID}:${first.conversation}`;
+    assertEqual(request.conversationId, canonicalId, "MCP turn canonical id");
+    assert(
+      request.input.includes("hello from an agent"),
+      "MCP turn carries the agent's message",
+    );
+    assert(
+      request.instructions.includes("# MCP Relay"),
+      "MCP turn tells Sandi an agent relays the conversation",
+    );
+
+    const second = askSandiOutput(
+      await modern.callTool({
+        name: "ask_sandi",
+        arguments: { message: "again", conversation: first.conversation },
+      }),
+    );
+    assertEqual(second.conversation, first.conversation, "handle round-trip");
+    assertEqual(
+      provider.lastRequest?.conversationId,
+      canonicalId,
+      "a passed handle continues the same Sandi conversation",
+    );
+
+    provider.nextError = new ProviderCapacityError("overloaded");
+    const busy = await modern.callTool({
+      name: "ask_sandi",
+      arguments: { message: "busy?" },
+    });
+    const busyText = busy.content[0];
+    assert(
+      busy.isError === true &&
+        busyText?.type === "text" &&
+        busyText.text.includes("at capacity"),
+      "a capacity rejection is a readable tool error",
+    );
+
+    const started = Promise.withResolvers<void>();
+    const aborted = Promise.withResolvers<void>();
+    provider.holdNextTurn = {
+      started: started.resolve,
+      aborted: aborted.resolve,
+    };
+    const controller = new AbortController();
+    const pending = modern
+      .callTool(
+        { name: "ask_sandi", arguments: { message: "never mind" } },
+        { signal: controller.signal },
+      )
+      .then(
+        () => "resolved",
+        () => "rejected",
+      );
+    await withinSeconds(started.promise, "held MCP turn start");
+    controller.abort();
+    await withinSeconds(aborted.promise, "MCP cancellation reaching the turn");
+    assertEqual(await pending, "rejected", "a cancelled call rejects");
+  } finally {
+    await modern.close();
+  }
+
+  const legacy = await connectMcp(url);
+  try {
+    const output = askSandiOutput(
+      await legacy.callTool({
+        name: "ask_sandi",
+        arguments: { message: "hello from an older client" },
+      }),
+    );
+    assertEqual(output.reply, provider.responseText, "2025-era client reply");
+  } finally {
+    await legacy.close();
+  }
+  console.log(
+    "ok MCP ask_sandi serves 2026-07-28 and 2025-era clients statelessly",
+  );
+}
+
+async function connectMcp(url: string, pin?: "2026-07-28"): Promise<Client> {
+  const client = new Client(
+    { name: "verify-api-bot", version: "1.0.0" },
+    pin ? { versionNegotiation: { mode: { pin } } } : {},
+  );
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(url), {
+      requestInit: { headers: { authorization: `Bearer ${RAW_TOKEN}` } },
+    }),
+  );
+  return client;
+}
+
+function askSandiOutput(result: unknown): {
+  conversation: string;
+  reply: string;
+} {
+  const output = isRecord(result) ? result["structuredContent"] : undefined;
+  const conversation = isRecord(output) ? output["conversation"] : undefined;
+  const reply = isRecord(output) ? output["reply"] : undefined;
+  if (typeof conversation !== "string" || typeof reply !== "string") {
+    throw new Error("ask_sandi returned no structured output");
+  }
+  return { conversation, reply };
+}
+
+// Signs an agent in the way Codex or ChatGPT does. The SDK's own OAuth client
+// discovers Sandi from the 401, registers, and opens the authorize page, where
+// the member pastes a /sandi auth code. The token it receives runs ask_sandi as
+// that member on a new device. Direct requests then cover what a well-behaved
+// client never sends: a remote plain-http redirect, an unregistered redirect,
+// and a wrong PKCE verifier.
+async function verifyMcpOAuth(
+  base: string,
+  config: ApiAppConfig,
+  provider: RecordingProvider,
+): Promise<void> {
+  const url = `${base}/v1/mcp`;
+  const unsigned = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  assertEqual(
+    unsigned.headers.get("www-authenticate"),
+    `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/v1/mcp"`,
+    "an MCP 401 points at the protected resource metadata",
+  );
+
+  const auth = new RecordingOAuthProvider();
+  const transport = new StreamableHTTPClientTransport(new URL(url), {
+    authProvider: auth,
+  });
+  const client = new Client(
+    { name: "verify-api-bot", version: "1.0.0" },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  const redirected = await client
+    .connect(transport)
+    .then(() => client.listTools())
+    .then(
+      () => false,
+      (error: unknown) => error instanceof UnauthorizedError,
+    );
+  assert(redirected, "an unsigned OAuth client is sent to authorize");
+  const authorizationUrl = auth.authorizationUrl;
+  if (!authorizationUrl) {
+    throw new Error("the OAuth client never opened the authorize page");
+  }
+  assertEqual(
+    `${authorizationUrl.origin}${authorizationUrl.pathname}`,
+    `${base}/oauth/authorize`,
+    "the client found the authorize endpoint",
+  );
+
+  const page = await fetch(authorizationUrl);
+  assertEqual(page.status, 200, "authorize page status");
+  const html = await page.text();
+  assert(
+    html.includes("Verify agent") && html.includes("127.0.0.1:9"),
+    "the authorize page names the agent and where its access goes",
+  );
+
+  const submit = (params: URLSearchParams, code: string): Promise<Response> =>
+    fetch(`${base}/oauth/authorize`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams([...params, ["code", code]]),
+      redirect: "manual",
+    });
+  const wrong = await submit(authorizationUrl.searchParams, "ZZZZZ-ZZZZZ");
+  assertEqual(wrong.status, 401, "a wrong pairing code re-renders the page");
+  assert(
+    (await wrong.text()).includes("That code did not work"),
+    "the page explains a wrong pairing code",
+  );
+
+  const pairing = await createPairing({
+    path: config.api.pairingsPath,
+    identityId: IDENTITY_ID,
+  });
+  const approved = await submit(authorizationUrl.searchParams, pairing.display);
+  assertEqual(approved.status, 303, "a valid pairing code redirects the agent");
+  const callback = new URL(approved.headers.get("location") ?? "");
+  assertEqual(
+    `${callback.origin}${callback.pathname}`,
+    "http://127.0.0.1:9/callback",
+    "a portless loopback registration accepts the listener's port",
+  );
+  assertEqual(callback.searchParams.get("iss"), base, "redirect issuer");
+  assertEqual(callback.searchParams.get("state"), "verify-state", "state");
+  await transport.finishAuth(callback.searchParams);
+  await client.close();
+
+  const entry = await new ApiTokenStore(config.api.tokensPath, 0).verify(
+    auth.accessToken,
+  );
+  assertEqual(
+    entry?.identityId,
+    IDENTITY_ID,
+    "the access token is a per-device token for the member",
+  );
+  assertEqual(entry?.label, "Verify agent", "the device takes the agent name");
+
+  const signedIn = new Client(
+    { name: "verify-api-bot", version: "1.0.0" },
+    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+  );
+  await signedIn.connect(
+    new StreamableHTTPClientTransport(new URL(url), { authProvider: auth }),
+  );
+  try {
+    const output = askSandiOutput(
+      await signedIn.callTool({
+        name: "ask_sandi",
+        arguments: { message: "hello after signing in" },
+      }),
+    );
+    assertEqual(
+      provider.lastRequest?.conversationId,
+      `api:${IDENTITY_ID}:${entry?.deviceId}:${output.conversation}`,
+      "a signed-in agent talks to Sandi as its own device",
+    );
+  } finally {
+    await signedIn.close();
+  }
+
+  const register = (body: unknown): Promise<Response> =>
+    fetch(`${base}/oauth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  assertEqual(
+    (await register({ redirect_uris: ["http://agent.example/callback"] }))
+      .status,
+    400,
+    "registration refuses a remote plain-http redirect",
+  );
+  const registered = await register({
+    client_name: "Manual agent",
+    redirect_uris: ["https://agent.example/callback"],
+  });
+  assertEqual(registered.status, 201, "registration status");
+  const registration = await registered.json();
+  const clientId = isRecord(registration) ? registration["client_id"] : "";
+  if (typeof clientId !== "string") throw new Error("no client_id issued");
+  const verifier = randomBytes(32).toString("base64url");
+  const params = new URLSearchParams({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: "https://agent.example/callback",
+    code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+    code_challenge_method: "S256",
+    resource: url,
+  });
+  const elsewhere = new URLSearchParams(params);
+  elsewhere.set("redirect_uri", "https://attacker.example/callback");
+  const refused = await fetch(`${base}/oauth/authorize?${elsewhere}`, {
+    redirect: "manual",
+  });
+  assertEqual(
+    refused.status,
+    400,
+    "the page refuses an unregistered redirect instead of following it",
+  );
+
+  const manualPairing = await createPairing({
+    path: config.api.pairingsPath,
+    identityId: IDENTITY_ID,
+  });
+  const manual = await submit(params, manualPairing.code);
+  assertEqual(manual.status, 303, "manual authorization status");
+  const code =
+    new URL(manual.headers.get("location") ?? "").searchParams.get("code") ??
+    "";
+  const exchange = (codeVerifier: string): Promise<Response> =>
+    fetch(`${base}/oauth/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        client_id: clientId,
+        redirect_uri: "https://agent.example/callback",
+        code_verifier: codeVerifier,
+        resource: url,
+      }),
+    });
+  assertEqual(
+    (await exchange("wrong-verifier")).status,
+    400,
+    "a wrong PKCE verifier is refused",
+  );
+  assertEqual(
+    (await exchange(verifier)).status,
+    400,
+    "a refused exchange spends the authorization code",
+  );
+  console.log("ok MCP agents sign in with a pairing code through OAuth");
+}
+
+// Registers a portless loopback redirect, as Codex does, and authorizes with
+// the port its callback listener got.
+class RecordingOAuthProvider implements OAuthClientProvider {
+  authorizationUrl: URL | undefined;
+  #client: StoredOAuthClientInformation | undefined;
+  #tokens: StoredOAuthTokens | undefined;
+  #codeVerifier = "";
+  #discoveryState: OAuthDiscoveryState | undefined;
+
+  get redirectUrl(): string {
+    return "http://127.0.0.1:9/callback";
+  }
+
+  get clientMetadata(): OAuthClientMetadata {
+    return {
+      client_name: "Verify agent",
+      redirect_uris: ["http://127.0.0.1/callback"],
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code"],
+      response_types: ["code"],
+    };
+  }
+
+  get accessToken(): string {
+    return this.#tokens?.access_token ?? "";
+  }
+
+  state(): string {
+    return "verify-state";
+  }
+
+  clientInformation(): StoredOAuthClientInformation | undefined {
+    return this.#client;
+  }
+
+  saveClientInformation(information: StoredOAuthClientInformation): void {
+    this.#client = information;
+  }
+
+  tokens(): StoredOAuthTokens | undefined {
+    return this.#tokens;
+  }
+
+  saveTokens(tokens: StoredOAuthTokens): void {
+    this.#tokens = tokens;
+  }
+
+  redirectToAuthorization(authorizationUrl: URL): void {
+    this.authorizationUrl = authorizationUrl;
+  }
+
+  saveCodeVerifier(codeVerifier: string): void {
+    this.#codeVerifier = codeVerifier;
+  }
+
+  codeVerifier(): string {
+    return this.#codeVerifier;
+  }
+
+  // Keeping the discovered authorization server lets the SDK check that the
+  // callback's issuer is the server this sign-in started with.
+  saveDiscoveryState(state: OAuthDiscoveryState): void {
+    this.#discoveryState = state;
+  }
+
+  discoveryState(): OAuthDiscoveryState | undefined {
+    return this.#discoveryState;
+  }
+}
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (!address || typeof address === "string") {
+    throw new Error("free-port probe did not get a TCP address");
+  }
+  return address.port;
+}
+
+function withinSeconds<T>(promise: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out`)), 5_000).unref();
+    }),
+  ]);
+}
+
 async function verifyTokenRevocationAndEnrollment(
   dataDir: string,
 ): Promise<void> {
@@ -1063,6 +1542,8 @@ class RecordingProvider implements ModelProviderClient {
   lastRequest: ProviderTurnRequest | undefined;
   callCount = 0;
   nextError: Error | undefined;
+  // When set, the next turn waits for its abort signal instead of answering.
+  holdNextTurn: { started: () => void; aborted: () => void } | undefined;
 
   async probe(): Promise<ProviderProbe> {
     return {
@@ -1077,6 +1558,18 @@ class RecordingProvider implements ModelProviderClient {
   ): Promise<ProviderTurnResponse> {
     this.callCount += 1;
     this.lastRequest = request;
+    const hold = this.holdNextTurn;
+    if (hold) {
+      this.holdNextTurn = undefined;
+      hold.started();
+      await new Promise<void>((resolve) => {
+        request.signal?.addEventListener("abort", () => resolve(), {
+          once: true,
+        });
+      });
+      hold.aborted();
+      throw new Error("turn aborted");
+    }
     if (this.nextError) {
       const error = this.nextError;
       this.nextError = undefined;
@@ -1091,7 +1584,7 @@ class RecordingProvider implements ModelProviderClient {
   }
 }
 
-function testConfig(dataDir: string): ApiAppConfig {
+function testConfig(dataDir: string, port: number): ApiAppConfig {
   return {
     pi: {
       command: "pi",
@@ -1117,7 +1610,8 @@ function testConfig(dataDir: string): ApiAppConfig {
     },
     api: {
       host: "127.0.0.1",
-      port: 0,
+      port,
+      publicUrl: `http://127.0.0.1:${port}`,
       tokensPath: join(dataDir, "config", "api-tokens.json"),
       pairingsPath: join(dataDir, "config", "api-pairings.json"),
       attachmentQuotaBytes: 2 * 1024 * 1024 * 1024,

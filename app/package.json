@@ -48,7 +48,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "cross-spawn": "^7.0.6",
-    "motion": "^12.43.0",
+    "motion": "^13.0.0",
     "re2-wasm": "^1.0.2",
     "react": "^19.2.7",
     "react-dom": "^19.2.8",

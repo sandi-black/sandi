@@ -2537,6 +2537,13 @@ async function sendTypingSafely(
       Date.now() + TYPING_FALLBACK_COOLDOWN_MS,
       MAX_TYPING_COOLDOWNS,
     );
+    if (isAbortError(error)) {
+      log.info("typing indicator request timed out", {
+        channelId,
+        timeoutMs: TYPING_TIMEOUT_MS,
+      });
+      return false;
+    }
     log.warn("failed to send typing indicator", {
       channelId,
       error: errorMessage(error),
@@ -2545,6 +2552,10 @@ async function sendTypingSafely(
   } finally {
     typingInFlight.delete(channelId);
   }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 type TypingRequestResult =

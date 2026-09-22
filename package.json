@@ -102,8 +102,8 @@
     "verify:attach-to-reply": "tsx src/surfaces/api/pi-extension/verify-attach-to-reply.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.83.0",
-    "@earendil-works/pi-coding-agent": "0.83.0",
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
     "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",

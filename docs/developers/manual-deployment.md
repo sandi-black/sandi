@@ -155,8 +155,8 @@ If `pi` is available on `PATH`, the command can stay simple:
 ```sh
 SANDI_PI_COMMAND=pi
 SANDI_PI_PROVIDER=openai-codex
-SANDI_PI_MODEL=gpt-5.5
-SANDI_PI_THINKING=medium
+SANDI_PI_MODEL=gpt-6-luna
+SANDI_PI_THINKING=high
 ```
 
 For a more deterministic deploy, point Sandi at the package-locked Pi CLI:

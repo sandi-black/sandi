@@ -206,7 +206,7 @@ disable discovery and builtin tools explicitly.
 - `SANDI_GOOGLE_MAPS_API_KEY` or `GOOGLE_MAPS_API_KEY` configures Google Maps
   Places tools.
 - `SANDI_PI_TIMEOUT_MS=3600000`
-- `SANDI_PI_MODEL=gpt-5.5` maps to `--model gpt-5.5`
+- `SANDI_PI_MODEL=gpt-6-luna` maps to `--model gpt-6-luna`
 - `SANDI_PI_PROVIDER=openai-codex` maps to `--provider openai-codex`
 - `SANDI_PI_THINKING=high` maps to `--thinking high`
 - `SANDI_GH_COMMAND=gh` selects the GitHub CLI used by the GitHub surface.
@@ -240,7 +240,7 @@ disable discovery and builtin tools explicitly.
   Sandi's runtime context.
 
 The checked-in environment example uses `SANDI_PI_PROVIDER=openai-codex` and
-`SANDI_PI_MODEL=gpt-5.5` for the ChatGPT/Codex-authenticated Pi route. Adjust
+`SANDI_PI_MODEL=gpt-6-luna` for the ChatGPT/Codex-authenticated Pi route. Adjust
 those values if your local Pi installation exposes a different provider or model
 name.
 

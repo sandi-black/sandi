@@ -1,4 +1,4 @@
 {
-  "packages": ["npm:@howaboua/pi-codex-conversion"],
+  "packages": ["npm:@howaboua/pi-codex-conversion@3.0.37"],
   "blockedPackages": ["npm:pi-dcp"]
 }
